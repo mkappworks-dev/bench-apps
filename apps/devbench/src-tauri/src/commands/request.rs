@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use futures::stream::StreamExt;
 
 #[derive(Debug, Deserialize)]
 pub struct FireRequestInput {
@@ -15,8 +16,14 @@ pub struct FireRequestOutput {
     pub duration_ms: u64,
 }
 
+const MAX_BODY_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
+
 pub async fn fire_request_impl(input: FireRequestInput) -> Result<FireRequestOutput, String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("failed to build http client: {e}"))?;
     let method: reqwest::Method = input
         .method
         .parse()
@@ -29,7 +36,19 @@ pub async fn fire_request_impl(input: FireRequestInput) -> Result<FireRequestOut
     let started = Instant::now();
     let resp = req.send().await.map_err(|e| format!("request failed: {e}"))?;
     let status_code = resp.status().as_u16();
-    let body = resp.text().await.map_err(|e| format!("failed to read response body: {e}"))?;
+
+    // Read response body with size limit
+    let mut body_bytes = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("failed to read response body: {e}"))?;
+        body_bytes.extend_from_slice(&chunk);
+        if body_bytes.len() > MAX_BODY_SIZE {
+            return Err(format!("response body exceeds maximum size of {} bytes", MAX_BODY_SIZE));
+        }
+    }
+    let body = String::from_utf8(body_bytes)
+        .map_err(|e| format!("response body is not valid utf8: {e}"))?;
     let duration_ms = started.elapsed().as_millis() as u64;
 
     Ok(FireRequestOutput { status_code, body, duration_ms })
