@@ -50,7 +50,9 @@ Fixed rem scale, not fluid. Tighter step ratio (~1.125–1.2) than a marketing s
 
 ## Layout: three-column shell
 
-Sessions sidebar (240px, ghosty) → main content (tab bar: API / DB / Log / Email) → chat dock (320px, ghosty, collapsible — resizes the content column when toggled, never overlays it).
+Sessions sidebar (ghosty) → main content (its own tab bar: API / DB / Log / Email) → chat dock (ghosty, collapsible — resizes the content column when toggled, never overlays it). The global topbar carries only identity and app-wide actions (theme, chat toggle, settings) — the tool tabs live in the main column, not the topbar, since tabs are part of what a session shows, not global chrome that exists independent of any session. This only became an explicit decision once the app-shell and session-sidebar mockups were actually merged into one artifact; each had put the tabs in a different place.
+
+Reference implementation of the full shell (all four tools, split view, sessions, chat dock): `docs/mockups/devbench.html`.
 
 **Sessions are a pure organizational/history layer — never a view restriction.** This was a deliberate choice among three explored IA variants:
 - *Scoped sessions* (session type restricts which tool is visible) and *command-palette* (same restriction, more compact chrome) were both passed over: debugging is exploratory, and forcing a type commitment before a user knows what they'll need works against the correlation rollup being reliably available.

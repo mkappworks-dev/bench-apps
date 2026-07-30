@@ -1,0 +1,500 @@
+<title>DevBench</title>
+<style>
+  /* ---- Consolidated app shell ----
+     Merges the app-shell/tab mockup and the session-sidebar Variant B
+     exploration into the single real shell: sessions sidebar (history,
+     never a view restriction) -> main content (tabbar + split view,
+     all four real tools) -> chat dock. Tool tabs moved out of the global
+     topbar into the main column's own tabbar, since tabs are part of what
+     a session shows, not global app chrome, matching how sessions
+     actually work here.
+  */
+  :root {
+    --bg: #08090c; --surface: #121419; --surface-2: #191c22; --border: #24262e;
+    --text: #ecedf2; --text-muted: #999fac; --text-faint: #666d7a;
+    --accent: #f2f3f5; --accent-strong: #ffffff; --accent-on: #0a0b0e;
+    --page-glow: rgba(255, 255, 255, 0.07);
+    --success: #3fce85; --success-bg: #12271c;
+    --warning: #e3a438; --warning-bg: #2b2210;
+    --danger: #e5695f; --danger-bg: #2b1514;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.5);
+    --radius-sm: 6px; --radius-lg: 12px;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f5f7fa; --surface:#ffffff; --surface-2:#eef1f6; --border:#dde3ec; --text:#10151f; --text-muted:#5b6472; --text-faint:#8a92a1; --accent:#10151f; --accent-strong:#000000; --accent-on:#ffffff; --page-glow: rgba(16,21,31,0.025); --success:#167a45; --success-bg:#e3f5eb; --warning:#a3660a; --warning-bg:#faf0dc; --danger:#b93a3a; --danger-bg:#fbe9e9; --shadow:0 1px 2px rgba(16,21,31,.05),0 10px 28px rgba(16,21,31,.07); }
+  }
+  :root[data-theme="dark"] { --bg:#08090c; --surface:#121419; --surface-2:#191c22; --border:#24262e; --text:#ecedf2; --text-muted:#999fac; --text-faint:#666d7a; --accent:#f2f3f5; --accent-strong:#ffffff; --accent-on:#0a0b0e; --page-glow: rgba(255,255,255,0.07); --success:#3fce85; --success-bg:#12271c; --warning:#e3a438; --warning-bg:#2b2210; --danger:#e5695f; --danger-bg:#2b1514; --shadow:0 1px 2px rgba(0,0,0,.4),0 12px 32px rgba(0,0,0,.5); }
+  :root[data-theme="light"] { --bg:#f5f7fa; --surface:#ffffff; --surface-2:#eef1f6; --border:#dde3ec; --text:#10151f; --text-muted:#5b6472; --text-faint:#8a92a1; --accent:#10151f; --accent-strong:#000000; --accent-on:#ffffff; --page-glow: rgba(16,21,31,0.025); --success:#167a45; --success-bg:#e3f5eb; --warning:#a3660a; --warning-bg:#faf0dc; --danger:#b93a3a; --danger-bg:#fbe9e9; --shadow:0 1px 2px rgba(16,21,31,.05),0 10px 28px rgba(16,21,31,.07); }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; font-family: var(--font-sans);
+    background: radial-gradient(1000px 520px at 8% -12%, var(--page-glow), transparent 60%), var(--bg);
+    color: var(--text); font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+  button, input, select, textarea { font-family: inherit; font-size: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  svg { display: block; }
+
+  .app { display: flex; flex-direction: column; height: 100vh; min-height: 600px; }
+
+  /* Topbar: identity + global actions only. Tool tabs live per-session now. */
+  .topbar { display: flex; align-items: center; gap: 12px; height: 52px; min-height: 52px; padding: 0 14px; border-bottom: 1px solid var(--border); }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 15px; letter-spacing: -0.01em; white-space: nowrap; }
+  .brand-mark { width: 24px; height: 24px; border-radius: var(--radius-sm); background: var(--surface-2); color: var(--accent); display: grid; place-items: center; }
+  .topbar-actions { margin-left: auto; display: flex; gap: 4px; }
+  .icon-btn { appearance: none; border: 1px solid transparent; background: transparent; cursor: pointer; width: 32px; height: 32px; border-radius: var(--radius-sm); display: grid; place-items: center; color: var(--text-muted); transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease; }
+  .icon-btn:hover { background: var(--surface-2); color: var(--text); }
+  .icon-btn[aria-pressed="true"] { color: var(--accent); border-color: var(--border); background: var(--surface-2); }
+
+  .body-grid { flex: 1; display: grid; grid-template-columns: 220px 1fr 320px; min-height: 0; transition: grid-template-columns 220ms ease; }
+  .body-grid.chat-closed { grid-template-columns: 220px 1fr 0px; }
+
+  /* Sessions sidebar — ghosty, pure history/organization, never a view gate */
+  .sidebar-sessions { border-right: 1px solid var(--border); display: flex; flex-direction: column; min-width: 0; }
+  .sidebar-head { padding: 12px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); font-weight: 700; font-size: 13px; }
+  .new-btn { appearance: none; border: 1px solid var(--border); background: transparent; border-radius: var(--radius-sm); padding: 4px 8px; cursor: pointer; font-size: 12px; font-weight: 700; color: var(--text-muted); }
+  .new-btn:hover { border-color: var(--text-faint); color: var(--text); background: var(--surface-2); }
+  .session-search { margin: 8px; padding: 6px 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text-faint); font-size: 12px; }
+  .session-list { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+  .session-item { display: flex; align-items: center; gap: 8px; padding: 8px 9px; border-radius: var(--radius-sm); cursor: pointer; color: var(--text-muted); }
+  .session-item:hover { background: var(--surface-2); }
+  .session-item.active { background: var(--surface-2); color: var(--text); font-weight: 600; }
+  .session-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session-badge { font-size: 10px; color: var(--text-faint); flex-shrink: 0; }
+
+  /* Main column: tabbar + split-capable content */
+  .main-col { display: flex; flex-direction: column; min-width: 0; }
+  .tabbar { display: flex; align-items: center; gap: 2px; padding: 8px 20px 0; border-bottom: 1px solid var(--border); }
+  .tabbar button { appearance: none; border: none; background: transparent; cursor: pointer; color: var(--text-muted); font-weight: 500; padding: 8px 12px; border-radius: 6px 6px 0 0; }
+  .tabbar button.active { color: var(--text); background: var(--surface-2); font-weight: 700; }
+  .split-btn { margin-left: auto; margin-bottom: 6px; appearance: none; border: 1px solid var(--border); background: transparent; color: var(--text-muted); cursor: pointer; padding: 5px 10px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 5px; }
+  .split-btn:hover { color: var(--text); border-color: var(--text-faint); background: var(--surface-2); }
+
+  .content-wrap { flex: 1; display: flex; min-height: 0; }
+  .content-wrap.single .pane:nth-child(2) { display: none; }
+  .pane { flex: 1 1 50%; display: flex; flex-direction: column; min-width: 0; }
+  .content-wrap.single .pane:first-child { flex: 1 1 100%; }
+  .content-wrap.split .pane:first-child { border-right: 1px solid var(--border); }
+  .pane-bar { display: flex; align-items: center; gap: 2px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
+  .pane-bar button { appearance: none; border: none; background: transparent; cursor: pointer; color: var(--text-faint); font-weight: 600; font-size: 12.5px; padding: 4px 9px; border-radius: var(--radius-sm); }
+  .pane-bar button.active { color: var(--text); background: var(--surface-2); }
+  .pane-close { margin-left: auto !important; color: var(--text-faint) !important; }
+  .pane-close:hover { color: var(--text) !important; }
+  .pane-content { flex: 1; overflow-y: auto; padding: 20px; }
+
+  /* Chat dock — ghosty */
+  .chat-dock { border-left: 1px solid var(--border); display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+  .body-grid.chat-closed .chat-dock { border-left-color: transparent; }
+  .chat-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--border); font-weight: 700; white-space: nowrap; }
+  .chat-messages { flex: 1; padding: 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+  .chat-msg { background: var(--surface-2); border-radius: var(--radius-lg); padding: 9px 11px; max-width: 92%; white-space: nowrap; }
+  .chat-input-row { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); }
+  .chat-input { flex: 1; border: 1px solid var(--border); background: var(--bg); border-radius: var(--radius-sm); padding: 8px 10px; min-width: 0; }
+
+  /* Shared card/component styles used across tool panels */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow); }
+  .section-label { font-size: 11.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-faint); margin: 4px 2px; }
+
+  /* API tool */
+  .panel-api { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+  .request-row { display: flex; gap: 8px; padding: 12px; border-bottom: 1px solid var(--border); }
+  .method-select { appearance: none; border: 1px solid var(--border); background: var(--surface-2); border-radius: var(--radius-sm); padding: 8px 10px; font-weight: 700; color: var(--text); min-width: 84px; }
+  .url-input { flex: 1; border: 1px solid var(--border); background: var(--bg); border-radius: var(--radius-sm); padding: 8px 10px; font-family: var(--font-mono); color: var(--text); }
+  .btn-primary { appearance: none; border: none; background: var(--accent); color: var(--accent-on); font-weight: 700; padding: 0 18px; border-radius: var(--radius-sm); cursor: pointer; min-width: 84px; height: 34px; transition: background-color 150ms ease, transform 150ms ease, box-shadow 150ms ease; box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent), 0 4px 18px color-mix(in srgb, var(--accent) 30%, transparent); }
+  .btn-primary:hover { background: var(--accent-strong); }
+  .btn-primary:active { transform: translateY(1px); }
+  .btn-primary[disabled] { opacity: 0.6; cursor: progress; box-shadow: none; }
+  .subtabs { display: flex; gap: 4px; padding: 8px 12px 0; }
+  .subtab { appearance: none; border: none; background: transparent; cursor: pointer; color: var(--text-faint); padding: 6px 10px; border-bottom: 2px solid transparent; font-weight: 500; }
+  .subtab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  .code-block { margin: 0; padding: 12px; font-family: var(--font-mono); font-size: 13px; background: var(--surface-2); border-top: 1px solid var(--border); white-space: pre-wrap; word-break: break-word; overflow-x: auto; border-radius: 0 0 var(--radius-lg) var(--radius-lg); color: var(--text); }
+  .response-header { display: flex; align-items: center; gap: 10px; padding: 12px; }
+  .status-pill { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 12.5px; padding: 3px 9px; border-radius: 999px; font-variant-numeric: tabular-nums; }
+  .status-success { color: var(--success); background: var(--success-bg); }
+  .response-time { color: var(--text-muted); font-variant-numeric: tabular-nums; font-size: 12.5px; font-weight: 600; }
+  .rollup { padding: 12px 14px; }
+  .rollup-row { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; }
+  .rollup-item { display: inline-flex; align-items: center; gap: 7px; color: var(--text); background: none; border: none; cursor: pointer; padding: 4px 2px; font-weight: 600; border-radius: 4px; }
+  .rollup-item:hover { color: var(--accent); }
+  .rollup-item svg { color: var(--text-faint); }
+  .rollup-item:hover svg { color: var(--accent); }
+  .rollup-count { font-variant-numeric: tabular-nums; color: var(--text-muted); font-weight: 500; }
+  .rollup-arrow { color: var(--accent); font-weight: 700; }
+  .rollup-empty { color: var(--text-faint); }
+  .rollup-warning { display: inline-flex; align-items: center; gap: 6px; color: var(--warning); background: var(--warning-bg); padding: 3px 9px; border-radius: var(--radius-sm); font-weight: 700; }
+  .rollup-skeleton { display: flex; gap: 18px; }
+  .skeleton-chip { width: 96px; height: 16px; border-radius: 4px; background: linear-gradient(90deg, var(--surface-2) 25%, var(--border) 50%, var(--surface-2) 75%); background-size: 200% 100%; animation: shimmer 1.3s ease-in-out infinite; }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  .rollup-state { display: none; } .rollup-state.active { display: block; }
+  .demo-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .demo-label { color: var(--text-faint); font-size: 12.5px; }
+  .chip { appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); padding: 5px 11px; border-radius: 999px; cursor: pointer; font-size: 12.5px; font-weight: 600; transition: all 150ms ease; }
+  .chip:hover { border-color: var(--accent); color: var(--text); }
+  .chip.active { background: var(--accent); border-color: var(--accent); color: var(--accent-on); }
+
+  /* DB tool */
+  .panel-db { height: 100%; display: flex; margin: -20px; }
+  .db-tree { width: 200px; min-width: 200px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+  .db-tree-head { padding: 10px 12px; font-weight: 700; font-size: 12.5px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); color: var(--text-muted); }
+  .db-tree-list { flex: 1; overflow-y: auto; padding: 6px; }
+  .db-tree-group { padding: 8px 8px 2px; font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+  .db-tree-table { display: flex; align-items: center; gap: 7px; padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer; color: var(--text-muted); }
+  .db-tree-table:hover { background: var(--surface-2); color: var(--text); }
+  .db-tree-table.active { background: var(--surface-2); color: var(--text); font-weight: 600; }
+  .watch-toggle { appearance: none; border: 1px solid var(--text-faint); background: none; cursor: pointer; color: transparent; width: 10px; height: 10px; border-radius: 50%; padding: 0; flex-shrink: 0; }
+  .watch-toggle.active { background: var(--text); border-color: var(--text); }
+  .watch-hint { margin-left: auto; font-size: 10px; color: var(--text-faint); }
+  .db-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .db-mode-bar { display: flex; gap: 2px; padding: 10px 20px 0; border-bottom: 1px solid var(--border); }
+  .db-mode-bar button { appearance: none; border: none; background: transparent; cursor: pointer; color: var(--text-muted); font-weight: 500; padding: 8px 12px; border-radius: 6px 6px 0 0; }
+  .db-mode-bar button.active { color: var(--text); background: var(--surface-2); font-weight: 700; }
+  .db-view { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; }
+  .db-toolbar { display: flex; align-items: baseline; gap: 8px; font-weight: 700; }
+  .row-count { font-weight: 500; color: var(--text-faint); font-size: 12.5px; }
+  .grid-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-lg); }
+  .data-grid { border-collapse: collapse; width: 100%; font-size: 13px; font-family: var(--font-mono); }
+  .data-grid th { text-align: left; padding: 8px 12px; background: var(--surface-2); color: var(--text-faint); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .data-grid td { padding: 7px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text); }
+  .data-grid tr:last-child td { border-bottom: none; }
+  .data-grid tr:hover td { background: var(--surface-2); }
+  .grid-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text-muted); font-size: 11px; font-weight: 600; }
+  .query-editor { width: 100%; min-height: 74px; border: 1px solid var(--border); background: var(--surface-2); border-radius: var(--radius-lg); padding: 12px; font-family: var(--font-mono); font-size: 13px; color: var(--text); resize: vertical; }
+
+  /* Log tool */
+  .panel-log { height: 100%; display: flex; flex-direction: column; margin: -20px; }
+  .log-toolbar { display: flex; align-items: center; gap: 14px; padding: 12px 20px; border-bottom: 1px solid var(--border); }
+  .log-source { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-muted); white-space: nowrap; }
+  .log-source-path { font-family: var(--font-mono); color: var(--text); }
+  .log-search { flex: 1; max-width: 260px; border: 1px solid var(--border); background: var(--bg); border-radius: var(--radius-sm); padding: 6px 10px; font-size: 12.5px; color: var(--text); }
+  .log-live { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-faint); font-weight: 600; white-space: nowrap; }
+  .log-live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+  .log-stream { flex: 1; overflow-y: auto; padding: 10px 20px; font-family: var(--font-mono); font-size: 12.5px; }
+  .log-line { display: flex; gap: 12px; padding: 3px 8px; border-radius: 4px; border-left: 2px solid transparent; }
+  .log-line:hover { background: var(--surface-2); }
+  .log-line.level-warn { border-left-color: var(--warning); }
+  .log-line.level-error { border-left-color: var(--danger); }
+  .log-line.hidden-by-filter { display: none; }
+  .log-time { color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .log-level { width: 42px; font-weight: 700; font-size: 11px; flex-shrink: 0; }
+  .log-level.info { color: var(--text-faint); }
+  .log-level.warn { color: var(--warning); }
+  .log-level.error { color: var(--danger); }
+  .log-msg { color: var(--text); white-space: pre-wrap; word-break: break-word; }
+
+  /* Email tool */
+  .panel-email { height: 100%; display: flex; flex-direction: column; margin: -20px; }
+  .email-layout { flex: 1; display: flex; min-height: 0; }
+  .email-list { width: 240px; min-width: 240px; border-right: 1px solid var(--border); overflow-y: auto; }
+  .email-item { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .email-item:hover { background: var(--surface-2); }
+  .email-item.active { background: var(--surface-2); }
+  .email-item-top { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; }
+  .email-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .email-time { color: var(--text-faint); font-size: 11.5px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .email-from { color: var(--text-faint); font-size: 12px; margin-top: 2px; }
+  .email-viewer { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+  .email-viewer-head { padding: 16px 20px 0; }
+  .email-viewer-subject { font-weight: 700; font-size: 15px; }
+  .email-viewer-meta { color: var(--text-faint); font-size: 12px; margin-top: 3px; }
+  .email-mode-bar { display: flex; gap: 2px; padding: 10px 20px 0; border-bottom: 1px solid var(--border); margin-top: 12px; }
+  .email-mode-bar button { appearance: none; border: none; background: transparent; cursor: pointer; color: var(--text-muted); font-weight: 500; padding: 8px 12px; border-radius: 6px 6px 0 0; }
+  .email-mode-bar button.active { color: var(--text); background: var(--surface-2); font-weight: 700; }
+  .email-body-frame { flex: 1; overflow-y: auto; padding: 20px; }
+  .email-body-html { max-width: 420px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px; box-shadow: var(--shadow); }
+  .email-body-html h2 { font-size: 16px; margin: 0 0 8px; }
+  .email-body-html p { margin: 0 0 10px; color: var(--text-muted); font-size: 13px; }
+  .email-status { padding: 8px 20px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-faint); }
+  .email-status a { color: var(--text-muted); }
+
+  @media (prefers-reduced-motion: reduce) { * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; } }
+</style>
+
+<div class="app" id="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none">
+          <circle cx="12" cy="5" r="2" fill="currentColor"/><circle cx="5" cy="19" r="2" fill="currentColor"/><circle cx="12" cy="19" r="2" fill="currentColor"/><circle cx="19" cy="19" r="2" fill="currentColor"/>
+          <path d="M12 7v5M12 12L5 17M12 12v5M12 12l7 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+      </span>
+      DevBench
+    </div>
+    <div class="topbar-actions">
+      <button class="icon-btn" id="themeToggle" aria-label="Toggle light/dark">
+        <svg id="themeIcon" viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"></svg>
+      </button>
+      <button class="icon-btn" id="chatToggle" aria-label="Toggle AI chat" aria-pressed="true">
+        <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h11A1.5 1.5 0 0 1 17 5.5v6a1.5 1.5 0 0 1-1.5 1.5H8l-3.2 2.6a.4.4 0 0 1-.65-.31V13H4.5A1.5 1.5 0 0 1 3 11.5v-6Z" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="icon-btn" aria-label="Settings">
+        <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2M10 15.5v2M17.5 10h-2M4.5 10h-2M15.1 4.9l-1.4 1.4M6.3 13.7l-1.4 1.4M15.1 15.1l-1.4-1.4M6.3 6.3 4.9 4.9" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="body-grid" id="bodyGrid">
+    <aside class="sidebar-sessions">
+      <div class="sidebar-head">Sessions <button class="new-btn" id="newSession">+ New</button></div>
+      <input class="session-search" placeholder="Search sessions…" disabled>
+      <div class="session-list" id="sessionList">
+        <div class="session-item active"><span class="session-name">Order flow debug</span><span class="session-badge">today</span></div>
+        <div class="session-item"><span class="session-name">Checkout API</span><span class="session-badge">yesterday</span></div>
+        <div class="session-item"><span class="session-name">Users query</span><span class="session-badge">2d ago</span></div>
+      </div>
+    </aside>
+
+    <div class="main-col">
+      <div class="tabbar" id="mainTabbar">
+        <button class="active" data-tool="api">API</button>
+        <button data-tool="db">DB</button>
+        <button data-tool="log">Log</button>
+        <button data-tool="email">Email</button>
+        <button class="split-btn" id="splitBtn">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M8 3v10"/></svg>
+          Split
+        </button>
+      </div>
+      <div class="content-wrap single" id="contentWrap">
+        <div class="pane"><div class="pane-content" id="pane1"></div></div>
+        <div class="pane">
+          <div class="pane-bar" id="pane2Bar">
+            <button data-tool="api">API</button><button class="active" data-tool="db">DB</button><button data-tool="log">Log</button><button data-tool="email">Email</button>
+            <button class="pane-close" id="closeSplit" aria-label="Close split">✕</button>
+          </div>
+          <div class="pane-content" id="pane2"></div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="chat-dock" id="chatDock">
+      <div class="chat-header">
+        <span>AI Assistant</span>
+        <button class="icon-btn" id="chatClose" aria-label="Close chat" style="width:24px;height:24px;">
+          <svg viewBox="0 0 20 20" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 5l10 10M15 5 5 15"/></svg>
+        </button>
+      </div>
+      <div class="chat-messages"><div class="chat-msg">Ask me about this session, or anything DevBench observed.</div></div>
+      <div class="chat-input-row">
+        <input class="chat-input" placeholder="Ask about this request…" />
+        <button class="icon-btn" aria-label="Send message"><svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15V5M10 5l-4.5 4.5M10 5l4.5 4.5"/></svg></button>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+  var TOOL_HTML = {
+    api: '\
+<div class="panel-api">\
+  <div class="card">\
+    <div class="request-row"><select class="method-select"><option>POST</option></select><input class="url-input" value="/api/orders"><button class="btn-primary js-send">Send</button></div>\
+    <div class="subtabs"><button class="subtab active">Body</button><button class="subtab">Headers</button><button class="subtab">Params</button><button class="subtab">Auth</button></div>\
+    <pre class="code-block">{\n  "customer_id": "cus_4471",\n  "items": [{ "sku": "wb-014", "qty": 2 }]\n}</pre>\
+  </div>\
+  <div><div class="section-label">Response</div><div class="card"><div class="response-header"><span class="status-pill status-success">200 OK</span><span class="response-time">142ms</span></div><pre class="code-block">{ "id": 8841, "status": "pending" }</pre></div></div>\
+  <div><div class="section-label">What happened</div><div class="card"><div class="rollup">\
+    <div class="rollup-state active" data-state="populated"><div class="rollup-row">\
+      <button class="rollup-item"><svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><ellipse cx="10" cy="5" rx="6" ry="2.3"/><path d="M4 5v10c0 1.3 2.7 2.3 6 2.3s6-1 6-2.3V5"/><path d="M4 10c0 1.3 2.7 2.3 6 2.3s6-1 6-2.3"/></svg>DB <span class="rollup-count">3 writes</span><span class="rollup-arrow">→</span></button>\
+      <button class="rollup-item"><svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 3.5h9l3 3v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-12a1 1 0 0 1 1-1Z" stroke-linejoin="round"/><path d="M6 9h8M6 12h8M6 15h5"/></svg>Log <span class="rollup-count">12 lines</span><span class="rollup-arrow">→</span></button>\
+      <button class="rollup-item"><svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="14" height="10" rx="1.5"/><path d="m3.5 5.8 6.5 5 6.5-5"/></svg>Email <span class="rollup-count">1 sent</span><span class="rollup-arrow">→</span></button>\
+    </div></div>\
+    <div class="rollup-state" data-state="zero"><span class="rollup-empty">No observed effects — nothing in the watched tables, logs, or email changed.</span></div>\
+    <div class="rollup-state" data-state="partial"><div class="rollup-row"><span class="rollup-warning">⚠ DB unable to verify</span><button class="rollup-item"><svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 3.5h9l3 3v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-12a1 1 0 0 1 1-1Z" stroke-linejoin="round"/><path d="M6 9h8M6 12h8M6 15h5"/></svg>Log <span class="rollup-count">4 lines</span><span class="rollup-arrow">→</span></button><span class="rollup-empty">Email 0 sent</span></div></div>\
+    <div class="rollup-state" data-state="loading"><div class="rollup-skeleton"><div class="skeleton-chip"></div><div class="skeleton-chip"></div><div class="skeleton-chip"></div></div></div>\
+  </div></div>\
+  <div class="demo-controls" style="margin-top:-6px;"><span class="demo-label">Preview rollup state:</span><button class="chip active js-rollup-chip" data-state="populated">Populated</button><button class="chip js-rollup-chip" data-state="zero">Zero-effects</button><button class="chip js-rollup-chip" data-state="partial">Partial-failure</button><button class="chip js-rollup-chip" data-state="loading">Loading</button></div>\
+  </div>\
+</div>',
+    db: '\
+<div class="panel-db">\
+  <aside class="db-tree"><div class="db-tree-head">orders_db<span class="watch-hint">● watched</span></div><div class="db-tree-list">\
+    <div class="db-tree-group">public</div>\
+    <div class="db-tree-table active"><button class="watch-toggle active" aria-pressed="true"></button><span>orders</span></div>\
+    <div class="db-tree-table"><button class="watch-toggle active" aria-pressed="true"></button><span>order_items</span></div>\
+    <div class="db-tree-table"><button class="watch-toggle" aria-pressed="false"></button><span>inventory</span></div>\
+    <div class="db-tree-table"><button class="watch-toggle" aria-pressed="false"></button><span>users</span></div>\
+    <div class="db-tree-table"><button class="watch-toggle" aria-pressed="false"></button><span>audit_log</span></div>\
+  </div></aside>\
+  <div class="db-main">\
+    <div class="db-mode-bar"><button class="active js-dbmode" data-dbmode="browse">Browse</button><button class="js-dbmode" data-dbmode="query">Query</button></div>\
+    <div class="db-view js-db-browse"><div class="db-toolbar">orders <span class="row-count">1,204 rows</span></div><div class="grid-scroll"><table class="data-grid"><thead><tr><th>id</th><th>customer_id</th><th>status</th><th>total</th><th>created_at</th></tr></thead><tbody>\
+      <tr><td>8841</td><td>cus_4471</td><td><span class="grid-pill">pending</span></td><td>84.00</td><td>2026-07-30 14:02:11</td></tr>\
+      <tr><td>8840</td><td>cus_2290</td><td><span class="grid-pill">shipped</span></td><td>212.50</td><td>2026-07-30 11:47:02</td></tr>\
+      <tr><td>8839</td><td>cus_9931</td><td><span class="grid-pill">shipped</span></td><td>36.00</td><td>2026-07-29 22:14:55</td></tr>\
+    </tbody></table></div></div>\
+    <div class="db-view js-db-query" hidden><textarea class="query-editor">SELECT * FROM orders\nWHERE status = \'pending\'\nORDER BY created_at DESC\nLIMIT 20;</textarea><button class="btn-primary" style="align-self:flex-start;">Run</button><div class="grid-scroll"><table class="data-grid"><thead><tr><th>id</th><th>customer_id</th><th>status</th></tr></thead><tbody><tr><td>8841</td><td>cus_4471</td><td><span class="grid-pill">pending</span></td></tr></tbody></table></div></div>\
+  </div>\
+</div>',
+    log: '\
+<div class="panel-log">\
+  <div class="log-toolbar"><span class="log-source"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 3.5h9l3 3v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-12a1 1 0 0 1 1-1Z" stroke-linejoin="round"/></svg><span class="log-source-path">/var/log/app/server.log</span></span><input class="log-search js-log-search" placeholder="Filter…"><span class="log-live"><span class="log-live-dot"></span>Live</span></div>\
+  <div class="log-stream">\
+    <div class="log-line level-info"><span class="log-time">14:02:11.482</span><span class="log-level info">INFO</span><span class="log-msg">order created id=8841 customer=cus_4471 total=84.00</span></div>\
+    <div class="log-line level-info"><span class="log-time">14:02:11.491</span><span class="log-level info">INFO</span><span class="log-msg">inventory decremented sku=wb-014 qty=2</span></div>\
+    <div class="log-line level-warn"><span class="log-time">14:02:11.501</span><span class="log-level warn">WARN</span><span class="log-msg">inventory low for sku=wb-014 (2 remaining)</span></div>\
+    <div class="log-line level-info"><span class="log-time">14:02:11.512</span><span class="log-level info">INFO</span><span class="log-msg">sending order confirmation email to customer@example.com</span></div>\
+    <div class="log-line level-error"><span class="log-time">14:02:11.520</span><span class="log-level error">ERROR</span><span class="log-msg">smtp send failed: connection timeout after 3000ms, retrying (1/3)</span></div>\
+    <div class="log-line level-info"><span class="log-time">14:02:11.890</span><span class="log-level info">INFO</span><span class="log-msg">email sent id=em_7712 to=customer@example.com</span></div>\
+    <div class="log-line level-info"><span class="log-time">14:02:11.918</span><span class="log-level info">INFO</span><span class="log-msg">request completed method=POST path=/api/orders status=200 duration_ms=142</span></div>\
+  </div>\
+</div>',
+    email: '\
+<div class="panel-email">\
+  <div class="email-layout"><aside class="email-list">\
+    <div class="email-item active js-email-item" data-subject="Order confirmation #8841" data-from="orders@shop.test" data-to="customer@example.com"><div class="email-item-top"><span class="email-subject">Order confirmation #8841</span><span class="email-time">14:02</span></div><div class="email-from">orders@shop.test</div></div>\
+    <div class="email-item js-email-item" data-subject="Welcome to the beta" data-from="hello@shop.test" data-to="cus_2290@example.com"><div class="email-item-top"><span class="email-subject">Welcome to the beta</span><span class="email-time">11:47</span></div><div class="email-from">hello@shop.test</div></div>\
+    <div class="email-item js-email-item" data-subject="Your refund has been processed" data-from="orders@shop.test" data-to="cus_4471@example.com"><div class="email-item-top"><span class="email-subject">Your refund has been processed</span><span class="email-time">Yesterday</span></div><div class="email-from">orders@shop.test</div></div>\
+  </aside>\
+  <div class="email-viewer"><div class="email-viewer-head"><div class="email-viewer-subject js-email-subject">Order confirmation #8841</div><div class="email-viewer-meta js-email-meta">from orders@shop.test · to customer@example.com</div></div>\
+  <div class="email-mode-bar"><button class="active">HTML</button><button>Plain</button><button>Raw</button><button>Headers</button></div>\
+  <div class="email-body-frame"><div class="email-body-html"><h2>Thanks for your order, Jamie.</h2><p>Order #8841 · 2 × Widget Bracket (wb-014) · $84.00</p><p>We\'ll email you again once it ships.</p></div></div>\
+  </div></div>\
+  <div class="email-status">Listening on <b>localhost:1025</b> — <a href="#">change port in Settings</a></div>\
+</div>'
+  };
+
+  function wireTool(root, tool) {
+    if (tool === 'api') {
+      var chips = root.querySelectorAll('.js-rollup-chip');
+      var states = root.querySelectorAll('.rollup-state');
+      chips.forEach(function (chip) {
+        chip.addEventListener('click', function () {
+          chips.forEach(function (c) { c.classList.remove('active'); });
+          chip.classList.add('active');
+          states.forEach(function (s) { s.classList.toggle('active', s.dataset.state === chip.dataset.state); });
+        });
+      });
+      var sendBtn = root.querySelector('.js-send');
+      sendBtn.addEventListener('click', function () {
+        var btn = this;
+        btn.disabled = true; btn.textContent = 'Sending…';
+        chips.forEach(function (c) { c.classList.remove('active'); });
+        root.querySelector('.js-rollup-chip[data-state="loading"]').classList.add('active');
+        states.forEach(function (s) { s.classList.toggle('active', s.dataset.state === 'loading'); });
+        setTimeout(function () {
+          btn.disabled = false; btn.textContent = 'Send';
+          root.querySelector('.js-rollup-chip[data-state="loading"]').classList.remove('active');
+          root.querySelector('.js-rollup-chip[data-state="populated"]').classList.add('active');
+          states.forEach(function (s) { s.classList.toggle('active', s.dataset.state === 'populated'); });
+        }, 700);
+      });
+    } else if (tool === 'db') {
+      root.querySelectorAll('.js-dbmode').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          root.querySelectorAll('.js-dbmode').forEach(function (b) { b.classList.remove('active'); });
+          btn.classList.add('active');
+          root.querySelector('.js-db-browse').hidden = btn.dataset.dbmode !== 'browse';
+          root.querySelector('.js-db-query').hidden = btn.dataset.dbmode !== 'query';
+        });
+      });
+      root.querySelectorAll('.db-tree-table').forEach(function (row) {
+        row.addEventListener('click', function (e) {
+          if (e.target.classList.contains('watch-toggle')) return;
+          root.querySelectorAll('.db-tree-table').forEach(function (r) { r.classList.remove('active'); });
+          row.classList.add('active');
+        });
+      });
+      root.querySelectorAll('.watch-toggle').forEach(function (btn) {
+        btn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          var now = !btn.classList.contains('active');
+          btn.classList.toggle('active', now);
+          btn.setAttribute('aria-pressed', String(now));
+        });
+      });
+    } else if (tool === 'log') {
+      var search = root.querySelector('.js-log-search');
+      search.addEventListener('input', function () {
+        var q = this.value.trim().toLowerCase();
+        root.querySelectorAll('.log-line').forEach(function (line) {
+          var match = !q || line.textContent.toLowerCase().indexOf(q) !== -1;
+          line.classList.toggle('hidden-by-filter', !match);
+        });
+      });
+    } else if (tool === 'email') {
+      root.querySelectorAll('.js-email-item').forEach(function (item) {
+        item.addEventListener('click', function () {
+          root.querySelectorAll('.js-email-item').forEach(function (i) { i.classList.remove('active'); });
+          item.classList.add('active');
+          root.querySelector('.js-email-subject').textContent = item.dataset.subject;
+          root.querySelector('.js-email-meta').textContent = 'from ' + item.dataset.from + ' · to ' + item.dataset.to;
+        });
+      });
+    }
+  }
+
+  function renderTool(el, tool) {
+    el.innerHTML = TOOL_HTML[tool];
+    wireTool(el, tool);
+  }
+
+  var pane1 = document.getElementById('pane1');
+  var pane2 = document.getElementById('pane2');
+  renderTool(pane1, 'api');
+  renderTool(pane2, 'db');
+
+  document.querySelectorAll('#mainTabbar button[data-tool]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('#mainTabbar button[data-tool]').forEach(function (b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      renderTool(pane1, btn.dataset.tool);
+    });
+  });
+  document.querySelectorAll('#pane2Bar button[data-tool]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('#pane2Bar button[data-tool]').forEach(function (b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      renderTool(pane2, btn.dataset.tool);
+    });
+  });
+  var contentWrap = document.getElementById('contentWrap');
+  document.getElementById('splitBtn').addEventListener('click', function () { contentWrap.classList.remove('single'); contentWrap.classList.add('split'); });
+  document.getElementById('closeSplit').addEventListener('click', function () { contentWrap.classList.remove('split'); contentWrap.classList.add('single'); });
+
+  // Sessions: pure history, never restricts what the main column shows
+  document.querySelectorAll('.session-item').forEach(function (item) {
+    item.addEventListener('click', function () {
+      document.querySelectorAll('.session-item').forEach(function (i) { i.classList.remove('active'); });
+      item.classList.add('active');
+    });
+  });
+  document.getElementById('newSession').addEventListener('click', function () {
+    var list = document.getElementById('sessionList');
+    var item = document.createElement('div');
+    item.className = 'session-item active';
+    item.innerHTML = '<span class="session-name">Untitled session</span><span class="session-badge">now</span>';
+    document.querySelectorAll('.session-item').forEach(function (i) { i.classList.remove('active'); });
+    list.prepend(item);
+    item.addEventListener('click', function () {
+      document.querySelectorAll('.session-item').forEach(function (i) { i.classList.remove('active'); });
+      item.classList.add('active');
+    });
+    contentWrap.classList.remove('split'); contentWrap.classList.add('single');
+    document.querySelectorAll('#mainTabbar button[data-tool]').forEach(function (b) { b.classList.toggle('active', b.dataset.tool === 'api'); });
+    renderTool(pane1, 'api');
+  });
+
+  // Chat dock toggle
+  var bodyGrid = document.getElementById('bodyGrid');
+  var chatToggle = document.getElementById('chatToggle');
+  function setChat(open) { bodyGrid.classList.toggle('chat-closed', !open); chatToggle.setAttribute('aria-pressed', String(open)); }
+  chatToggle.addEventListener('click', function () { setChat(bodyGrid.classList.contains('chat-closed')); });
+  document.getElementById('chatClose').addEventListener('click', function () { setChat(false); });
+
+  // Theme toggle
+  var isDark = !window.matchMedia('(prefers-color-scheme: light)').matches;
+  var themeIcon = document.getElementById('themeIcon');
+  function applyTheme() {
+    document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
+    themeIcon.innerHTML = isDark
+      ? '<path d="M15.5 11.8A6.5 6.5 0 0 1 8.2 4.5 6.5 6.5 0 1 0 15.5 11.8Z" stroke-linejoin="round"/>'
+      : '<circle cx="10" cy="10" r="4"/><path d="M10 2v2M10 16v2M18 10h-2M4 10H2M15.5 4.5l-1.4 1.4M5.9 14.1l-1.4 1.4M15.5 15.5l-1.4-1.4M5.9 5.9 4.5 4.5" stroke-linecap="round"/>';
+  }
+  document.getElementById('themeToggle').addEventListener('click', function () { isDark = !isDark; applyTheme(); });
+  applyTheme();
+</script>
