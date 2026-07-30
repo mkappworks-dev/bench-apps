@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One observed log line. `captured_at_ms` is DevBench's own clock at the
 /// moment the bytes were read — correlation windows are bounded by this, NOT
@@ -347,6 +347,165 @@ impl SourceTailer {
     }
 }
 
+use std::sync::Mutex;
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LogSourceStatus {
+    pub id: String,
+    pub label: String,
+    pub path: String,
+    /// "live" while the last poll succeeded, "error" once one failed.
+    pub state: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct LogPage {
+    pub lines: Vec<LogLine>,
+    /// The id to pass back as `after_id` on the next poll.
+    pub next_id: u64,
+    /// How many lines were evicted before the caller could read them. Non-zero
+    /// means the view is incomplete and the UI must say so.
+    pub dropped: u64,
+}
+
+struct Source {
+    status: LogSourceStatus,
+    tailer: SourceTailer,
+}
+
+/// Shared, Tauri-managed log observation state. Interior mutability behind one
+/// `Mutex` because every operation is short (a metadata call plus a bounded
+/// read) and the alternative — a lock per source plus one for the buffer —
+/// buys nothing at the handful-of-sources scale this tool operates at.
+pub struct LogState {
+    inner: Mutex<Inner>,
+}
+
+struct Inner {
+    buffer: LogBuffer,
+    sources: Vec<Source>,
+}
+
+impl LogState {
+    pub fn new() -> Self {
+        Self::with_capacity(MAX_BUFFERED_LINES)
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            inner: Mutex::new(Inner { buffer: LogBuffer::new(capacity), sources: Vec::new() }),
+        }
+    }
+
+    pub fn add_source(&self, label: String, path: PathBuf) -> Result<LogSourceStatus, String> {
+        let metadata = std::fs::metadata(&path)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        if !metadata.is_file() {
+            return Err(format!(
+                "{} is not a regular file — DevBench v1 tails regular files only; \
+                 pipe stdout with `yourapp 2>&1 | tee /tmp/devbench.log` and point at that file",
+                path.display()
+            ));
+        }
+
+        let status = LogSourceStatus {
+            id: Uuid::new_v4().to_string(),
+            label,
+            path: path.display().to_string(),
+            state: "live".to_string(),
+            error: None,
+        };
+        let tailer = SourceTailer::new(status.id.clone(), path);
+
+        let mut inner = self.inner.lock().map_err(|_| "log state poisoned".to_string())?;
+        inner.sources.push(Source { status: status.clone(), tailer });
+        Ok(status)
+    }
+
+    pub fn remove_source(&self, id: &str) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|_| "log state poisoned".to_string())?;
+        let before = inner.sources.len();
+        inner.sources.retain(|s| s.status.id != id);
+        if inner.sources.len() == before {
+            return Err(format!("no log source with id {id}"));
+        }
+        Ok(())
+    }
+
+    pub fn list_sources(&self) -> Vec<LogSourceStatus> {
+        match self.inner.lock() {
+            Ok(inner) => inner.sources.iter().map(|s| s.status.clone()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    pub fn read_since(&self, after_id: u64, source_id: Option<&str>, limit: usize) -> LogPage {
+        match self.inner.lock() {
+            Ok(inner) => {
+                let lines = inner.buffer.since(after_id, source_id, limit);
+                let next_id = lines.last().map(|l| l.id).unwrap_or(after_id);
+                let dropped = inner.buffer.evicted_through_id().saturating_sub(after_id);
+                LogPage { lines, next_id, dropped }
+            }
+            Err(_) => LogPage { lines: Vec::new(), next_id: after_id, dropped: 0 },
+        }
+    }
+
+    pub fn next_line_id(&self) -> u64 {
+        match self.inner.lock() {
+            Ok(inner) => inner.buffer.next_id(),
+            Err(_) => 0,
+        }
+    }
+
+    /// `None` means no source was configured, so logs were NOT observed.
+    /// `Some(vec![])` means we were watching and nothing was logged. These are
+    /// different claims and the UI renders them differently.
+    pub fn collect_window(&self, after_id: u64, until_ms: i64) -> Option<Vec<LogLine>> {
+        let inner = self.inner.lock().ok()?;
+        if inner.sources.is_empty() {
+            return None;
+        }
+        Some(inner.buffer.between(after_id, until_ms))
+    }
+
+    /// Polls every configured source once. Errors are recorded on the source's
+    /// status rather than propagated — one broken source must not stop the
+    /// others, and the Log tab surfaces the error next to that source.
+    pub fn poll_all(&self, now_ms: i64) {
+        let mut inner = match self.inner.lock() {
+            Ok(i) => i,
+            Err(_) => return,
+        };
+        let Inner { buffer, sources } = &mut *inner;
+        for source in sources.iter_mut() {
+            match source.tailer.poll_once(buffer, now_ms) {
+                Ok(()) => {
+                    source.status.state = "live".to_string();
+                    source.status.error = None;
+                }
+                Err(e) => {
+                    // Push a synthetic warning only on the transition into the
+                    // error state, not on every 250 ms poll.
+                    if source.status.state != "error" {
+                        buffer.push_note(&source.status.id, "WARN", &format!("log source unreadable: {e}"), now_ms);
+                    }
+                    source.status.state = "error".to_string();
+                    source.status.error = Some(e);
+                }
+            }
+        }
+    }
+}
+
+impl Default for LogState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,5 +700,71 @@ mod tests {
         let only_server = buffer.since(0, Some("server"), 100);
         assert_eq!(only_server.len(), 2);
         assert!(only_server.iter().all(|l| l.source_id == "server"));
+    }
+
+    #[test]
+    fn collect_window_returns_none_when_no_source_is_running() {
+        let state = LogState::new();
+        assert_eq!(state.collect_window(0, 10_000), None);
+    }
+
+    #[test]
+    fn collect_window_returns_an_empty_vec_when_a_source_is_running_but_quiet() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.log");
+        std::fs::write(&path, "").unwrap();
+
+        let state = LogState::new();
+        state.add_source("server.log".into(), path).unwrap();
+
+        assert_eq!(state.collect_window(0, 10_000), Some(vec![]));
+    }
+
+    #[test]
+    fn poll_all_marks_an_unreadable_source_as_errored_without_panicking() {
+        let state = LogState::new();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gone.log");
+        std::fs::write(&path, "").unwrap();
+        let source = state.add_source("gone.log".into(), path.clone()).unwrap();
+
+        std::fs::remove_file(&path).unwrap();
+        state.poll_all(1_000);
+
+        let sources = state.list_sources();
+        let found = sources.iter().find(|s| s.id == source.id).unwrap();
+        assert_eq!(found.state, "error");
+        assert!(found.error.as_deref().unwrap().contains("gone.log"));
+    }
+
+    #[test]
+    fn read_since_reports_dropped_lines_rather_than_under_reporting_silently() {
+        let state = LogState::with_capacity(2);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.log");
+        std::fs::write(&path, "").unwrap();
+        state.add_source("app.log".into(), path.clone()).unwrap();
+        state.poll_all(1_000);
+
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        use std::io::Write as _;
+        writeln!(f, "one").unwrap();
+        writeln!(f, "two").unwrap();
+        writeln!(f, "three").unwrap();
+        f.flush().unwrap();
+        state.poll_all(2_000);
+
+        let page = state.read_since(0, None, 100);
+        assert_eq!(page.lines.len(), 2);
+        assert!(page.dropped > 0, "caller must be able to see that lines were evicted");
+    }
+
+    #[test]
+    fn add_source_rejects_a_path_that_is_not_a_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = LogState::new();
+        let result = state.add_source("a directory".into(), dir.path().to_path_buf());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("regular file"));
     }
 }
