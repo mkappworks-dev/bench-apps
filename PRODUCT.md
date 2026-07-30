@@ -39,6 +39,7 @@ The differentiator is not any single tool (API client, DB browser, log viewer, a
 - Explicitly deferred: other DB engines, request mocking, collections/environments polish, AI narration of the rollup, cloud sync, hosted AI keys, team features (all live in a separate, proprietary cloud layer — not part of DevBench itself).
 - Correlation window is time-based (default 5s post-response, configurable), not trace-based — this is a deliberate v1 trade-off for zero-instrumentation setup, not a technical limitation to hide from the design.
 - Failure states must never read as false negatives: an unverifiable DB snapshot must show "unable to verify," never "0 writes."
+- Sessions (a sidebar history/organization layer for named investigations) never restrict which tools are visible — a session's type is an auto-inferred tag for scanning, not a gate. Split view lets any two tools be open side by side within one session.
 
 ## Brand Commitments
 

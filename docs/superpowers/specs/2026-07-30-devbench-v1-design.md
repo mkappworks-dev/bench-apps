@@ -38,12 +38,19 @@ AI narration is deferred deliberately: it's a layer on top of a working rollup, 
 - **Fully separate tabs with no automatic correlation** and **a single fully-merged timeline replacing per-tool tabs** were both considered as the app's information architecture and rejected in favor of a hybrid (see below): the former makes the differentiator easy to ignore (a 5th tab nobody checks), the latter weakens each tool as a standalone deep-dive surface.
 - **OpenTelemetry trace-based correlation** and **DB query-log tailing** were considered as the correlation mechanism and rejected in favor of before/after table snapshots: both require backend cooperation (existing tracing instrumentation, or elevated/managed DB log access) that most early-stage target users won't have. Before/after diffing works immediately against any Postgres connection with zero backend changes.
 - **Additional tool categories** (cache/Redis inspector, background jobs, outbound HTTP/webhook inspector, AI/LLM call inspector, message queues, object storage, feature flags, container/infra stats) were evaluated as candidates for the DB/API/Log/Email lineup and deliberately excluded from v1 to keep scope shippable. See Roadmap below — this is not a rejection of the ideas, just a sequencing decision.
+- **Scoped sessions** (a session's type restricts which tool is visible, chosen at creation) and a **command-palette-driven variant** of the same restriction were both considered for the session/history model and rejected in favor of a pure organizational layer: debugging is exploratory, and forcing a type commitment before a user knows what they'll need works against the correlation rollup being reliably available mid-investigation.
 
 ## Information architecture
 
 Hybrid: each of the four tools (API, DB, Log, Email) has a full, independent tab for its browse/manage mode — this is the familiar, power-user-friendly surface matching what TablePlus/Postman/Mailpit users already expect, and it keeps each tool useful on its own, not just as a satellite of the correlation feature.
 
 The correlation feature is not a fifth tab. It's a "What happened" rollup attached directly to the fired request in the API tab (below/beside the response): a condensed summary (e.g. "3 DB writes, 12 log lines, 1 email") with jump-links that deep-link into the relevant tab, pre-filtered/scrolled to the relevant rows. This mirrors how Chrome DevTools links Network entries to Console/Application panels rather than merging everything into one view — it keeps each tool's depth intact while making the correlation impossible to miss, since it appears exactly where the triggering action happened.
+
+### Shell and sessions
+
+Three-column shell: sessions sidebar → main content (the four-tab hybrid above) → chat dock. Sessions are a pure organizational/history layer — never a view restriction; a session's type badge is auto-inferred for scanning/search, not a gate on which tools are visible. This was chosen over two alternatives explored and rejected (see below): scoping a session to a single tool type, and a command-palette-driven variant of the same restriction. The chat dock is collapsible and resizes the content column when toggled, never overlays it.
+
+**Split view:** within the main content area, a "Split" control divides it into two independently-tabbed panes — any of the four tools in either pane — following VS Code's split-editor pattern. Answers the case where more than one tool needs to be visible at once (e.g. watching the DB update live while firing requests) without a fixed, hardcoded pairing.
 
 ## Architecture
 
@@ -54,6 +61,7 @@ The correlation feature is not a fifth tab. It's a "What happened" rollup attach
 
 ## Components
 
+- **Sessions sidebar:** history/organization layer for named investigations; auto-inferred type tags for scanning, never a view restriction.
 - **Nav** (shared): switches between API / DB / Log / Email tabs and Settings.
 - **API tab:** request builder, response pane, inline "What happened" rollup with deep-links.
 - **DB tab:** connection tree, schema browser, query editor, data grid. Also where watched tables are toggled on/off.
@@ -84,17 +92,9 @@ Evaluated by fit with the correlation engine (does it plug into "before/after di
 5. Lower priority: message queue inspector (Kafka/RabbitMQ — protocol-diverse), object storage inspector (narrow, upload-only use case), JWT/session inspector (cheap, but belongs as an API-tab feature rather than a new tool), GraphQL-aware API mode (depends on target ICP).
 6. Rejected direction: feature-flag inspector and env/secrets diff viewer (don't reinforce the correlation differentiator), container/infra observability (scope creep into an already-crowded, different category served by Docker Desktop/Datadog-class tools).
 
-## Visual direction (provisional)
+## Visual direction
 
-Captured ahead of any screens existing, per impeccable's Operate-mode guidance (`operate.md`) and the color-strategy framework in `new-work.md`. This is deliberately provisional — impeccable's own process writes the durable `DESIGN.md` from the built UI, not before it, so this section should be treated as a brief, not a rulebook, and is expected to be superseded once real screens exist.
-
-- **Color strategy:** Restrained (neutral scale + one accent) — the default `new-work.md` prescribes for a visitor who "came to operate," and matches the chosen direction below.
-- **Direction:** Neutral minimal, Linear/Vercel-style — chosen over a dark-first hacker/terminal identity and a per-tool color-coded identity (see rejected alternatives in the scope section above). Supports both light and dark, following OS preference; neither is the "identity," unlike the dark-first alternative that was passed over.
-- **Type:** One family carries headings, labels, body, and UI per `operate.md` ("Product UIs don't need display/body pairing"). Geist + Geist Mono — not Inter (the discouraged default), and a natural fit given "Vercel-style" was the named reference and Geist is Vercel's own typeface. Fixed rem scale (not fluid), tighter step ratio (~1.125–1.2) than a marketing surface would use.
-- **Accent:** A single saturated blue, not violet/purple — deliberately avoiding the "AI-purple" default both installed design skills flag, and avoiding green/amber/red since those are reserved for semantic states (success/warning/error) and would collide with the accent if reused for primary actions or selection.
-- **Density:** Moderate-dense, not airy — DevBench's content (request/response bodies, data grids, log lines) is data-heavy, and `operate.md` explicitly permits density ("tables with many rows... dense information when users need it") over a sparser marketing-surface feel.
-- **Motion:** 150–250ms, state-conveying only (loading, feedback, reveal) — no orchestrated entrance sequences; per `operate.md`, "users are in flow; don't make them wait for choreography."
-- **Corner radius:** one consistent scale across the app (exact value TBD when screens are built) rather than mixing sharp and soft — per the shape-consistency principle both installed skills independently flag as a common AI-generated-UI tell.
+See `DESIGN.md` at the repo root — written from the built mockups (interactive HTML prototypes of the app shell, API tab, and session sidebar variants), superseding this section's earlier provisional brief. Summary: monochrome (no accent hue — inversion only), dark-primary with fully independent light support, ghosty persistent chrome with glass reserved for transient overlays only, OS-native system sans + Commit Mono target, an original mark encoding the correlation mechanic. The provisional blue-accent, Geist-based direction originally drafted here was iterated away after review against real screens — both choices read as generic/templated once actually rendered, which text-only description hadn't surfaced.
 
 ## Open questions for implementation planning
 
