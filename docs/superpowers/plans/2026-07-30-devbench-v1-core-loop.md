@@ -10,6 +10,7 @@
 
 ## Global Constraints
 
+- **Local Postgres required before running any backend test in this plan:** `docker compose up -d` at the repo root (see `docker-compose.yml`) starts a Postgres matching every task's default connection (`localhost:5432`, db `devbench_test`, user/password `postgres`/`postgres`). This is not a gap to fix later — the plan deliberately tests the correlation/diff logic against a real Postgres, never a mock, because that logic's correctness depends on real Postgres behavior (type casting, catalog introspection) that a mock would just re-encode the developer's own assumptions into.
 - MIT license on all code in `apps/devbench` — no proprietary dependencies with incompatible licenses.
 - Local-first: the app calls only the user's own target API and their own Postgres instance. No DevBench-operated server exists or is contacted anywhere in this plan.
 - All DB/HTTP/filesystem operations happen in Rust, invoked from the frontend exclusively via `@tauri-apps/api`'s `invoke()` — the frontend holds no database driver.
