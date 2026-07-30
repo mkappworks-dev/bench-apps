@@ -2217,8 +2217,8 @@ describe("LogSourcesSidebar", () => {
         onAdd={() => {}}
       />,
     );
-    expect(screen.getByRole("button", { name: /server\.log/ })).toHaveAttribute("aria-current", "true");
-    expect(screen.getByRole("button", { name: /worker\.log/ })).toHaveAttribute("aria-current", "false");
+    expect(screen.getByRole("button", { name: "server.log" })).toHaveAttribute("aria-current", "true");
+    expect(screen.getByRole("button", { name: "worker.log" })).toHaveAttribute("aria-current", "false");
   });
 
   it("shows the error text for a source that cannot be read", () => {
@@ -2233,7 +2233,7 @@ describe("LogSourcesSidebar", () => {
     render(
       <LogSourcesSidebar sources={sources} activeSourceId={null} onSelect={onSelect} onRemove={() => {}} onAdd={() => {}} />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /worker\.log/ }));
+    fireEvent.click(screen.getByRole("button", { name: "worker.log" }));
     expect(onSelect).toHaveBeenCalledWith("b");
   });
 
@@ -2247,6 +2247,13 @@ describe("LogSourcesSidebar", () => {
   });
 });
 ```
+
+Each source row below renders two buttons: a select button (accessible name is the
+label alone, e.g. `"server.log"`) and a remove button (`aria-label={\`Remove ${label}\`}`,
+e.g. `"Remove server.log"`). `getByRole`'s regex name matcher is an unanchored
+substring test, so a regex like `/server\.log/` matches BOTH buttons and throws
+"Found multiple elements" — use exact strings (`"server.log"`, `"worker.log"`) for
+the select-button matchers above, as written.
 
 Run: `bun run test -- LogSourcesSidebar.test.tsx`
 Expected: FAIL — the component does not exist.
