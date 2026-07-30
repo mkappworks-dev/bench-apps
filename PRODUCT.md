@@ -10,7 +10,7 @@ web
 
 ## Stack
 
-React frontend, Tauri (Rust) shell. Rust commands handle Postgres connection/snapshot-diff, the SMTP catcher, file/stdout tailing, and request execution. Frontend consumes a shared `packages/ui-shared` component library (nav, AI chat box, settings panel) intended for reuse across a broader family of developer-focused apps; DevBench is the first app built, with the shared layer extracted from its actual needs rather than designed upfront.
+React + Vite frontend, Tauri (Rust) shell. Bun (package manager/workspaces) + Turborepo (task orchestration) for the monorepo. Zustand for state, TanStack Table/Virtual for the DB grid and Log stream, Tailwind CSS v4 for styling (configured against `DESIGN.md`'s tokens, not Tailwind's defaults), Base UI for headless interactive primitives (tabs, toggle groups, selects — fully reskinned, not their default look). Rust side: sqlx for both the user's Postgres connections and DevBench's own local SQLite storage (sessions, archive, request history, connection configs); Rust commands also handle the SMTP catcher, file/stdout tailing, and request execution. Full reasoning for each pick is in the v1 design spec's Tech Stack section. Frontend consumes a shared `packages/ui-shared` component library (nav, AI chat box, settings panel) intended for reuse across a broader family of developer-focused apps; DevBench is the first app built, with the shared layer extracted from its actual needs rather than designed upfront.
 
 ## Users
 

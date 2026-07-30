@@ -57,8 +57,23 @@ Three-column shell: sessions sidebar → main content (the four-tab hybrid above
 
 - **Shell:** Tauri. Rust commands handle: Postgres connection + snapshot/diff, the SMTP server (email catcher), file/stdout tailing, and request execution.
 - **Frontend:** React, consuming `packages/ui-shared` for nav/chat/settings.
-- **State:** connections (DB + log source + SMTP port), watched-table selections, and request history are stored locally (SQLite or flat files in the app data directory) — no backend dependency in v1.
+- **State:** connections (DB + log source + SMTP port), watched-table selections, request history, sessions, and archive are stored locally in **SQLite** (resolved — this data is relational, growing, and filterable, which flat files handle badly) — no backend dependency in v1.
 - **Correlation engine:** on request fire — snapshot watched tables (transaction-scoped read) → send the request → wait for the response → re-snapshot watched tables → collect log lines timestamped within the correlation window (default 5s post-response, configurable in Settings) → collect any SMTP messages received in that window → diff and bundle into the rollup.
+
+### Tech stack
+
+Reached through iterative back-and-forth, several of these are revisions of earlier picks — this list is the final state, not a log of the discussion:
+
+- **Monorepo:** Bun (package manager + workspaces) + Turborepo (task graph, caching, affected-only runs — package-manager-agnostic, explicitly supports Bun). Turborepo over Nx: Nx's plugin/generator ecosystem is more than a small team building one app needs; that reasoning holds regardless of package manager.
+- **Bundler/dev server:** Vite — the standard pairing for Tauri + React.
+- **State management:** Zustand — the app's state (active session, per-pane tool state doubled by split view, chat dock, theme, settings) is cross-cutting enough that plain Context's broad re-renders would hurt live log tailing specifically; not nested enough to justify Redux's ceremony.
+- **Data grid / list virtualization:** TanStack Table + TanStack Virtual, for the DB tab's grid and the Log tab's stream — both are unbounded, scrolling, potentially-large lists that need real virtualization, not just `overflow-y: auto`. Independent of the primitives/styling choices below.
+- **Styling:** Tailwind CSS v4, configured via the `@theme` directive to consume `DESIGN.md`'s tokens directly (CSS-native theme definition maps onto our CSS-custom-property tokens with less translation than v3's JS config would have needed) — not Tailwind's own default palette/spacing scale.
+- **UI primitives:** Base UI (base-ui.com — the Radix-author/MUI-team collaboration, not Uber's older Base Web) for generic interactive behavior only: tabs, toggle groups, selects. Fully reskinned against `DESIGN.md`, none of Base UI's or Tailwind's default look. Chosen over Radix UI as the actively-developed successor, accepting the real cost that shadcn's large Radix-based component-recipe ecosystem doesn't transfer as directly — more hand-adaptation, less copy-from-example, which is consistent with how bespoke the rest of this design already is. Fixes a real gap in the current mockup: the session list, DB table tree, and email inbox are plain clickable `<div>`s today, not keyboard-navigable list/tab primitives.
+- **Backend crates:** sqlx, for both the user's Postgres connections and our own local SQLite storage — one async, consistent API for both instead of separate crates.
+- **Testing:** Vitest + React Testing Library for components; tauri-driver + WebdriverIO for the end-to-end smoke test (Tauri's own supported path for driving the real built app, not just a web page).
+
+**Open, deliberately not decided here:** Vitest vs. Bun's own built-in test runner (`bun test`) — now a real option since Bun is already in the stack, worth a deliberate call in writing-plans rather than defaulting. MCP client protocol/library specifics — not yet researched.
 
 ## Components
 
@@ -71,7 +86,6 @@ All four tools follow the same internal pattern for consistency: a list sidebar 
 - **DB tab:** connection tree, schema browser, query editor, data grid. Also where watched tables are toggled on/off.
 - **Log tab:** a sources sidebar listing configured log sources (file paths or stdout pipes), each independently browsable — not a single active source with an inline picker. Live tail, search/filter apply to whichever source is selected.
 - **Email tab:** inbox list, message viewer (headers/body/raw).
-- **Settings** (shared): AI key (BYOK), correlation window duration, SMTP port.
 
 ## Error handling
 
@@ -103,4 +117,5 @@ See `DESIGN.md` at the repo root — written from the built mockups (interactive
 ## Open questions for implementation planning
 
 - Confirm "Log" means tailing the target backend's own log output (file/stdout), not DevBench's internal request history — this was an explicit assumption during design, not yet independently confirmed against a real target backend.
-- Exact local storage format for request history/connections (SQLite vs flat files) is unresolved — pick during planning based on query needs (e.g. searching history) versus simplicity.
+- Vitest vs. Bun's built-in test runner (`bun test`) — a real option now that Bun is in the stack, not decided here.
+- MCP client protocol/library specifics — not yet researched.
