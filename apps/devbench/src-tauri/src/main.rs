@@ -1,8 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use devbench::commands;
+use devbench::email_state::{EmailState, SmtpStatus, DEFAULT_SMTP_PORT};
 use devbench::local_db::LocalDb;
 use devbench::log_state::LogState;
+use devbench::smtp_catcher;
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -42,6 +44,45 @@ fn main() {
                 }
             });
 
+            let emails = Arc::new(EmailState::new());
+            // Bind BEFORE spawning: `serve()` blocks forever and can only
+            // report a bind failure by returning, so a port conflict would
+            // otherwise be invisible. Binding here turns it into a status the
+            // Email tab can show — and deliberately does NOT abort startup,
+            // because an app that refuses to launch cannot offer the "change
+            // the port in Settings" shortcut the spec asks for.
+            match smtp_catcher::bind(DEFAULT_SMTP_PORT) {
+                Ok(listener) => {
+                    let store = emails.store();
+                    emails.set_status(SmtpStatus {
+                        listening: true,
+                        port: DEFAULT_SMTP_PORT,
+                        error: None,
+                    });
+                    let emails_for_thread = Arc::clone(&emails);
+                    // A dedicated OS thread, not a tokio task: mailin-embedded
+                    // is blocking and runs its own scoped threadpool.
+                    std::thread::spawn(move || {
+                        if let Err(e) = smtp_catcher::serve(listener, store) {
+                            emails_for_thread.set_status(SmtpStatus {
+                                listening: false,
+                                port: DEFAULT_SMTP_PORT,
+                                error: Some(e),
+                            });
+                        }
+                    });
+                }
+                Err(e) => {
+                    eprintln!("SMTP catcher did not start: {e}");
+                    emails.set_status(SmtpStatus {
+                        listening: false,
+                        port: DEFAULT_SMTP_PORT,
+                        error: Some(e),
+                    });
+                }
+            }
+            app.manage(emails);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -55,6 +96,10 @@ fn main() {
             commands::logs::remove_log_source,
             commands::logs::list_log_sources,
             commands::logs::read_log_lines,
+            commands::email::list_emails,
+            commands::email::get_email,
+            commands::email::clear_emails,
+            commands::email::smtp_status,
             commands::sessions::create_session,
             commands::sessions::list_sessions,
             commands::sessions::list_archived_sessions,
