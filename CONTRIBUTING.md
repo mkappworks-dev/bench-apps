@@ -23,8 +23,13 @@ Include the `Co-Authored-By` trailer whenever Claude authored or co-authored the
 
 ## Branch names
 
-`<type>/<kebab-case-slug>`, matching the commit `type` above — e.g. `feat/devbench-core-loop`,
-`fix/db-connection-leak`, `docs/contributing-guide`.
+`<type>/<kebab-case-slug>`, using one of four types — narrower than the commit `type` list above,
+since every branch is either adding, fixing, doc-only, or everything else:
+
+- `feat/` — new functionality (e.g. `feat/devbench-core-loop`)
+- `fix/` — bug fixes (e.g. `fix/db-connection-leak`)
+- `doc/` — documentation-only changes (e.g. `doc/contributing-guide`)
+- `tech/` — everything else: chores, refactors, tests, perf, CI, build, tooling (e.g. `tech/upgrade-turborepo`)
 
 ## Pull requests
 
