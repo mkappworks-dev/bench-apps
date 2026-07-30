@@ -15,3 +15,17 @@ export interface FireRequestOutput {
 export function invokeFireRequest(input: FireRequestInput): Promise<FireRequestOutput> {
   return invoke("fire_request", { input });
 }
+
+export interface HistoryEntry {
+  id: string;
+  method: string;
+  url: string;
+  status_code: number;
+  response_body: string;
+  duration_ms: number;
+  fired_at: string;
+}
+
+export function invokeListHistory(): Promise<HistoryEntry[]> {
+  return invoke("list_history");
+}
