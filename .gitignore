@@ -26,3 +26,7 @@ target/
 # Claude Code local overrides - shared config lives in settings.json (committed);
 # settings.local.json is per-developer and not meant to be shared
 .claude/settings.local.json
+
+# Git worktrees created by EnterWorktree (isolated per-session workspaces,
+# each with its own nested .git - must never be swept into this repo)
+.claude/worktrees/
