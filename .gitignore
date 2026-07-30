@@ -1,0 +1,28 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tsbuildinfo
+
+# Build output
+dist/
+build/
+.turbo/
+
+# Rust / Tauri (Cargo.lock is intentionally NOT ignored - this is an application, not a library, and app lockfiles should be committed for reproducible builds)
+target/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# Claude Code local overrides - shared config lives in settings.json (committed);
+# settings.local.json is per-developer and not meant to be shared
+.claude/settings.local.json
