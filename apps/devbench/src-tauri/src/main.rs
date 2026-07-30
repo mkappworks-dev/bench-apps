@@ -44,6 +44,8 @@ fn main() {
                 }
             });
 
+            app.manage(Arc::new(devbench::correlation_state::CorrelationRegistry::new()));
+
             let emails = Arc::new(EmailState::new());
             // Bind BEFORE spawning: `serve()` blocks forever and can only
             // report a bind failure by returning, so a port conflict would
@@ -92,6 +94,7 @@ fn main() {
             commands::history::save_history_entry,
             commands::history::list_history,
             commands::correlation::run_correlated_request,
+            commands::correlation::collect_correlation_window,
             commands::logs::add_log_source,
             commands::logs::remove_log_source,
             commands::logs::list_log_sources,

@@ -2,6 +2,7 @@ use serde::Serialize;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Row};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tauri::State;
 
 use super::db::{connection_string, validate_identifier, DbConnectInput};
@@ -201,16 +202,97 @@ async fn save_correlation_history(
     }
 }
 
+use crate::correlation_state::{CorrelationRegistry, DEFAULT_CORRELATION_WINDOW_MS};
+use crate::log_state::{LogLine, LogState};
+
+#[derive(Debug, Serialize, PartialEq)]
+pub struct CorrelationWindowResult {
+    /// `None` means no log source was configured — logs were NOT observed.
+    /// `Some(vec![])` means we were tailing and nothing was logged.
+    pub log_lines: Option<Vec<LogLine>>,
+    /// True when the ring buffer evicted lines belonging to this window before
+    /// they were collected. The UI must render the count as "N+", never as N.
+    pub log_lines_truncated: bool,
+}
+
+/// The real orchestration. `now_ms` is injected so tests can place the window
+/// in the past and skip the wait entirely.
+pub async fn run_correlated_request_impl_with_registry(
+    request: FireRequestInput,
+    connection: DbConnectInput,
+    watched_tables: Vec<String>,
+    logs: &LogState,
+    registry: &CorrelationRegistry,
+    now_ms: i64,
+) -> Result<CorrelationResult, String> {
+    // Snapshot the log cursor BEFORE anything else: every line the backend
+    // writes from this instant on is attributable to this request.
+    let from_log_id = logs.next_line_id().saturating_sub(1);
+
+    let mut result =
+        run_correlated_request_impl(request, connection, watched_tables, logs).await?;
+
+    result.correlation_id = registry.open(from_log_id, now_ms + DEFAULT_CORRELATION_WINDOW_MS);
+    Ok(result)
+}
+
+pub async fn collect_correlation_window_impl(
+    registry: &CorrelationRegistry,
+    logs: &LogState,
+    correlation_id: String,
+    now_ms: i64,
+) -> Result<CorrelationWindowResult, String> {
+    let window = registry
+        .take(&correlation_id)
+        .ok_or_else(|| format!("no open correlation window with id {correlation_id}"))?;
+
+    let remaining_ms = window.window_ends_at_ms - now_ms;
+    if remaining_ms > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(remaining_ms as u64)).await;
+    }
+
+    let log_lines = logs.collect_window(window.from_log_id, window.window_ends_at_ms);
+    let log_lines_truncated = log_lines.is_some()
+        && logs.read_since(window.from_log_id, None, 1).dropped > 0;
+
+    Ok(CorrelationWindowResult { log_lines, log_lines_truncated })
+}
+
+#[tauri::command]
+pub async fn collect_correlation_window(
+    registry: State<'_, Arc<CorrelationRegistry>>,
+    logs: State<'_, Arc<LogState>>,
+    correlation_id: String,
+) -> Result<CorrelationWindowResult, String> {
+    collect_correlation_window_impl(
+        &registry,
+        &logs,
+        correlation_id,
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .await
+}
+
 #[tauri::command]
 pub async fn run_correlated_request(
     db: State<'_, LocalDb>,
+    logs: State<'_, Arc<LogState>>,
+    registry: State<'_, Arc<CorrelationRegistry>>,
     request: FireRequestInput,
     connection: DbConnectInput,
     watched_tables: Vec<String>,
 ) -> Result<CorrelationResult, String> {
     let method = request.method.clone();
     let url = request.url.clone();
-    let result = run_correlated_request_impl(request, connection, watched_tables, &crate::log_state::LogState::new()).await?;
+    let result = run_correlated_request_impl_with_registry(
+        request,
+        connection,
+        watched_tables,
+        &logs,
+        &registry,
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .await?;
     save_correlation_history(&db.pool, &method, &url, &result.response).await;
     Ok(result)
 }
@@ -220,6 +302,8 @@ mod tests {
     use super::*;
     use super::super::db::{connection_string, DbConnectInput};
     use sqlx::postgres::PgPoolOptions;
+    use crate::correlation_state::{CorrelationRegistry, DEFAULT_CORRELATION_WINDOW_MS};
+    use crate::log_state::LogState;
 
     fn snap(pk: &str, hash: &str) -> RowSnapshot {
         RowSnapshot { pk: pk.to_string(), hash: hash.to_string() }
@@ -582,5 +666,126 @@ mod tests {
         mock.assert_async().await;
         assert_eq!(result.table_diffs, Some(vec![]), "watching nothing is still a successful verification");
         assert_eq!(result.db_error, None);
+    }
+
+    #[tokio::test]
+    async fn a_correlated_request_opens_a_window_that_can_be_collected() {
+        let conn = test_connection();
+        let logs = LogState::new();
+        let registry = CorrelationRegistry::new();
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("app.log");
+        std::fs::write(&log_path, "").unwrap();
+        logs.add_source("app.log".into(), log_path.clone()).unwrap();
+        logs.poll_all(1_000);
+
+        let mut server = mockito::Server::new_async().await;
+        let log_path_for_mock = log_path.clone();
+        let mock = server
+            .mock("POST", "/orders")
+            .with_status(201)
+            // Writing the log line from inside the mock's body callback puts it
+            // strictly between the request being sent and the response landing,
+            // which is what a real backend logging during a request looks like.
+            .with_body_from_request(move |_req| {
+                use std::io::Write as _;
+                let mut f = std::fs::OpenOptions::new().append(true).open(&log_path_for_mock).unwrap();
+                writeln!(f, r#"{{"level":"info","msg":"order created id=8841"}}"#).unwrap();
+                f.flush().unwrap();
+                br#"{"id":8841}"#.to_vec()
+            })
+            .create_async()
+            .await;
+
+        let result = run_correlated_request_impl_with_registry(
+            FireRequestInput {
+                method: "POST".to_string(),
+                url: format!("{}/orders", server.url()),
+                body: None,
+            },
+            conn,
+            vec![],
+            &logs,
+            &registry,
+            10_000,
+        )
+        .await
+        .unwrap();
+
+        mock.assert_async().await;
+        assert!(!result.correlation_id.is_empty());
+
+        // The tailer has not run since the write; drive it explicitly with a
+        // capture time inside the window.
+        logs.poll_all(10_100);
+
+        let window = collect_correlation_window_impl(
+            &registry,
+            &logs,
+            result.correlation_id.clone(),
+            10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
+        )
+        .await
+        .unwrap();
+
+        let lines = window.log_lines.expect("a source is running, so lines must be Some");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].message, "order created id=8841");
+        assert_eq!(lines[0].level.as_deref(), Some("INFO"));
+        assert!(!window.log_lines_truncated);
+    }
+
+    #[tokio::test]
+    async fn collecting_a_window_with_no_log_source_reports_not_observed_rather_than_zero() {
+        let conn = test_connection();
+        let logs = LogState::new();
+        let registry = CorrelationRegistry::new();
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
+
+        let result = run_correlated_request_impl_with_registry(
+            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
+            conn,
+            vec![],
+            &logs,
+            &registry,
+            10_000,
+        )
+        .await
+        .unwrap();
+        mock.assert_async().await;
+
+        let window = collect_correlation_window_impl(
+            &registry,
+            &logs,
+            result.correlation_id,
+            10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(window.log_lines, None, "no source configured means NOT OBSERVED, not zero lines");
+    }
+
+    #[tokio::test]
+    async fn collecting_an_unknown_correlation_id_is_an_error() {
+        let logs = LogState::new();
+        let registry = CorrelationRegistry::new();
+        let result =
+            collect_correlation_window_impl(&registry, &logs, "not-a-real-id".into(), 1_000).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_window_can_only_be_collected_once() {
+        let logs = LogState::new();
+        let registry = CorrelationRegistry::new();
+        let id = registry.open(0, 500);
+
+        assert!(collect_correlation_window_impl(&registry, &logs, id.clone(), 1_000).await.is_ok());
+        assert!(collect_correlation_window_impl(&registry, &logs, id, 1_000).await.is_err());
+        assert_eq!(registry.len(), 0);
     }
 }
