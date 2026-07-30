@@ -35,7 +35,9 @@ The differentiator is not any single tool (API client, DB browser, log viewer, a
 
 ## Capabilities and Constraints
 
-- v1 scope: API tab (request builder, response viewer, basic history), DB tab (Postgres, schema browser, query editor, data grid, watched-table toggles), Log tab (file/stdout tail, JSON-lines parsed + plain text raw, search/filter), Email tab (SMTP catcher, inbox, message viewer), and the "What happened" rollup attached to fired requests with deep-links into the other three tabs.
+- v1 scope: API tab (request builder, response viewer, history sidebar), DB tab (Postgres, schema browser, query editor, data grid, watched-table toggles), Log tab (sources sidebar, live tail, search/filter), Email tab (SMTP catcher, inbox, message viewer), the "What happened" rollup attached to fired requests with deep-links into the other three tabs, and Settings (General, Provider, MCP, Archive) as a dedicated screen.
+- MCP support: the AI assistant can call configured MCP servers during a chat — a v1 capability, not deferred, even though it's the least load-bearing of the four settings areas relative to the core correlation differentiator.
+- Session archiving: sessions removed from the active sidebar list are recoverable from Settings > Archive (restore), not permanently deleted — sessions need an archive/restore lifecycle in v1, not just create-and-list.
 - Explicitly deferred: other DB engines, request mocking, collections/environments polish, AI narration of the rollup, cloud sync, hosted AI keys, team features (all live in a separate, proprietary cloud layer — not part of DevBench itself).
 - Correlation window is time-based (default 5s post-response, configurable), not trace-based — this is a deliberate v1 trade-off for zero-instrumentation setup, not a technical limitation to hide from the design.
 - Failure states must never read as false negatives: an unverifiable DB snapshot must show "unable to verify," never "0 writes."

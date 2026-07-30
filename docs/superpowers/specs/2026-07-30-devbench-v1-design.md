@@ -30,6 +30,7 @@ DevBench is a local-first workbench that unifies API testing, database browsing,
 | Email tab: local SMTP catcher (default port 1025, configurable), inbox view | Sending mail, not just catching |
 | "What happened" rollup on fired requests, time-window correlated, with deep-links into DB/Log/Email tabs | AI narration of the rollup (v1.1 — layers on top once the raw view is validated) |
 | BYOK AI chat (shared component), key in OS keychain | Cloud account, hosted AI keys, sync, teams |
+| Settings screen: General (theme, correlation window, SMTP port), Provider (BYOK key, model), MCP (server list, connected/error status), Archive (restore removed sessions) | Settings sync across devices (part of the deferred cloud layer) |
 
 AI narration is deferred deliberately: it's a layer on top of a working rollup, not a prerequisite. Shipping the raw correlated view first validates whether the underlying data is useful before investing in narration.
 
@@ -61,8 +62,8 @@ Three-column shell: sessions sidebar → main content (the four-tab hybrid above
 
 ## Components
 
-- **Sessions sidebar:** history/organization layer for named investigations; auto-inferred type tags for scanning, never a view restriction.
-- **Nav** (shared): switches between API / DB / Log / Email tabs and Settings.
+- **Sessions sidebar:** history/organization layer for named investigations; auto-inferred type tags for scanning, never a view restriction. A "Settings" button pinned to its bottom is the only entry point into Settings — not a topbar icon, to avoid two ways in.
+- **Settings:** a full navigation destination (swaps out the sessions/tools/chat body entirely), not an overlay — a 4-section surface doesn't fit a compact modal, and app-wide config isn't scoped to any session the way the four tools are. Uses the same list-nav-plus-detail pattern as everything else: General (theme, correlation window, SMTP port), Provider (BYOK key + model), MCP (configured server list with connection status), Archive (restore removed sessions).
 
 All four tools follow the same internal pattern for consistency: a list sidebar on the left, detail on the right — this wasn't a day-one decision, it emerged once DB (table tree) and Email (inbox) were built and API/Log were noticed as inconsistent with them.
 

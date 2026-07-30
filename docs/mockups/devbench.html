@@ -18,15 +18,16 @@
     --warning: #e3a438; --warning-bg: #2b2210;
     --danger: #e5695f; --danger-bg: #2b1514;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.5);
+    --glass-bg: rgba(18, 20, 25, 0.55); --glass-border: rgba(255, 255, 255, 0.08); --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.06);
     --radius-sm: 6px; --radius-lg: 12px;
     --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
     --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Consolas, monospace;
   }
   @media (prefers-color-scheme: light) {
-    :root { --bg:#f5f7fa; --surface:#ffffff; --surface-2:#eef1f6; --border:#dde3ec; --text:#10151f; --text-muted:#5b6472; --text-faint:#8a92a1; --accent:#10151f; --accent-strong:#000000; --accent-on:#ffffff; --page-glow: rgba(16,21,31,0.025); --success:#167a45; --success-bg:#e3f5eb; --warning:#a3660a; --warning-bg:#faf0dc; --danger:#b93a3a; --danger-bg:#fbe9e9; --shadow:0 1px 2px rgba(16,21,31,.05),0 10px 28px rgba(16,21,31,.07); }
+    :root { --bg:#f5f7fa; --surface:#ffffff; --surface-2:#eef1f6; --border:#dde3ec; --text:#10151f; --text-muted:#5b6472; --text-faint:#8a92a1; --accent:#10151f; --accent-strong:#000000; --accent-on:#ffffff; --page-glow: rgba(16,21,31,0.025); --success:#167a45; --success-bg:#e3f5eb; --warning:#a3660a; --warning-bg:#faf0dc; --danger:#b93a3a; --danger-bg:#fbe9e9; --shadow:0 1px 2px rgba(16,21,31,.05),0 10px 28px rgba(16,21,31,.07); --glass-bg: rgba(255,255,255,.55); --glass-border: rgba(16,21,31,.07); --glass-hi: inset 0 1px 0 rgba(255,255,255,.6); }
   }
-  :root[data-theme="dark"] { --bg:#08090c; --surface:#121419; --surface-2:#191c22; --border:#24262e; --text:#ecedf2; --text-muted:#999fac; --text-faint:#666d7a; --accent:#f2f3f5; --accent-strong:#ffffff; --accent-on:#0a0b0e; --page-glow: rgba(255,255,255,0.07); --success:#3fce85; --success-bg:#12271c; --warning:#e3a438; --warning-bg:#2b2210; --danger:#e5695f; --danger-bg:#2b1514; --shadow:0 1px 2px rgba(0,0,0,.4),0 12px 32px rgba(0,0,0,.5); }
-  :root[data-theme="light"] { --bg:#f5f7fa; --surface:#ffffff; --surface-2:#eef1f6; --border:#dde3ec; --text:#10151f; --text-muted:#5b6472; --text-faint:#8a92a1; --accent:#10151f; --accent-strong:#000000; --accent-on:#ffffff; --page-glow: rgba(16,21,31,0.025); --success:#167a45; --success-bg:#e3f5eb; --warning:#a3660a; --warning-bg:#faf0dc; --danger:#b93a3a; --danger-bg:#fbe9e9; --shadow:0 1px 2px rgba(16,21,31,.05),0 10px 28px rgba(16,21,31,.07); }
+  :root[data-theme="dark"] { --bg:#08090c; --surface:#121419; --surface-2:#191c22; --border:#24262e; --text:#ecedf2; --text-muted:#999fac; --text-faint:#666d7a; --accent:#f2f3f5; --accent-strong:#ffffff; --accent-on:#0a0b0e; --page-glow: rgba(255,255,255,0.07); --success:#3fce85; --success-bg:#12271c; --warning:#e3a438; --warning-bg:#2b2210; --danger:#e5695f; --danger-bg:#2b1514; --shadow:0 1px 2px rgba(0,0,0,.4),0 12px 32px rgba(0,0,0,.5); --glass-bg: rgba(18,20,25,.55); --glass-border: rgba(255,255,255,.08); --glass-hi: inset 0 1px 0 rgba(255,255,255,.06); }
+  :root[data-theme="light"] { --bg:#f5f7fa; --surface:#ffffff; --surface-2:#eef1f6; --border:#dde3ec; --text:#10151f; --text-muted:#5b6472; --text-faint:#8a92a1; --accent:#10151f; --accent-strong:#000000; --accent-on:#ffffff; --page-glow: rgba(16,21,31,0.025); --success:#167a45; --success-bg:#e3f5eb; --warning:#a3660a; --warning-bg:#faf0dc; --danger:#b93a3a; --danger-bg:#fbe9e9; --shadow:0 1px 2px rgba(16,21,31,.05),0 10px 28px rgba(16,21,31,.07); --glass-bg: rgba(255,255,255,.55); --glass-border: rgba(16,21,31,.07); --glass-hi: inset 0 1px 0 rgba(255,255,255,.6); }
 
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -56,7 +57,7 @@
   /* Sessions sidebar — ghosty, pure history/organization, never a view gate */
   .sidebar-sessions { border-right: 1px solid var(--border); display: flex; flex-direction: column; min-width: 0; }
   .sidebar-head { padding: 12px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); font-weight: 700; font-size: 13px; }
-  .new-btn { appearance: none; border: 1px solid var(--border); background: transparent; border-radius: var(--radius-sm); padding: 4px 8px; cursor: pointer; font-size: 12px; font-weight: 700; color: var(--text-muted); }
+  .new-btn { appearance: none; border: 1px solid var(--border); background: transparent; border-radius: var(--radius-sm); padding: 4px 8px; cursor: pointer; font-size: 12px; font-weight: 700; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; }
   .new-btn:hover { border-color: var(--text-faint); color: var(--text); background: var(--surface-2); }
   .session-search { margin: 8px; padding: 6px 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text-faint); font-size: 12px; }
   .session-list { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
@@ -234,6 +235,62 @@
   .email-status { padding: 8px 20px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-faint); }
   .email-status a { color: var(--text-muted); }
 
+  /* Sidebar settings entry point */
+  .sidebar-bottom { border-top: 1px solid var(--border); padding: 8px; margin-top: auto; }
+  .sidebar-settings-btn { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px 9px; border-radius: var(--radius-sm); background: transparent; border: none; cursor: pointer; color: var(--text-muted); font-size: 13px; font-weight: 600; }
+  .sidebar-settings-btn:hover { background: var(--surface-2); color: var(--text); }
+
+  /* Settings — a real navigation destination, not an overlay: a 4-tab surface
+     doesn't fit a compact modal. Follows the same list-nav + detail pattern
+     every other tool in the app already uses, for consistency. Ghosty, like
+     the rest of the persistent shell — this isn't a transient surface. */
+  .settings-screen { flex: 1; display: flex; min-height: 0; }
+  .settings-nav { width: 220px; min-width: 220px; border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 12px 8px; }
+  .settings-back { appearance: none; border: none; background: transparent; cursor: pointer; color: var(--text-muted); font-size: 12.5px; font-weight: 600; padding: 8px 9px; text-align: left; display: flex; align-items: center; gap: 6px; border-radius: var(--radius-sm); margin-bottom: 10px; }
+  .settings-back:hover { background: var(--surface-2); color: var(--text); }
+  .settings-nav-list { display: flex; flex-direction: column; gap: 2px; }
+  .settings-nav-item { appearance: none; border: none; background: transparent; cursor: pointer; color: var(--text-muted); font-size: 13px; font-weight: 600; padding: 8px 10px; border-radius: var(--radius-sm); text-align: left; display: flex; align-items: center; gap: 9px; }
+  .settings-nav-item:hover { background: var(--surface-2); color: var(--text); }
+  .settings-nav-item.active { background: var(--surface-2); color: var(--text); }
+  .settings-content { flex: 1; overflow-y: auto; padding: 28px 32px; }
+  .settings-pane { max-width: 560px; display: none; }
+  .settings-pane.active { display: block; }
+  .settings-pane-title { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+  .settings-pane-desc { color: var(--text-faint); font-size: 12.5px; margin-bottom: 22px; }
+  .settings-section { padding: 16px 0; border-bottom: 1px solid var(--border); }
+  .settings-section:last-child { border-bottom: none; }
+  .form-field { display: flex; flex-direction: column; gap: 6px; }
+  .form-field + .form-field { margin-top: 14px; }
+  .form-label { font-size: 12.5px; font-weight: 600; color: var(--text); }
+  .form-row { display: flex; gap: 6px; }
+  .form-input { border: 1px solid var(--border); background: var(--bg); border-radius: var(--radius-sm); padding: 8px 10px; color: var(--text); flex: 1; min-width: 0; }
+  .form-input.js-key-input { font-family: var(--font-mono); }
+  .form-input-suffix { display: flex; align-items: center; gap: 8px; }
+  .form-input-suffix .form-input { max-width: 110px; flex: none; }
+  .form-suffix-text { color: var(--text-faint); font-size: 12.5px; }
+  .form-help { font-size: 11.5px; color: var(--text-faint); line-height: 1.5; }
+  .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+  .segmented button { padding: 7px 14px; background: transparent; border: none; border-right: 1px solid var(--border); color: var(--text-muted); cursor: pointer; font-size: 12.5px; font-weight: 600; }
+  .segmented button:last-child { border-right: none; }
+  .segmented button.active { background: var(--accent); color: var(--accent-on); }
+  .mcp-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+  .mcp-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
+  .mcp-item-info { flex: 1; min-width: 0; }
+  .mcp-item-name { font-weight: 700; font-family: var(--font-mono); font-size: 13px; }
+  .mcp-item-cmd { color: var(--text-faint); font-size: 11.5px; font-family: var(--font-mono); margin-top: 2px; }
+  .mcp-status { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; flex-shrink: 0; }
+  .mcp-status.connected { color: var(--success); background: var(--success-bg); }
+  .mcp-status.error { color: var(--danger); background: var(--danger-bg); }
+  .mcp-add-btn { appearance: none; border: 1px dashed var(--border); background: transparent; color: var(--text-muted); cursor: pointer; padding: 10px; border-radius: var(--radius-lg); font-size: 13px; font-weight: 600; width: 100%; }
+  .mcp-add-btn:hover { border-color: var(--text-faint); color: var(--text); }
+  .archive-list { display: flex; flex-direction: column; }
+  .archive-item { display: flex; align-items: center; gap: 10px; padding: 12px 4px; border-bottom: 1px solid var(--border); }
+  .archive-item-info { flex: 1; min-width: 0; }
+  .archive-item-name { font-weight: 600; font-size: 13px; }
+  .archive-item-date { color: var(--text-faint); font-size: 11.5px; margin-top: 2px; }
+  .archive-restore-btn { appearance: none; border: 1px solid var(--border); background: transparent; color: var(--text-muted); cursor: pointer; padding: 5px 11px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 600; flex-shrink: 0; }
+  .archive-restore-btn:hover { border-color: var(--text-faint); color: var(--text); }
+
   @media (prefers-reduced-motion: reduce) { * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; } }
 </style>
 
@@ -250,25 +307,28 @@
     </div>
     <div class="topbar-actions">
       <button class="icon-btn" id="themeToggle" aria-label="Toggle light/dark">
-        <svg id="themeIcon" viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"></svg>
+        <svg id="themeIcon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
       </button>
       <button class="icon-btn" id="chatToggle" aria-label="Toggle AI chat" aria-pressed="true">
-        <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h11A1.5 1.5 0 0 1 17 5.5v6a1.5 1.5 0 0 1-1.5 1.5H8l-3.2 2.6a.4.4 0 0 1-.65-.31V13H4.5A1.5 1.5 0 0 1 3 11.5v-6Z" stroke-linejoin="round"/></svg>
-      </button>
-      <button class="icon-btn" aria-label="Settings">
-        <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2M10 15.5v2M17.5 10h-2M4.5 10h-2M15.1 4.9l-1.4 1.4M6.3 13.7l-1.4 1.4M15.1 15.1l-1.4-1.4M6.3 6.3 4.9 4.9" stroke-linecap="round"/></svg>
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
       </button>
     </div>
   </header>
 
   <div class="body-grid" id="bodyGrid">
     <aside class="sidebar-sessions">
-      <div class="sidebar-head">Sessions <button class="new-btn" id="newSession">+ New</button></div>
+      <div class="sidebar-head">Sessions <button class="new-btn" id="newSession"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h14M12 5v14"/></svg>New</button></div>
       <input class="session-search" placeholder="Search sessions…" disabled>
       <div class="session-list" id="sessionList">
         <div class="session-item active"><span class="session-name">Order flow debug</span><span class="session-badge">today</span></div>
         <div class="session-item"><span class="session-name">Checkout API</span><span class="session-badge">yesterday</span></div>
         <div class="session-item"><span class="session-name">Users query</span><span class="session-badge">2d ago</span></div>
+      </div>
+      <div class="sidebar-bottom">
+        <button class="sidebar-settings-btn" id="settingsBtn">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+          Settings
+        </button>
       </div>
     </aside>
 
@@ -279,7 +339,7 @@
         <button data-tool="log">Log</button>
         <button data-tool="email">Email</button>
         <button class="split-btn" id="splitBtn">
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M8 3v10"/></svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></svg>
           Split
         </button>
       </div>
@@ -299,15 +359,117 @@
       <div class="chat-header">
         <span>AI Assistant</span>
         <button class="icon-btn" id="chatClose" aria-label="Close chat" style="width:24px;height:24px;">
-          <svg viewBox="0 0 20 20" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 5l10 10M15 5 5 15"/></svg>
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
         </button>
       </div>
       <div class="chat-messages"><div class="chat-msg">Ask me about this session, or anything DevBench observed.</div></div>
       <div class="chat-input-row">
         <input class="chat-input" placeholder="Ask about this request…" />
-        <button class="icon-btn" aria-label="Send message"><svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15V5M10 5l-4.5 4.5M10 5l4.5 4.5"/></svg></button>
+        <button class="icon-btn" aria-label="Send message"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></button>
       </div>
     </aside>
+  </div>
+
+  <div class="settings-screen" id="settingsScreen" hidden>
+    <aside class="settings-nav">
+      <button class="settings-back" id="settingsBack">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7M19 12H5"/></svg>
+        DevBench
+      </button>
+      <div class="settings-nav-list">
+        <button class="settings-nav-item active" data-pane="general">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+          General
+        </button>
+        <button class="settings-nav-item" data-pane="provider">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.287 1.288L3 12l5.8 1.9a2 2 0 0 1 1.288 1.287L12 21l1.9-5.8a2 2 0 0 1 1.287-1.288L21 12l-5.8-1.9a2 2 0 0 1-1.288-1.287Z"/></svg>
+          Provider
+        </button>
+        <button class="settings-nav-item" data-pane="mcp">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01M6 18h.01"/></svg>
+          MCP
+        </button>
+        <button class="settings-nav-item" data-pane="archive">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/></svg>
+          Archive
+        </button>
+      </div>
+    </aside>
+    <div class="settings-content">
+      <div class="settings-pane active" data-pane="general">
+        <div class="settings-pane-title">General</div>
+        <div class="settings-pane-desc">App-wide behavior.</div>
+        <div class="settings-section">
+          <div class="form-field">
+            <label class="form-label">Theme</label>
+            <div class="segmented">
+              <button class="js-theme-pref" data-pref="system">System</button>
+              <button class="js-theme-pref active" data-pref="dark">Dark</button>
+              <button class="js-theme-pref" data-pref="light">Light</button>
+            </div>
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="form-field">
+            <label class="form-label" for="corrWindow">Correlation window</label>
+            <div class="form-input-suffix"><input class="form-input" id="corrWindow" type="number" value="5" min="1" max="60" /><span class="form-suffix-text">seconds after the response</span></div>
+            <div class="form-help">How long DevBench keeps collecting log lines and emails for the "what happened" rollup after a request completes.</div>
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="form-field">
+            <label class="form-label" for="smtpPort">SMTP port</label>
+            <div class="form-input-suffix"><input class="form-input" id="smtpPort" type="number" value="1025" min="1" max="65535" /><span class="form-suffix-text">localhost only</span></div>
+            <div class="form-help">Point your backend's SMTP config at this port to catch outgoing mail — the same setup as Mailhog or Mailpit.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-pane" data-pane="provider">
+        <div class="settings-pane-title">Provider</div>
+        <div class="settings-pane-desc">Bring your own key — DevBench calls your provider directly, never through a DevBench server.</div>
+        <div class="settings-section">
+          <div class="form-field">
+            <label class="form-label" for="providerSelect">Provider</label>
+            <select class="form-input" id="providerSelect" style="max-width:220px;"><option>Anthropic</option><option>OpenAI</option></select>
+          </div>
+          <div class="form-field">
+            <label class="form-label" for="apiKeyInput">API key</label>
+            <div class="form-row">
+              <input class="form-input js-key-input" id="apiKeyInput" type="password" value="sk-ant-api03-••••••••••••••••••••" />
+              <button class="icon-btn" id="toggleKeyVisibility" aria-label="Show API key" aria-pressed="false" style="border:1px solid var(--border);">
+                <svg id="eyeIcon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+            <div class="form-help">Stored in your OS keychain.</div>
+          </div>
+          <div class="form-field">
+            <label class="form-label" for="modelSelect">Model</label>
+            <select class="form-input" id="modelSelect" style="max-width:280px;"><option>Claude Sonnet</option><option>Claude Opus</option><option>Claude Haiku</option></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-pane" data-pane="mcp">
+        <div class="settings-pane-title">MCP Servers</div>
+        <div class="settings-pane-desc">Tools the AI assistant can call during a chat.</div>
+        <div class="mcp-list">
+          <div class="mcp-item"><div class="mcp-item-info"><div class="mcp-item-name">filesystem</div><div class="mcp-item-cmd">npx @mcp/server-filesystem</div></div><span class="mcp-status connected">Connected</span></div>
+          <div class="mcp-item"><div class="mcp-item-info"><div class="mcp-item-name">postgres-readonly</div><div class="mcp-item-cmd">stdio · localhost:5432</div></div><span class="mcp-status connected">Connected</span></div>
+          <div class="mcp-item"><div class="mcp-item-info"><div class="mcp-item-name">github</div><div class="mcp-item-cmd">npx @mcp/server-github</div></div><span class="mcp-status error">Error</span></div>
+        </div>
+        <button class="mcp-add-btn">+ Add MCP server</button>
+      </div>
+
+      <div class="settings-pane" data-pane="archive">
+        <div class="settings-pane-title">Archive</div>
+        <div class="settings-pane-desc">Sessions removed from the sidebar, kept here until restored or deleted.</div>
+        <div class="archive-list">
+          <div class="archive-item"><div class="archive-item-info"><div class="archive-item-name">Payment webhook investigation</div><div class="archive-item-date">Archived 5 days ago</div></div><button class="archive-restore-btn">Restore</button></div>
+          <div class="archive-item"><div class="archive-item-info"><div class="archive-item-name">Signup flow debug</div><div class="archive-item-date">Archived 2 weeks ago</div></div><button class="archive-restore-btn">Restore</button></div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -342,12 +504,12 @@
   <div><div class="section-label">Response</div><div class="card"><div class="response-header"><span class="status-pill status-success js-status-pill">200 OK</span><span class="response-time">142ms</span></div><pre class="code-block js-response-body">{ "id": 8841, "status": "pending" }</pre></div></div>\
   <div><div class="section-label">What happened</div><div class="card"><div class="rollup">\
     <div class="rollup-state active" data-state="populated"><div class="rollup-row">\
-      <button class="rollup-item"><svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><ellipse cx="10" cy="5" rx="6" ry="2.3"/><path d="M4 5v10c0 1.3 2.7 2.3 6 2.3s6-1 6-2.3V5"/><path d="M4 10c0 1.3 2.7 2.3 6 2.3s6-1 6-2.3"/></svg>DB <span class="rollup-count">3 writes</span><span class="rollup-arrow">→</span></button>\
-      <button class="rollup-item"><svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 3.5h9l3 3v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-12a1 1 0 0 1 1-1Z" stroke-linejoin="round"/><path d="M6 9h8M6 12h8M6 15h5"/></svg>Log <span class="rollup-count">12 lines</span><span class="rollup-arrow">→</span></button>\
-      <button class="rollup-item"><svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="14" height="10" rx="1.5"/><path d="m3.5 5.8 6.5 5 6.5-5"/></svg>Email <span class="rollup-count">1 sent</span><span class="rollup-arrow">→</span></button>\
+      <button class="rollup-item"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>DB <span class="rollup-count">3 writes</span><span class="rollup-arrow">→</span></button>\
+      <button class="rollup-item"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>Log <span class="rollup-count">12 lines</span><span class="rollup-arrow">→</span></button>\
+      <button class="rollup-item"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>Email <span class="rollup-count">1 sent</span><span class="rollup-arrow">→</span></button>\
     </div></div>\
     <div class="rollup-state" data-state="zero"><span class="rollup-empty">No observed effects — nothing in the watched tables, logs, or email changed.</span></div>\
-    <div class="rollup-state" data-state="partial"><div class="rollup-row"><span class="rollup-warning">⚠ DB unable to verify</span><button class="rollup-item"><svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 3.5h9l3 3v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-12a1 1 0 0 1 1-1Z" stroke-linejoin="round"/><path d="M6 9h8M6 12h8M6 15h5"/></svg>Log <span class="rollup-count">4 lines</span><span class="rollup-arrow">→</span></button><span class="rollup-empty">Email 0 sent</span></div></div>\
+    <div class="rollup-state" data-state="partial"><div class="rollup-row"><span class="rollup-warning">⚠ DB unable to verify</span><button class="rollup-item"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>Log <span class="rollup-count">4 lines</span><span class="rollup-arrow">→</span></button><span class="rollup-empty">Email 0 sent</span></div></div>\
     <div class="rollup-state" data-state="loading"><div class="rollup-skeleton"><div class="skeleton-chip"></div><div class="skeleton-chip"></div><div class="skeleton-chip"></div></div></div>\
   </div></div>\
   <div class="demo-controls" style="margin-top:-6px;"><span class="demo-label">Preview rollup state:</span><button class="chip active js-rollup-chip" data-state="populated">Populated</button><button class="chip js-rollup-chip" data-state="zero">Zero-effects</button><button class="chip js-rollup-chip" data-state="partial">Partial-failure</button><button class="chip js-rollup-chip" data-state="loading">Loading</button></div>\
@@ -577,15 +739,52 @@
   chatToggle.addEventListener('click', function () { setChat(bodyGrid.classList.contains('chat-closed')); });
   document.getElementById('chatClose').addEventListener('click', function () { setChat(false); });
 
-  // Theme toggle
-  var isDark = !window.matchMedia('(prefers-color-scheme: light)').matches;
+  // Theme: 'dark' | 'light' | 'system'. Dark is the authored default.
+  var SUN_PATH = '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>';
+  var MOON_PATH = '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>';
+  var themePref = 'dark';
   var themeIcon = document.getElementById('themeIcon');
   function applyTheme() {
-    document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
-    themeIcon.innerHTML = isDark
-      ? '<path d="M15.5 11.8A6.5 6.5 0 0 1 8.2 4.5 6.5 6.5 0 1 0 15.5 11.8Z" stroke-linejoin="round"/>'
-      : '<circle cx="10" cy="10" r="4"/><path d="M10 2v2M10 16v2M18 10h-2M4 10H2M15.5 4.5l-1.4 1.4M5.9 14.1l-1.4 1.4M15.5 15.5l-1.4-1.4M5.9 5.9 4.5 4.5" stroke-linecap="round"/>';
+    if (themePref === 'system') { delete document.documentElement.dataset.theme; }
+    else { document.documentElement.dataset.theme = themePref; }
+    var effectiveDark = themePref === 'system' ? window.matchMedia('(prefers-color-scheme: light)').matches === false : themePref === 'dark';
+    themeIcon.innerHTML = effectiveDark ? MOON_PATH : SUN_PATH;
+    document.querySelectorAll('.js-theme-pref').forEach(function (b) { b.classList.toggle('active', b.dataset.pref === themePref); });
   }
-  document.getElementById('themeToggle').addEventListener('click', function () { isDark = !isDark; applyTheme(); });
+  document.getElementById('themeToggle').addEventListener('click', function () {
+    themePref = themePref === 'dark' ? 'light' : 'dark';
+    applyTheme();
+  });
+  document.querySelectorAll('.js-theme-pref').forEach(function (btn) {
+    btn.addEventListener('click', function () { themePref = btn.dataset.pref; applyTheme(); });
+  });
   applyTheme();
+
+  // Settings — a real screen (swaps out the sessions/tools/chat body), not an overlay
+  var bodyGridEl = document.getElementById('bodyGrid');
+  var settingsScreen = document.getElementById('settingsScreen');
+  document.getElementById('settingsBtn').addEventListener('click', function () {
+    bodyGridEl.hidden = true; settingsScreen.hidden = false;
+  });
+  document.getElementById('settingsBack').addEventListener('click', function () {
+    settingsScreen.hidden = true; bodyGridEl.hidden = false;
+  });
+  document.querySelectorAll('.settings-nav-item').forEach(function (item) {
+    item.addEventListener('click', function () {
+      document.querySelectorAll('.settings-nav-item').forEach(function (i) { i.classList.remove('active'); });
+      item.classList.add('active');
+      document.querySelectorAll('.settings-pane').forEach(function (p) { p.classList.toggle('active', p.dataset.pane === item.dataset.pane); });
+    });
+  });
+
+  var keyInput = document.getElementById('apiKeyInput');
+  var eyeIcon = document.getElementById('eyeIcon');
+  document.getElementById('toggleKeyVisibility').addEventListener('click', function () {
+    var showing = keyInput.type === 'text';
+    keyInput.type = showing ? 'password' : 'text';
+    this.setAttribute('aria-pressed', String(!showing));
+    eyeIcon.innerHTML = showing
+      ? '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>'
+      : '<path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c6.5 0 10 8 10 8a17.4 17.4 0 0 1-3.13 4.2M6.61 6.61A17.5 17.5 0 0 0 2 12s3.5 8 10 8a9.28 9.28 0 0 0 5.39-1.61M2 2l20 20"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/>';
+  });
 </script>

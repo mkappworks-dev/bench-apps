@@ -32,6 +32,8 @@ Two different techniques, deliberately not blended:
 - **Ghosty** (topbar, sessions sidebar, chat dock, tab bars, the icon rail — anything persistent/always-rendered): transparent background, hairline `1px solid var(--border)` division, no blur. Buttons in this chrome are ghost-style — transparent by default, gaining a `var(--surface-2)` fill only on hover/active.
 - **Glass** (only the New Session picker and command-palette overlay — transient, occasional): `backdrop-filter: blur(20-28px) saturate(150-160%)`, translucent `--glass-bg`, a `1px` inner top highlight (`--glass-hi`) for edge refraction, always paired with a solid fallback under `prefers-reduced-transparency`.
 
+Settings is a useful test of this rule rather than an exception to it: it was first built as a glass overlay, then moved to a full navigated screen (see Layout below). Once it stopped being transient, it correctly stopped being glass — same rule, applied to a changed circumstance, not a new rule.
+
 This split matches how the named references (Linear, Vercel) actually work — their persistent chrome is flat/minimal, and blur is reserved for their command palettes — and avoids paying blur's compositing cost on surfaces that render continuously in a data-dense tool.
 
 ## Typography
