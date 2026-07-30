@@ -682,7 +682,14 @@ impl SourceTailer {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd apps/devbench/src-tauri && cargo test log_state::`
-Expected: PASS — all Task 1 and Task 2 tests (13 total).
+Expected: 2 of the 13 tests FAIL against the Step 3 code exactly as pasted above — this is a known defect in this plan's own reference code, not a transcription error, found and fixed during implementation (commit `02d0852`, log-tab SDD ledger). Both bugs and their fixes:
+
+1. **`tailer_detects_truncation_and_emits_a_visible_warning_rather_than_silently_resyncing` fails** because the rotation-warning line at Step 3 line 623 goes through the ordinary `buffer.push()` path, which runs every line through Task 1's `parse_log_line` — a parser that only infers a `level` from JSON-object content, so a plain-text string always comes back `level: None`, but the test asserts `Some("WARN")`. **Fix:** add a private `push_note(&mut self, source_id: &str, level: &str, message: &str, captured_at_ms: i64)` method to `LogBuffer` (sharing insertion logic with `push` via a small private `insert` helper) that sets the level explicitly instead of inferring it from content. Change the rotation-warning call site to `buffer.push_note(&self.source_id, "WARN", "log source rotated or truncated — resuming from the start of the file", now_ms)`.
+2. **`tailer_truncates_a_pathologically_long_line_instead_of_buffering_it_whole` fails** because Step 3's overlong-line branch (lines 671-674) pushes a truncated line once, clears `pending`, but keeps accumulating further chunk reads into `pending` as normal — so the same physical line's real tail, once its actual newline eventually arrives, gets pushed a *second* time as an ordinary line. The test asserts exactly one resulting `LogLine`. **Fix:** add a `skipping_overlong_line: bool` field to `SourceTailer`. Once a line is flushed-and-truncated, set it `true` and discard (don't re-buffer) further bytes belonging to that same physical line until its real newline is found, then resume normal parsing. Reset the flag alongside `offset`/`pending` on rotation/truncation too, so a rotation mid-overlong-line can't leave the tailer stuck.
+
+Neither fix touches any test body, public signature, or constant — both are additive private helpers. See the merged `log_state.rs` for the exact code.
+
+Expected after the fix: PASS — all Task 1 and Task 2 tests (13 total).
 
 If `is_none_or` is rejected by the toolchain (it stabilized in Rust 1.82), replace `source_id.is_none_or(|s| l.source_id == s)` with `source_id.map_or(true, |s| l.source_id == s)`; behaviour is identical.
 

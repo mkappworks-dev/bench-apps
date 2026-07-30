@@ -3140,7 +3140,7 @@ git commit -m "feat(devbench): store the BYOK key in the OS keychain behind a Se
   - `pub struct McpTool { name: String, description: Option<String>, input_schema: serde_json::Value }`
   - `pub struct McpToolResult { text: String, is_error: bool }`
   - `pub struct McpSession<R, W>` generic over `R: AsyncBufRead + Unpin + Send`, `W: AsyncWrite + Unpin + Send`, with `new(reader, writer)`, `initialize() -> Result<String, String>` (returns the server name), `list_tools() -> Result<Vec<McpTool>, String>`, `call_tool(name, args) -> Result<McpToolResult, String>`.
-  - `pub async fn connect_stdio(command: &str, args: &[String]) -> Result<McpSession<BufReader<ChildStdout>, ChildStdin>, String>`.
+  - `pub async fn connect_stdio(command: &str, args: &[String]) -> Result<(Child, McpSession<BufReader<ChildStdout>, ChildStdin>), String>` — returns the tuple, not a bare `McpSession`: the caller needs the `Child` handle to control the server's lifetime (dropping it kills the process via `kill_on_drop(true)`). An earlier draft of this brief stated the bare-`McpSession` return in prose while the Step 1 code below always returned the tuple; the tuple is correct and is what Task 11's implementation used.
   Task 12 uses `connect_stdio` + `initialize` + `list_tools` for the status list; Task 14 uses `call_tool`.
 
 Being generic over the streams (Decision 2) is what makes this testable: the tests below drive a real JSON-RPC conversation over `tokio::io::duplex` against a hand-written fake server, with no child process, no fixture binary, and no timing flakiness.
@@ -3151,7 +3151,7 @@ Being generic over the streams (Decision 2) is what makes this testable: the tes
 ```rust
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 /// MCP revision this client speaks. Servers negotiate down; a server that
