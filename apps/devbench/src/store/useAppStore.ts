@@ -10,6 +10,8 @@ interface AppState {
   setTheme: (theme: ThemePref) => void;
   watchedTables: Set<string>;
   toggleWatchedTable: (table: string) => void;
+  /** Replaces watch state wholesale, e.g. after loading it from SQLite. */
+  setWatchedTables: (tables: string[]) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -25,4 +27,5 @@ export const useAppStore = create<AppState>((set) => ({
       else next.add(table);
       return { watchedTables: next };
     }),
+  setWatchedTables: (tables) => set({ watchedTables: new Set(tables) }),
 }));

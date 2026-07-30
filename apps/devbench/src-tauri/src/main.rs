@@ -55,6 +55,15 @@ fn main() {
             commands::logs::remove_log_source,
             commands::logs::list_log_sources,
             commands::logs::read_log_lines,
+            commands::sessions::create_session,
+            commands::sessions::list_sessions,
+            commands::sessions::list_archived_sessions,
+            commands::sessions::rename_session,
+            commands::sessions::archive_session,
+            commands::sessions::restore_session,
+            commands::sessions::delete_session,
+            commands::watched::list_watched_tables,
+            commands::watched::set_watched_table,
         ])
         .run(tauri::generate_context!())
         .expect("error while running devbench");
