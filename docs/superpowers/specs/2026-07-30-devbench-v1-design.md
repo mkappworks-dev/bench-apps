@@ -63,9 +63,12 @@ Three-column shell: sessions sidebar → main content (the four-tab hybrid above
 
 - **Sessions sidebar:** history/organization layer for named investigations; auto-inferred type tags for scanning, never a view restriction.
 - **Nav** (shared): switches between API / DB / Log / Email tabs and Settings.
-- **API tab:** request builder, response pane, inline "What happened" rollup with deep-links.
+
+All four tools follow the same internal pattern for consistency: a list sidebar on the left, detail on the right — this wasn't a day-one decision, it emerged once DB (table tree) and Email (inbox) were built and API/Log were noticed as inconsistent with them.
+
+- **API tab:** a request-history sidebar (method, path, status, relative time) alongside the request builder, response pane, and inline "What happened" rollup with deep-links.
 - **DB tab:** connection tree, schema browser, query editor, data grid. Also where watched tables are toggled on/off.
-- **Log tab:** source picker (file path or stdout pipe), live tail, search/filter.
+- **Log tab:** a sources sidebar listing configured log sources (file paths or stdout pipes), each independently browsable — not a single active source with an inline picker. Live tail, search/filter apply to whichever source is selected.
 - **Email tab:** inbox list, message viewer (headers/body/raw).
 - **Settings** (shared): AI key (BYOK), correlation window duration, SMTP port.
 

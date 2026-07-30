@@ -100,6 +100,22 @@
   .section-label { font-size: 11.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-faint); margin: 4px 2px; }
 
   /* API tool */
+  .api-layout { height: 100%; display: flex; margin: -20px; }
+  .api-sidebar { width: 220px; min-width: 220px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+  .api-sidebar-head { padding: 10px 12px; font-weight: 700; font-size: 12.5px; border-bottom: 1px solid var(--border); color: var(--text-muted); }
+  .api-history-list { flex: 1; overflow-y: auto; padding: 6px; }
+  .api-history-item { display: flex; flex-direction: column; gap: 3px; padding: 8px 9px; border-radius: var(--radius-sm); cursor: pointer; }
+  .api-history-item:hover { background: var(--surface-2); }
+  .api-history-item.active { background: var(--surface-2); }
+  .api-history-top { display: flex; align-items: center; gap: 6px; }
+  .api-history-method { font-weight: 700; font-size: 11px; color: var(--text-muted); width: 40px; flex-shrink: 0; }
+  .api-history-path { font-family: var(--font-mono); font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .api-history-meta { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-faint); padding-left: 46px; }
+  .api-status-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .api-status-dot.ok { background: var(--success); }
+  .api-status-dot.err { background: var(--danger); }
+  .api-main { flex: 1; overflow-y: auto; padding: 20px; }
+  .status-danger { color: var(--danger); background: var(--danger-bg); }
   .panel-api { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
   .request-row { display: flex; gap: 8px; padding: 12px; border-bottom: 1px solid var(--border); }
   .method-select { appearance: none; border: 1px solid var(--border); background: var(--surface-2); border-radius: var(--radius-sm); padding: 8px 10px; font-weight: 700; color: var(--text); min-width: 84px; }
@@ -165,10 +181,18 @@
   .query-editor { width: 100%; min-height: 74px; border: 1px solid var(--border); background: var(--surface-2); border-radius: var(--radius-lg); padding: 12px; font-family: var(--font-mono); font-size: 13px; color: var(--text); resize: vertical; }
 
   /* Log tool */
-  .panel-log { height: 100%; display: flex; flex-direction: column; margin: -20px; }
+  .panel-log { height: 100%; display: flex; margin: -20px; }
+  .log-sidebar { width: 200px; min-width: 200px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+  .log-sidebar-head { padding: 10px 12px; font-weight: 700; font-size: 12.5px; border-bottom: 1px solid var(--border); color: var(--text-muted); }
+  .log-source-list { flex: 1; overflow-y: auto; padding: 6px; }
+  .log-source-item { display: flex; align-items: center; gap: 7px; padding: 7px 9px; border-radius: var(--radius-sm); cursor: pointer; color: var(--text-muted); font-family: var(--font-mono); font-size: 12.5px; }
+  .log-source-item:hover { background: var(--surface-2); color: var(--text); }
+  .log-source-item.active { background: var(--surface-2); color: var(--text); font-weight: 600; }
+  .log-source-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .log-source-dot.live { background: var(--success); }
+  .log-source-dot.static { background: var(--text-faint); opacity: .5; }
+  .log-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .log-toolbar { display: flex; align-items: center; gap: 14px; padding: 12px 20px; border-bottom: 1px solid var(--border); }
-  .log-source { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-muted); white-space: nowrap; }
-  .log-source-path { font-family: var(--font-mono); color: var(--text); }
   .log-search { flex: 1; max-width: 260px; border: 1px solid var(--border); background: var(--bg); border-radius: var(--radius-sm); padding: 6px 10px; font-size: 12.5px; color: var(--text); }
   .log-live { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-faint); font-weight: 600; white-space: nowrap; }
   .log-live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
@@ -290,13 +314,32 @@
 <script>
   var TOOL_HTML = {
     api: '\
-<div class="panel-api">\
+<div class="api-layout">\
+<aside class="api-sidebar"><div class="api-sidebar-head">History</div><div class="api-history-list">\
+  <div class="api-history-item active js-api-hist" data-method="POST" data-url="/api/orders" data-status="200 OK" data-status-class="status-success" data-body=\'{ "id": 8841, "status": "pending" }\'>\
+    <div class="api-history-top"><span class="api-history-method">POST</span><span class="api-history-path">/api/orders</span></div>\
+    <div class="api-history-meta"><span class="api-status-dot ok"></span>200 · just now</div>\
+  </div>\
+  <div class="api-history-item js-api-hist" data-method="GET" data-url="/api/users/8841" data-status="200 OK" data-status-class="status-success" data-body=\'{ "id": "8841", "email": "customer@example.com", "name": "Jamie Rivera" }\'>\
+    <div class="api-history-top"><span class="api-history-method">GET</span><span class="api-history-path">/api/users/8841</span></div>\
+    <div class="api-history-meta"><span class="api-status-dot ok"></span>200 · 3m ago</div>\
+  </div>\
+  <div class="api-history-item js-api-hist" data-method="POST" data-url="/api/orders" data-status="500 Error" data-status-class="status-danger" data-body=\'{ "error": "insufficient_inventory", "sku": "wb-014" }\'>\
+    <div class="api-history-top"><span class="api-history-method">POST</span><span class="api-history-path">/api/orders</span></div>\
+    <div class="api-history-meta"><span class="api-status-dot err"></span>500 · 12m ago</div>\
+  </div>\
+  <div class="api-history-item js-api-hist" data-method="DELETE" data-url="/api/cart/9" data-status="204 No Content" data-status-class="status-success" data-body="(empty body)">\
+    <div class="api-history-top"><span class="api-history-method">DELETE</span><span class="api-history-path">/api/cart/9</span></div>\
+    <div class="api-history-meta"><span class="api-status-dot ok"></span>204 · 28m ago</div>\
+  </div>\
+</div></aside>\
+<div class="api-main"><div class="panel-api">\
   <div class="card">\
-    <div class="request-row"><select class="method-select"><option>POST</option></select><input class="url-input" value="/api/orders"><button class="btn-primary js-send">Send</button></div>\
+    <div class="request-row"><select class="method-select js-method"><option>POST</option></select><input class="url-input js-url" value="/api/orders"><button class="btn-primary js-send">Send</button></div>\
     <div class="subtabs"><button class="subtab active">Body</button><button class="subtab">Headers</button><button class="subtab">Params</button><button class="subtab">Auth</button></div>\
     <pre class="code-block">{\n  "customer_id": "cus_4471",\n  "items": [{ "sku": "wb-014", "qty": 2 }]\n}</pre>\
   </div>\
-  <div><div class="section-label">Response</div><div class="card"><div class="response-header"><span class="status-pill status-success">200 OK</span><span class="response-time">142ms</span></div><pre class="code-block">{ "id": 8841, "status": "pending" }</pre></div></div>\
+  <div><div class="section-label">Response</div><div class="card"><div class="response-header"><span class="status-pill status-success js-status-pill">200 OK</span><span class="response-time">142ms</span></div><pre class="code-block js-response-body">{ "id": 8841, "status": "pending" }</pre></div></div>\
   <div><div class="section-label">What happened</div><div class="card"><div class="rollup">\
     <div class="rollup-state active" data-state="populated"><div class="rollup-row">\
       <button class="rollup-item"><svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><ellipse cx="10" cy="5" rx="6" ry="2.3"/><path d="M4 5v10c0 1.3 2.7 2.3 6 2.3s6-1 6-2.3V5"/><path d="M4 10c0 1.3 2.7 2.3 6 2.3s6-1 6-2.3"/></svg>DB <span class="rollup-count">3 writes</span><span class="rollup-arrow">→</span></button>\
@@ -309,6 +352,7 @@
   </div></div>\
   <div class="demo-controls" style="margin-top:-6px;"><span class="demo-label">Preview rollup state:</span><button class="chip active js-rollup-chip" data-state="populated">Populated</button><button class="chip js-rollup-chip" data-state="zero">Zero-effects</button><button class="chip js-rollup-chip" data-state="partial">Partial-failure</button><button class="chip js-rollup-chip" data-state="loading">Loading</button></div>\
   </div>\
+</div></div>\
 </div>',
     db: '\
 <div class="panel-db">\
@@ -332,16 +376,15 @@
 </div>',
     log: '\
 <div class="panel-log">\
-  <div class="log-toolbar"><span class="log-source"><svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 3.5h9l3 3v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-12a1 1 0 0 1 1-1Z" stroke-linejoin="round"/></svg><span class="log-source-path">/var/log/app/server.log</span></span><input class="log-search js-log-search" placeholder="Filter…"><span class="log-live"><span class="log-live-dot"></span>Live</span></div>\
-  <div class="log-stream">\
-    <div class="log-line level-info"><span class="log-time">14:02:11.482</span><span class="log-level info">INFO</span><span class="log-msg">order created id=8841 customer=cus_4471 total=84.00</span></div>\
-    <div class="log-line level-info"><span class="log-time">14:02:11.491</span><span class="log-level info">INFO</span><span class="log-msg">inventory decremented sku=wb-014 qty=2</span></div>\
-    <div class="log-line level-warn"><span class="log-time">14:02:11.501</span><span class="log-level warn">WARN</span><span class="log-msg">inventory low for sku=wb-014 (2 remaining)</span></div>\
-    <div class="log-line level-info"><span class="log-time">14:02:11.512</span><span class="log-level info">INFO</span><span class="log-msg">sending order confirmation email to customer@example.com</span></div>\
-    <div class="log-line level-error"><span class="log-time">14:02:11.520</span><span class="log-level error">ERROR</span><span class="log-msg">smtp send failed: connection timeout after 3000ms, retrying (1/3)</span></div>\
-    <div class="log-line level-info"><span class="log-time">14:02:11.890</span><span class="log-level info">INFO</span><span class="log-msg">email sent id=em_7712 to=customer@example.com</span></div>\
-    <div class="log-line level-info"><span class="log-time">14:02:11.918</span><span class="log-level info">INFO</span><span class="log-msg">request completed method=POST path=/api/orders status=200 duration_ms=142</span></div>\
-  </div>\
+<aside class="log-sidebar"><div class="log-sidebar-head">Sources</div><div class="log-source-list">\
+  <div class="log-source-item active js-log-src" data-src="server">server.log <span class="log-source-dot live" style="margin-left:auto;"></span></div>\
+  <div class="log-source-item js-log-src" data-src="worker">worker.log <span class="log-source-dot live" style="margin-left:auto;"></span></div>\
+  <div class="log-source-item js-log-src" data-src="access">nginx/access.log <span class="log-source-dot static" style="margin-left:auto;"></span></div>\
+</div></aside>\
+<div class="log-main">\
+  <div class="log-toolbar"><input class="log-search js-log-search" placeholder="Filter…"><span class="log-live"><span class="log-live-dot"></span><span class="js-log-live-label">Live</span></span></div>\
+  <div class="log-stream js-log-stream"></div>\
+</div>\
 </div>',
     email: '\
 <div class="panel-email">\
@@ -357,6 +400,41 @@
   <div class="email-status">Listening on <b>localhost:1025</b> — <a href="#">change port in Settings</a></div>\
 </div>'
   };
+
+  var LOG_LINES = {
+    server: '\
+<div class="log-line level-info"><span class="log-time">14:02:11.482</span><span class="log-level info">INFO</span><span class="log-msg">order created id=8841 customer=cus_4471 total=84.00</span></div>\
+<div class="log-line level-info"><span class="log-time">14:02:11.491</span><span class="log-level info">INFO</span><span class="log-msg">inventory decremented sku=wb-014 qty=2</span></div>\
+<div class="log-line level-warn"><span class="log-time">14:02:11.501</span><span class="log-level warn">WARN</span><span class="log-msg">inventory low for sku=wb-014 (2 remaining)</span></div>\
+<div class="log-line level-info"><span class="log-time">14:02:11.512</span><span class="log-level info">INFO</span><span class="log-msg">sending order confirmation email to customer@example.com</span></div>\
+<div class="log-line level-error"><span class="log-time">14:02:11.520</span><span class="log-level error">ERROR</span><span class="log-msg">smtp send failed: connection timeout after 3000ms, retrying (1/3)</span></div>\
+<div class="log-line level-info"><span class="log-time">14:02:11.890</span><span class="log-level info">INFO</span><span class="log-msg">email sent id=em_7712 to=customer@example.com</span></div>\
+<div class="log-line level-info"><span class="log-time">14:02:11.918</span><span class="log-level info">INFO</span><span class="log-msg">request completed method=POST path=/api/orders status=200 duration_ms=142</span></div>',
+    worker: '\
+<div class="log-line level-info"><span class="log-time">14:01:58.220</span><span class="log-level info">INFO</span><span class="log-msg">job started id=job_552 type=send_email</span></div>\
+<div class="log-line level-info"><span class="log-time">14:02:11.884</span><span class="log-level info">INFO</span><span class="log-msg">job completed id=job_552 duration_ms=13664</span></div>\
+<div class="log-line level-info"><span class="log-time">14:02:12.010</span><span class="log-level info">INFO</span><span class="log-msg">job started id=job_553 type=recalculate_inventory</span></div>\
+<div class="log-line level-warn"><span class="log-time">14:02:12.340</span><span class="log-level warn">WARN</span><span class="log-msg">job job_553 retrying — lock held by another worker</span></div>\
+<div class="log-line level-info"><span class="log-time">14:02:13.502</span><span class="log-level info">INFO</span><span class="log-msg">job completed id=job_553 duration_ms=1492</span></div>',
+    access: '\
+<div class="log-line level-info"><span class="log-time">14:02:11.480</span><span class="log-level info">200</span><span class="log-msg">POST /api/orders HTTP/1.1 142ms</span></div>\
+<div class="log-line level-info"><span class="log-time">14:01:59.114</span><span class="log-level info">200</span><span class="log-msg">GET /api/users/8841 HTTP/1.1 18ms</span></div>\
+<div class="log-line level-error"><span class="log-time">14:01:47.902</span><span class="log-level error">500</span><span class="log-msg">POST /api/orders HTTP/1.1 61ms</span></div>\
+<div class="log-line level-info"><span class="log-time">14:01:33.220</span><span class="log-level info">204</span><span class="log-msg">DELETE /api/cart/9 HTTP/1.1 9ms</span></div>'
+  };
+
+  function applyLogFilter(root) {
+    var q = root.querySelector('.js-log-search').value.trim().toLowerCase();
+    root.querySelectorAll('.log-line').forEach(function (line) {
+      var match = !q || line.textContent.toLowerCase().indexOf(q) !== -1;
+      line.classList.toggle('hidden-by-filter', !match);
+    });
+  }
+  function renderLogSource(root, src) {
+    root.querySelector('.js-log-stream').innerHTML = LOG_LINES[src];
+    root.querySelector('.js-log-live-label').textContent = src === 'access' ? 'Static' : 'Live';
+    applyLogFilter(root);
+  }
 
   function wireTool(root, tool) {
     if (tool === 'api') {
@@ -383,6 +461,18 @@
           states.forEach(function (s) { s.classList.toggle('active', s.dataset.state === 'populated'); });
         }, 700);
       });
+      root.querySelectorAll('.js-api-hist').forEach(function (item) {
+        item.addEventListener('click', function () {
+          root.querySelectorAll('.js-api-hist').forEach(function (i) { i.classList.remove('active'); });
+          item.classList.add('active');
+          root.querySelector('.js-method').innerHTML = '<option>' + item.dataset.method + '</option>';
+          root.querySelector('.js-url').value = item.dataset.url;
+          var pill = root.querySelector('.js-status-pill');
+          pill.textContent = item.dataset.status;
+          pill.className = 'status-pill js-status-pill ' + item.dataset.statusClass;
+          root.querySelector('.js-response-body').textContent = item.dataset.body;
+        });
+      });
     } else if (tool === 'db') {
       root.querySelectorAll('.js-dbmode').forEach(function (btn) {
         btn.addEventListener('click', function () {
@@ -408,12 +498,13 @@
         });
       });
     } else if (tool === 'log') {
-      var search = root.querySelector('.js-log-search');
-      search.addEventListener('input', function () {
-        var q = this.value.trim().toLowerCase();
-        root.querySelectorAll('.log-line').forEach(function (line) {
-          var match = !q || line.textContent.toLowerCase().indexOf(q) !== -1;
-          line.classList.toggle('hidden-by-filter', !match);
+      renderLogSource(root, 'server');
+      root.querySelector('.js-log-search').addEventListener('input', function () { applyLogFilter(root); });
+      root.querySelectorAll('.js-log-src').forEach(function (item) {
+        item.addEventListener('click', function () {
+          root.querySelectorAll('.js-log-src').forEach(function (i) { i.classList.remove('active'); });
+          item.classList.add('active');
+          renderLogSource(root, item.dataset.src);
         });
       });
     } else if (tool === 'email') {
