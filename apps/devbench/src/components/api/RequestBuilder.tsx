@@ -1,7 +1,15 @@
 import { useState } from "react";
-import { invokeFireRequest, type FireRequestOutput } from "../../lib/tauri";
+import { invokeRunCorrelatedRequest, type CorrelationResult, type DbConnectInput } from "../../lib/tauri";
 
-export function RequestBuilder({ onResult }: { onResult: (result: FireRequestOutput) => void }) {
+export function RequestBuilder({
+  connection,
+  watchedTables,
+  onResult,
+}: {
+  connection: DbConnectInput;
+  watchedTables: Set<string>;
+  onResult: (result: CorrelationResult) => void;
+}) {
   const [method, setMethod] = useState("GET");
   const [url, setUrl] = useState("");
   const [sending, setSending] = useState(false);
@@ -9,7 +17,11 @@ export function RequestBuilder({ onResult }: { onResult: (result: FireRequestOut
   async function handleSend() {
     setSending(true);
     try {
-      const result = await invokeFireRequest({ method, url, body: undefined });
+      const result = await invokeRunCorrelatedRequest({
+        request: { method, url, body: undefined },
+        connection,
+        watchedTables: Array.from(watchedTables),
+      });
       onResult(result);
     } finally {
       setSending(false);

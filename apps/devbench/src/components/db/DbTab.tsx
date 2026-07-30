@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { SchemaTree } from "./SchemaTree";
 import { DataGrid } from "./DataGrid";
 import { invokeListTableRows, type DbConnectInput, type TableRows } from "../../lib/tauri";
@@ -14,9 +14,11 @@ const DEV_CONNECTION: DbConnectInput = {
 export function DbTab({
   watchedTables,
   onToggleWatch,
+  focusTable,
 }: {
   watchedTables: Set<string>;
   onToggleWatch: (table: string) => void;
+  focusTable: string | null;
 }) {
   const [tableRows, setTableRows] = useState<TableRows | null>(null);
 
@@ -24,6 +26,11 @@ export function DbTab({
     const rows = await invokeListTableRows(DEV_CONNECTION, table);
     setTableRows(rows);
   }
+
+  useEffect(() => {
+    if (focusTable) handleSelectTable(focusTable);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusTable]);
 
   return (
     <div className="-m-6 flex h-full">

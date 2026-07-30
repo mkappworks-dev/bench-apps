@@ -1,9 +1,14 @@
+import { useState } from "react";
 import { useAppStore } from "./store/useAppStore";
 import { ApiTab } from "./components/api/ApiTab";
+import { DbTab } from "./components/db/DbTab";
 
 export default function App() {
   const activeTab = useAppStore((s) => s.activeTab);
   const setActiveTab = useAppStore((s) => s.setActiveTab);
+  const watchedTables = useAppStore((s) => s.watchedTables);
+  const toggleWatchedTable = useAppStore((s) => s.toggleWatchedTable);
+  const [dbFocusTable, setDbFocusTable] = useState<string | null>(null);
 
   return (
     <div className="flex h-screen flex-col">
@@ -33,7 +38,11 @@ export default function App() {
         </nav>
       </header>
       <main className="flex-1 overflow-y-auto p-6">
-        {activeTab === "api" ? <ApiTab /> : <div data-testid="db-panel" />}
+        {activeTab === "api" ? (
+          <ApiTab onOpenTableInDb={setDbFocusTable} />
+        ) : (
+          <DbTab watchedTables={watchedTables} onToggleWatch={toggleWatchedTable} focusTable={dbFocusTable} />
+        )}
       </main>
     </div>
   );
