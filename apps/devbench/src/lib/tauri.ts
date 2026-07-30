@@ -61,3 +61,21 @@ export function invokeRunCorrelatedRequest(args: {
     watchedTables: args.watchedTables,
   });
 }
+
+export interface TableInfo {
+  schema: string;
+  name: string;
+}
+
+export function invokeDbConnectAndListTables(connection: DbConnectInput): Promise<TableInfo[]> {
+  return invoke("db_connect_and_list_tables", { input: connection });
+}
+
+export interface TableRows {
+  columns: string[];
+  rows: (string | null)[][];
+}
+
+export function invokeListTableRows(connection: DbConnectInput, table: string): Promise<TableRows> {
+  return invoke("list_table_rows", { input: connection, table });
+}
