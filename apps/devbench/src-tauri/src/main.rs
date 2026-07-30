@@ -27,6 +27,7 @@ fn main() {
             commands::request::fire_request,
             commands::history::save_history_entry,
             commands::history::list_history,
+            commands::correlation::run_correlated_request,
         ])
         .run(tauri::generate_context!())
         .expect("error while running devbench");
