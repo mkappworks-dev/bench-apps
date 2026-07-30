@@ -1,4 +1,5 @@
 import { useAppStore } from "./store/useAppStore";
+import { ApiTab } from "./components/api/ApiTab";
 
 export default function App() {
   const activeTab = useAppStore((s) => s.activeTab);
@@ -32,7 +33,7 @@ export default function App() {
         </nav>
       </header>
       <main className="flex-1 overflow-y-auto p-6">
-        {activeTab === "api" ? <div data-testid="api-panel" /> : <div data-testid="db-panel" />}
+        {activeTab === "api" ? <ApiTab /> : <div data-testid="db-panel" />}
       </main>
     </div>
   );
