@@ -70,6 +70,10 @@ fn main() {
             commands::history::save_history_entry,
             commands::history::list_history,
             commands::correlation::run_correlated_request,
+            commands::email::list_emails,
+            commands::email::get_email,
+            commands::email::clear_emails,
+            commands::email::smtp_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running devbench");
