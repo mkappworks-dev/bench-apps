@@ -2014,7 +2014,7 @@ beforeAll(() => {
 });
 
 function line(id: number, over: Partial<LogLine> = {}): LogLine {
-  return {
+  const merged = {
     id,
     source_id: "src1",
     captured_at_ms: 1_000 + id,
@@ -2024,6 +2024,13 @@ function line(id: number, over: Partial<LogLine> = {}): LogLine {
     raw: `line ${id}`,
     ...over,
   };
+  // LogStream filters on `raw`, not `message` — if a caller overrides only
+  // `message` (as the filter test below does), `raw` must follow it or the
+  // filter test fails against this helper's own stale placeholder data.
+  if (over.message !== undefined && over.raw === undefined) {
+    merged.raw = over.message;
+  }
+  return merged;
 }
 
 describe("LogStream", () => {
@@ -2162,8 +2169,10 @@ Expected: PASS (five tests)
 
 - [ ] **Step 5: Commit**
 
+`bun install` in Step 1 also regenerates the root `bun.lock` — this repo commits lockfile changes alongside dependency changes (established precedent: commit `308e762`), so stage it too or a fresh clone at this commit has a `package.json`/`bun.lock` mismatch.
+
 ```bash
-git add apps/devbench/package.json apps/devbench/src/components/log
+git add apps/devbench/package.json bun.lock apps/devbench/src/components/log
 git commit -m "feat(devbench): add virtualized LogStream with filtering"
 ```
 
