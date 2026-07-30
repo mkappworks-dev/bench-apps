@@ -93,40 +93,86 @@ pub async fn snapshot_table(
 
 #[derive(Debug, Serialize)]
 pub struct CorrelationResult {
+    /// Handle for the second phase (`collect_correlation_window`). Filled in
+    /// by Task 6; a fixed placeholder until then.
+    pub correlation_id: String,
     pub response: FireRequestOutput,
-    pub table_diffs: Vec<TableDiff>,
+    /// `None` means the DB could not be verified — never rendered as "0 writes".
+    /// `Some(vec![])` means it WAS verified and nothing changed.
+    pub table_diffs: Option<Vec<TableDiff>>,
+    pub db_error: Option<String>,
+}
+
+/// Snapshots every watched table. Returned as a `Result` so the caller can
+/// degrade to "unable to verify" instead of failing the whole request.
+async fn snapshot_all(
+    pool: &Pool<Postgres>,
+    watched_tables: &[String],
+) -> Result<Vec<(String, String, Vec<RowSnapshot>)>, String> {
+    let mut snapshots = Vec::with_capacity(watched_tables.len());
+    for table in watched_tables {
+        let pk_col = get_primary_key_column(pool, table).await?;
+        let snapshot = snapshot_table(pool, table, &pk_col).await?;
+        snapshots.push((table.clone(), pk_col, snapshot));
+    }
+    Ok(snapshots)
+}
+
+async fn diff_all(
+    pool: &Pool<Postgres>,
+    before: Vec<(String, String, Vec<RowSnapshot>)>,
+) -> Result<Vec<TableDiff>, String> {
+    let mut table_diffs = Vec::with_capacity(before.len());
+    for (table, pk_col, before_rows) in before {
+        let after = snapshot_table(pool, &table, &pk_col).await?;
+        let diff = diff_table_snapshots(&table, &before_rows, &after);
+        if diff.inserted > 0 || diff.updated > 0 || diff.deleted > 0 {
+            table_diffs.push(diff);
+        }
+    }
+    Ok(table_diffs)
 }
 
 pub async fn run_correlated_request_impl(
     request: FireRequestInput,
     connection: DbConnectInput,
     watched_tables: Vec<String>,
+    logs: &crate::log_state::LogState,
 ) -> Result<CorrelationResult, String> {
+    // Everything DB-related is fallible-but-not-fatal. Only a failure to fire
+    // the request itself fails the command, because without a response there
+    // is nothing to correlate against.
     let pool = PgPoolOptions::new()
         .max_connections(1)
         .connect(&connection_string(&connection))
         .await
-        .map_err(|e| format!("connection failed: {e}"))?;
+        .map_err(|e| format!("connection failed: {e}"))
+        .ok();
 
-    let mut before_snapshots = Vec::with_capacity(watched_tables.len());
-    for table in &watched_tables {
-        let pk_col = get_primary_key_column(&pool, table).await?;
-        let snapshot = snapshot_table(&pool, table, &pk_col).await?;
-        before_snapshots.push((table.clone(), pk_col, snapshot));
-    }
+    let before = match &pool {
+        Some(p) => snapshot_all(p, &watched_tables).await.map_err(Some),
+        None => Err(Some("connection failed".to_string())),
+    };
+
+    let _ = logs; // used from Task 6 onward
 
     let response = fire_request_impl(request).await?;
 
-    let mut table_diffs = Vec::with_capacity(watched_tables.len());
-    for (table, pk_col, before) in before_snapshots {
-        let after = snapshot_table(&pool, &table, &pk_col).await?;
-        let diff = diff_table_snapshots(&table, &before, &after);
-        if diff.inserted > 0 || diff.updated > 0 || diff.deleted > 0 {
-            table_diffs.push(diff);
-        }
-    }
+    let (table_diffs, db_error) = match (pool, before) {
+        (Some(p), Ok(snapshots)) => match diff_all(&p, snapshots).await {
+            Ok(diffs) => (Some(diffs), None),
+            Err(e) => (None, Some(e)),
+        },
+        (_, Err(e)) => (None, e),
+        (None, Ok(_)) => (None, Some("connection failed".to_string())),
+    };
 
-    Ok(CorrelationResult { response, table_diffs })
+    Ok(CorrelationResult {
+        correlation_id: String::new(),
+        response,
+        table_diffs,
+        db_error,
+    })
 }
 
 /// Persists a request-history entry for a correlated request that already
@@ -164,7 +210,7 @@ pub async fn run_correlated_request(
 ) -> Result<CorrelationResult, String> {
     let method = request.method.clone();
     let url = request.url.clone();
-    let result = run_correlated_request_impl(request, connection, watched_tables).await?;
+    let result = run_correlated_request_impl(request, connection, watched_tables, &crate::log_state::LogState::new()).await?;
     save_correlation_history(&db.pool, &method, &url, &result.response).await;
     Ok(result)
 }
@@ -359,15 +405,17 @@ mod tests {
             },
             conn,
             vec!["orders_e2e".to_string(), "untouched_e2e".to_string()],
+            &crate::log_state::LogState::new(),
         )
         .await
         .unwrap();
 
         mock.assert_async().await;
         assert_eq!(result.response.status_code, 201);
-        assert_eq!(result.table_diffs.len(), 1);
-        assert_eq!(result.table_diffs[0].table, "orders_e2e");
-        assert_eq!(result.table_diffs[0].inserted, 1);
+        let diffs = result.table_diffs.expect("diffs should be present");
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].table, "orders_e2e");
+        assert_eq!(diffs[0].inserted, 1);
 
         sqlx::query("DROP TABLE orders_e2e").execute(&pool).await.unwrap();
         sqlx::query("DROP TABLE untouched_e2e").execute(&pool).await.unwrap();
@@ -472,7 +520,7 @@ mod tests {
         let request = FireRequestInput { method: "GET".to_string(), url: url.clone(), body: None };
         let method = request.method.clone();
 
-        let result = run_correlated_request_impl(request, conn, vec![]).await.unwrap();
+        let result = run_correlated_request_impl(request, conn, vec![], &crate::log_state::LogState::new()).await.unwrap();
         save_correlation_history(&db.pool, &method, &url, &result.response).await;
 
         mock.assert_async().await;
@@ -483,5 +531,56 @@ mod tests {
         assert_eq!(entries[0].url, url);
         assert_eq!(entries[0].status_code, 200);
         assert_eq!(entries[0].response_body, "pong");
+    }
+
+    // A watched table that does not exist stands in for any mid-diff DB
+    // failure (dropped connection, revoked permission, dropped table). The
+    // request itself succeeded, so the user must still get their response and
+    // an explicit "unable to verify" — never a silent, false "0 writes".
+    #[tokio::test]
+    async fn a_db_failure_still_returns_the_response_and_reports_unable_to_verify() {
+        let conn = test_connection();
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
+
+        let result = run_correlated_request_impl(
+            FireRequestInput {
+                method: "GET".to_string(),
+                url: format!("{}/ping", server.url()),
+                body: None,
+            },
+            conn,
+            vec!["table_that_does_not_exist_anywhere".to_string()],
+            &crate::log_state::LogState::new(),
+        )
+        .await
+        .expect("a DB verification failure must not fail the whole command");
+
+        mock.assert_async().await;
+        assert_eq!(result.response.status_code, 200);
+        assert_eq!(result.response.body, "pong");
+        assert!(result.table_diffs.is_none(), "diffs must be absent, not empty");
+        assert!(result.db_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_successful_diff_reports_an_empty_vec_not_a_null() {
+        let conn = test_connection();
+        let mut server = mockito::Server::new_async().await;
+        let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
+
+        let result = run_correlated_request_impl(
+            FireRequestInput { method: "GET".to_string(), url: format!("{}/ping", server.url()), body: None },
+            conn,
+            vec![],
+            &crate::log_state::LogState::new(),
+        )
+        .await
+        .unwrap();
+
+        mock.assert_async().await;
+        assert_eq!(result.table_diffs, Some(vec![]), "watching nothing is still a successful verification");
+        assert_eq!(result.db_error, None);
     }
 }

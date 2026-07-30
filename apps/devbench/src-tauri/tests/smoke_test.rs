@@ -1,6 +1,7 @@
 use devbench::commands::correlation::run_correlated_request_impl;
 use devbench::commands::db::{connection_string, DbConnectInput};
 use devbench::commands::request::FireRequestInput;
+use devbench::log_state::LogState;
 use sqlx::postgres::PgPoolOptions;
 
 fn test_connection() -> DbConnectInput {
@@ -108,15 +109,17 @@ async fn firing_a_request_against_a_seeded_postgres_produces_the_expected_rollup
         },
         conn,
         vec!["smoke_orders".to_string()],
+        &LogState::new(),
     )
     .await
     .expect("correlated request should succeed");
 
     mock.assert_async().await;
     assert_eq!(result.response.status_code, 201);
-    assert_eq!(result.table_diffs.len(), 1);
-    assert_eq!(result.table_diffs[0].table, "smoke_orders");
-    assert_eq!(result.table_diffs[0].inserted, 1);
+    let diffs = result.table_diffs.expect("table_diffs should be present");
+    assert_eq!(diffs.len(), 1);
+    assert_eq!(diffs[0].table, "smoke_orders");
+    assert_eq!(diffs[0].inserted, 1);
 
     sqlx::query("DROP TABLE smoke_orders")
         .execute(&pool)
