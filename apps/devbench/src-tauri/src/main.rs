@@ -34,6 +34,8 @@ fn main() {
             commands::sessions::archive_session,
             commands::sessions::restore_session,
             commands::sessions::delete_session,
+            commands::watched::list_watched_tables,
+            commands::watched::set_watched_table,
         ])
         .run(tauri::generate_context!())
         .expect("error while running devbench");

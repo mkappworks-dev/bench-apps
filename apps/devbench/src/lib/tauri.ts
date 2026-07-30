@@ -79,3 +79,15 @@ export interface TableRows {
 export function invokeListTableRows(connection: DbConnectInput, table: string): Promise<TableRows> {
   return invoke("list_table_rows", { input: connection, table });
 }
+
+export function invokeListWatchedTables(connection: DbConnectInput): Promise<string[]> {
+  return invoke("list_watched_tables", { connection });
+}
+
+export function invokeSetWatchedTable(
+  connection: DbConnectInput,
+  table: string,
+  watched: boolean,
+): Promise<void> {
+  return invoke("set_watched_table", { connection, table, watched });
+}
