@@ -1,6 +1,4 @@
-use super::db::{connection_string, DbConnectInput};
 use serde::Serialize;
-use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Row};
 use std::collections::HashMap;
 
@@ -45,18 +43,21 @@ pub fn diff_table_snapshots(table: &str, before: &[RowSnapshot], after: &[RowSna
 }
 
 pub async fn get_primary_key_column(pool: &Pool<Postgres>, table: &str) -> Result<String, String> {
-    let row = sqlx::query(
+    let rows = sqlx::query(
         "SELECT kcu.column_name FROM information_schema.table_constraints tc \
          JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name \
-         WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_name = $1 LIMIT 1",
+         WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_name = $1",
     )
     .bind(table)
-    .fetch_optional(pool)
+    .fetch_all(pool)
     .await
     .map_err(|e| format!("failed to look up primary key for {table}: {e}"))?;
 
-    row.map(|r| r.get::<String, _>("column_name"))
-        .ok_or_else(|| format!("table {table} has no single-column primary key — not watchable"))
+    match rows.len() {
+        0 => Err(format!("table {table} has no single-column primary key — not watchable")),
+        1 => Ok(rows[0].get::<String, _>("column_name")),
+        _ => Err(format!("table {table} has a composite primary key — not watchable")),
+    }
 }
 
 pub async fn snapshot_table(
@@ -78,6 +79,8 @@ pub async fn snapshot_table(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::db::{connection_string, DbConnectInput};
+    use sqlx::postgres::PgPoolOptions;
 
     fn snap(pk: &str, hash: &str) -> RowSnapshot {
         RowSnapshot { pk: pk.to_string(), hash: hash.to_string() }
@@ -151,5 +154,24 @@ mod tests {
         assert_eq!(diff, TableDiff { table: "correlation_test".into(), inserted: 0, updated: 1, deleted: 0 });
 
         sqlx::query("DROP TABLE correlation_test").execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_composite_primary_keys() {
+        let conn = test_connection();
+        let pool = PgPoolOptions::new()
+            .connect(&connection_string(&conn))
+            .await
+            .expect("requires a real local Postgres");
+
+        sqlx::query("DROP TABLE IF EXISTS composite_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE composite_test (tenant_id int, item_id int, val text, PRIMARY KEY (tenant_id, item_id))")
+            .execute(&pool).await.unwrap();
+
+        let result = get_primary_key_column(&pool, "composite_test").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("composite primary key"));
+
+        sqlx::query("DROP TABLE composite_test").execute(&pool).await.unwrap();
     }
 }
