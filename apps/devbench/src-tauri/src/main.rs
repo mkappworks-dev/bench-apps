@@ -1,9 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod commands;
-mod local_db;
-
-use local_db::LocalDb;
+use devbench::commands;
+use devbench::local_db::LocalDb;
 use tauri::Manager;
 
 fn main() {

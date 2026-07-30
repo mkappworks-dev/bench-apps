@@ -3,6 +3,10 @@ name = "devbench"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "devbench"
+path = "src/lib.rs"
+
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
 
