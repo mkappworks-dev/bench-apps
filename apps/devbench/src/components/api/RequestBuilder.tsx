@@ -5,10 +5,12 @@ export function RequestBuilder({
   connection,
   watchedTables,
   onResult,
+  onSendStart,
 }: {
   connection: DbConnectInput;
   watchedTables: Set<string>;
   onResult: (result: CorrelationResult) => void;
+  onSendStart?: () => void;
 }) {
   const [method, setMethod] = useState("GET");
   const [url, setUrl] = useState("");
@@ -16,6 +18,7 @@ export function RequestBuilder({
 
   async function handleSend() {
     setSending(true);
+    onSendStart?.();
     try {
       const result = await invokeRunCorrelatedRequest({
         request: { method, url, body: undefined },

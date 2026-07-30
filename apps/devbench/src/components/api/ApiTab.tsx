@@ -20,12 +20,18 @@ export function ApiTab({ onOpenTableInDb }: { onOpenTableInDb: (table: string) =
   const [correlation, setCorrelation] = useState<CorrelationResult | null>(null);
   const [sending, setSending] = useState(false);
 
+  function handleSendStart() {
+    setSending(true);
+    setCorrelation(null);
+  }
+
   function handleResult(result: CorrelationResult) {
     setSending(false);
     setCorrelation(result);
   }
 
   function handleHistorySelect(entry: HistoryEntry) {
+    setSending(false);
     setCorrelation({
       response: { status_code: entry.status_code, body: entry.response_body, duration_ms: entry.duration_ms },
       table_diffs: [],
@@ -44,19 +50,17 @@ export function ApiTab({ onOpenTableInDb }: { onOpenTableInDb: (table: string) =
         <RequestBuilder
           connection={DEV_CONNECTION}
           watchedTables={watchedTables}
-          onResult={(r) => {
-            setSending(true);
-            handleResult(r);
-          }}
+          onSendStart={handleSendStart}
+          onResult={handleResult}
         />
         <ResponseViewer result={correlation?.response ?? null} />
-        {correlation ? (
+        {correlation || sending ? (
           <div>
             <div className="m-0.5 text-[11.5px] font-bold uppercase tracking-wide text-text-faint">
               What happened
             </div>
             <div className="rounded-lg border border-border bg-surface">
-              <Rollup diffs={correlation.table_diffs} loading={sending} onTableClick={handleTableClick} />
+              <Rollup diffs={correlation?.table_diffs ?? []} loading={sending} onTableClick={handleTableClick} />
             </div>
           </div>
         ) : null}

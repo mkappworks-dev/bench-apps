@@ -2,6 +2,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { RequestBuilder } from "./RequestBuilder";
 import * as tauriLib from "../../lib/tauri";
+import type { CorrelationResult } from "../../lib/tauri";
 
 const connection = { host: "localhost", port: 5432, database: "d", username: "u", password: "p" };
 
@@ -36,5 +37,38 @@ describe("RequestBuilder", () => {
       connection,
       watchedTables: ["orders"],
     });
+  });
+
+  it("calls onSendStart synchronously before the correlated request resolves", async () => {
+    const onResult = vi.fn();
+    const onSendStart = vi.fn();
+    let resolveRequest!: (value: CorrelationResult) => void;
+    vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockReturnValue(
+      new Promise<CorrelationResult>((resolve) => {
+        resolveRequest = resolve;
+      }),
+    );
+
+    render(
+      <RequestBuilder
+        connection={connection}
+        watchedTables={new Set(["orders"])}
+        onResult={onResult}
+        onSendStart={onSendStart}
+      />,
+    );
+    fireEvent.change(screen.getByPlaceholderText("/api/orders"), {
+      target: { value: "/api/orders" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(onSendStart).toHaveBeenCalledTimes(1);
+    expect(onResult).not.toHaveBeenCalled();
+
+    resolveRequest({
+      response: { status_code: 200, body: "{}", duration_ms: 5 },
+      table_diffs: [],
+    });
+    await waitFor(() => expect(onResult).toHaveBeenCalledTimes(1));
   });
 });
