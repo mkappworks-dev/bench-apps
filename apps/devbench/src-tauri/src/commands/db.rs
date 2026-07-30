@@ -69,11 +69,13 @@ fn cell_to_string(row: &sqlx::postgres::PgRow, index: usize) -> Option<String> {
     if let Ok(v) = row.try_get::<Option<f64>, _>(index) { return v.map(|n| n.to_string()); }
     if let Ok(v) = row.try_get::<Option<bool>, _>(index) { return v.map(|b| b.to_string()); }
     if let Ok(v) = row.try_get::<Option<chrono::NaiveDateTime>, _>(index) { return v.map(|d| d.to_string()); }
+    if let Ok(v) = row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(index) { return v.map(|d| d.to_string()); }
+    if let Ok(v) = row.try_get::<Option<chrono::NaiveDate>, _>(index) { return v.map(|d| d.to_string()); }
     if let Ok(v) = row.try_get::<Option<uuid::Uuid>, _>(index) { return v.map(|u| u.to_string()); }
     // None of the supported decode paths matched. This is NOT the same thing as a
     // genuine SQL NULL (which returns early above via `v.map(...)` on `None`) — it
     // means the column holds a real, non-null value of a type we don't know how to
-    // decode (NUMERIC/DECIMAL, DATE, TIMESTAMPTZ, JSONB, arrays, enums, ...).
+    // decode (NUMERIC/DECIMAL, JSONB, arrays, enums, ...).
     // Rendering that the same as NULL would silently misrepresent real row data, so
     // it gets a visible marker instead. Full decode support for every Postgres type
     // is out of scope here — this only makes the failure mode honest.
@@ -322,6 +324,46 @@ mod tests {
         assert_eq!(result.rows[0][2], None, "a genuine NULL must still render as None");
 
         sqlx::query("DROP TABLE unsupported_type_test")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn timestamptz_and_date_columns_render_as_strings() {
+        let conn = test_connection();
+        let pool = PgPoolOptions::new()
+            .connect(&connection_string(&conn))
+            .await
+            .expect("requires a real local Postgres — see CONTRIBUTING for setup");
+
+        sqlx::query("DROP TABLE IF EXISTS datetime_type_test")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // Create a table with TIMESTAMPTZ (common use case like created_at) and DATE columns.
+        sqlx::query(
+            "CREATE TABLE datetime_type_test (id serial PRIMARY KEY, created_at timestamptz, birth_date date)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO datetime_type_test (created_at, birth_date) VALUES ('2025-07-30 12:34:56+00:00', '2025-07-30')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let result = list_table_rows_impl(&conn, "datetime_type_test").await.unwrap();
+        assert_eq!(result.columns, vec!["id", "created_at", "birth_date"]);
+
+        // Verify that TIMESTAMPTZ (created_at) and DATE (birth_date) render as strings, not as unsupported.
+        assert!(result.rows[0][1].is_some(), "TIMESTAMPTZ column should decode to Some(string)");
+        assert_ne!(result.rows[0][1], Some("<unsupported type>".to_string()), "TIMESTAMPTZ should render as a date string, not unsupported");
+
+        assert!(result.rows[0][2].is_some(), "DATE column should decode to Some(string)");
+        assert_ne!(result.rows[0][2], Some("<unsupported type>".to_string()), "DATE should render as a date string, not unsupported");
+
+        sqlx::query("DROP TABLE datetime_type_test")
             .execute(&pool)
             .await
             .unwrap();
