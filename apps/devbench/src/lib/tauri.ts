@@ -38,8 +38,11 @@ export interface TableDiff {
 }
 
 export interface CorrelationResult {
+  correlation_id: string;
   response: FireRequestOutput;
-  table_diffs: TableDiff[];
+  /** `null` means the database could not be verified — never render this as "0 writes". */
+  table_diffs: TableDiff[] | null;
+  db_error: string | null;
 }
 
 export interface DbConnectInput {
@@ -60,6 +63,62 @@ export function invokeRunCorrelatedRequest(args: {
     connection: args.connection,
     watchedTables: args.watchedTables,
   });
+}
+
+export interface LogLine {
+  id: number;
+  source_id: string;
+  captured_at_ms: number;
+  timestamp: string | null;
+  level: string | null;
+  message: string;
+  raw: string;
+}
+
+export interface LogSourceStatus {
+  id: string;
+  label: string;
+  path: string;
+  state: string;
+  error: string | null;
+}
+
+export interface LogPage {
+  lines: LogLine[];
+  next_id: number;
+  dropped: number;
+}
+
+export interface CorrelationWindowResult {
+  /** `null` means no log source is configured — logs were not observed at all. */
+  log_lines: LogLine[] | null;
+  log_lines_truncated: boolean;
+}
+
+export function invokeAddLogSource(label: string, path: string): Promise<LogSourceStatus> {
+  return invoke("add_log_source", { input: { label, path } });
+}
+
+export function invokeRemoveLogSource(id: string): Promise<void> {
+  return invoke("remove_log_source", { id });
+}
+
+export function invokeListLogSources(): Promise<LogSourceStatus[]> {
+  return invoke("list_log_sources");
+}
+
+export function invokeReadLogLines(args: {
+  afterId: number;
+  sourceId?: string;
+  limit: number;
+}): Promise<LogPage> {
+  return invoke("read_log_lines", {
+    input: { after_id: args.afterId, source_id: args.sourceId ?? null, limit: args.limit },
+  });
+}
+
+export function invokeCollectCorrelationWindow(correlationId: string): Promise<CorrelationWindowResult> {
+  return invoke("collect_correlation_window", { correlationId });
 }
 
 export interface TableInfo {

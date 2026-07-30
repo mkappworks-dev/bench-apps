@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type TabId = "api" | "db";
+export type TabId = "api" | "db" | "log";
 export type ThemePref = "dark" | "light" | "system";
 
 interface AppState {
@@ -12,6 +12,9 @@ interface AppState {
   toggleWatchedTable: (table: string) => void;
   /** Replaces watch state wholesale, e.g. after loading it from SQLite. */
   setWatchedTables: (tables: string[]) => void;
+  /** Which log source the Log tab is showing; null means "all sources". */
+  activeLogSourceId: string | null;
+  setActiveLogSourceId: (id: string | null) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -28,4 +31,6 @@ export const useAppStore = create<AppState>((set) => ({
       return { watchedTables: next };
     }),
   setWatchedTables: (tables) => set({ watchedTables: new Set(tables) }),
+  activeLogSourceId: null,
+  setActiveLogSourceId: (id) => set({ activeLogSourceId: id }),
 }));

@@ -19,4 +19,15 @@ describe("useAppStore", () => {
     useAppStore.getState().toggleWatchedTable("orders");
     expect(useAppStore.getState().watchedTables.has("orders")).toBe(false);
   });
+
+  it("can switch to the log tab", () => {
+    useAppStore.getState().setActiveTab("log");
+    expect(useAppStore.getState().activeTab).toBe("log");
+  });
+
+  it("tracks the selected log source", () => {
+    expect(useAppStore.getState().activeLogSourceId).toBeNull();
+    useAppStore.getState().setActiveLogSourceId("src-1");
+    expect(useAppStore.getState().activeLogSourceId).toBe("src-1");
+  });
 });
