@@ -185,6 +185,61 @@ impl EmailStore {
     }
 }
 
+use std::sync::{Arc, Mutex};
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SmtpStatus {
+    pub listening: bool,
+    pub port: u16,
+    /// Populated when the catcher could not start. Rendered verbatim in the
+    /// Email tab so the user learns *why* no mail is being caught, rather than
+    /// staring at an empty inbox that looks like "the backend sent nothing".
+    pub error: Option<String>,
+}
+
+/// Tauri-managed email state: the inbox plus the catcher's health.
+pub struct EmailState {
+    store: Arc<Mutex<EmailStore>>,
+    status: Mutex<SmtpStatus>,
+}
+
+impl EmailState {
+    pub fn new() -> Self {
+        Self {
+            store: Arc::new(Mutex::new(EmailStore::new(MAX_INBOX_MESSAGES))),
+            status: Mutex::new(SmtpStatus { listening: false, port: DEFAULT_SMTP_PORT, error: None }),
+        }
+    }
+
+    /// Handed to the catcher thread; also read by the commands.
+    pub fn store(&self) -> Arc<Mutex<EmailStore>> {
+        Arc::clone(&self.store)
+    }
+
+    pub fn status(&self) -> SmtpStatus {
+        match self.status.lock() {
+            Ok(s) => s.clone(),
+            Err(_) => SmtpStatus {
+                listening: false,
+                port: DEFAULT_SMTP_PORT,
+                error: Some("SMTP status unavailable".to_string()),
+            },
+        }
+    }
+
+    pub fn set_status(&self, next: SmtpStatus) {
+        if let Ok(mut s) = self.status.lock() {
+            *s = next;
+        }
+    }
+}
+
+impl Default for EmailState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,5 +339,43 @@ mod tests {
         store.clear();
         assert_eq!(store.list(10).len(), 0);
         assert_eq!(store.next_id(), next_before, "ids must never be reused");
+    }
+
+    #[test]
+    fn a_new_email_state_reports_not_listening_until_the_catcher_binds() {
+        let state = EmailState::new();
+        let status = state.status();
+        assert!(!status.listening);
+        assert_eq!(status.error, None);
+    }
+
+    #[test]
+    fn a_bind_failure_is_recorded_as_status_rather_than_being_thrown_away() {
+        let state = EmailState::new();
+        state.set_status(SmtpStatus {
+            listening: false,
+            port: DEFAULT_SMTP_PORT,
+            error: Some("SMTP port 1025 is unavailable".to_string()),
+        });
+        let status = state.status();
+        assert!(!status.listening);
+        assert!(status.error.unwrap().contains("1025"));
+    }
+
+    #[test]
+    fn email_state_exposes_its_store_for_the_catcher_thread_and_the_commands() {
+        let state = EmailState::new();
+        // `state.store()` returns an owned `Arc` clone (by design — that's
+        // what the catcher thread needs). Locking it inline as
+        // `state.store().lock().unwrap()` does not compile: the temporary
+        // `Arc` is dropped at the end of the `let` statement while the guard
+        // it produced is still borrowed for use on the next line (E0716).
+        // Binding the `Arc` first keeps it alive for the block.
+        let store_arc = state.store();
+        {
+            let mut store = store_arc.lock().unwrap();
+            store.push("a@x.test", &["b@y.test".into()], SIMPLE, 1_000);
+        }
+        assert_eq!(state.store().lock().unwrap().list(10).len(), 1);
     }
 }
