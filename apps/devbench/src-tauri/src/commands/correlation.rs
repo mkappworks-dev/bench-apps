@@ -2,9 +2,12 @@ use serde::Serialize;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Row};
 use std::collections::HashMap;
+use tauri::State;
 
-use super::db::{connection_string, DbConnectInput};
+use super::db::{connection_string, validate_identifier, DbConnectInput};
+use super::history::{save_history_entry_impl, HistoryEntryInput};
 use super::request::{fire_request_impl, FireRequestInput, FireRequestOutput};
+use crate::local_db::LocalDb;
 
 #[derive(Debug, Clone)]
 pub struct RowSnapshot {
@@ -69,7 +72,15 @@ pub async fn snapshot_table(
     table: &str,
     pk_col: &str,
 ) -> Result<Vec<RowSnapshot>, String> {
-    let sql = format!("SELECT {pk_col}::text as pk, md5(t::text) as hash FROM {table} t");
+    // Validate both identifiers before using them in SQL — `table` comes straight
+    // from the frontend's `watched_tables` list with no validation upstream, and
+    // `pk_col`, while normally sourced from `information_schema` (trusted), is
+    // validated too as defense-in-depth, matching db.rs's `list_table_rows_impl`.
+    validate_identifier(table)?;
+    validate_identifier(pk_col)?;
+
+    // Double-quote both identifiers as defense-in-depth after validation.
+    let sql = format!("SELECT \"{pk_col}\"::text as pk, md5(t::text) as hash FROM \"{table}\" t");
     let rows = sqlx::query(&sql)
         .fetch_all(pool)
         .await
@@ -118,13 +129,44 @@ pub async fn run_correlated_request_impl(
     Ok(CorrelationResult { response, table_diffs })
 }
 
+/// Persists a request-history entry for a correlated request that already
+/// succeeded. Takes the raw SQLite pool (not a Tauri `State`) so it stays
+/// directly unit-testable, matching this codebase's `_impl` convention.
+///
+/// A failure here is intentionally non-fatal to the caller: the user's actual
+/// HTTP request already completed by the time this runs, so we don't want a
+/// local SQLite hiccup to fail the whole command. It's not swallowed silently
+/// either — it's logged so an empty history sidebar is debuggable.
+async fn save_correlation_history(
+    pool: &sqlx::SqlitePool,
+    method: &str,
+    url: &str,
+    response: &FireRequestOutput,
+) {
+    let entry = HistoryEntryInput {
+        method: method.to_string(),
+        url: url.to_string(),
+        status_code: response.status_code,
+        response_body: response.body.clone(),
+        duration_ms: response.duration_ms,
+    };
+    if let Err(e) = save_history_entry_impl(pool, entry).await {
+        eprintln!("failed to save request history entry after a successful correlated request: {e}");
+    }
+}
+
 #[tauri::command]
 pub async fn run_correlated_request(
+    db: State<'_, LocalDb>,
     request: FireRequestInput,
     connection: DbConnectInput,
     watched_tables: Vec<String>,
 ) -> Result<CorrelationResult, String> {
-    run_correlated_request_impl(request, connection, watched_tables).await
+    let method = request.method.clone();
+    let url = request.url.clone();
+    let result = run_correlated_request_impl(request, connection, watched_tables).await?;
+    save_correlation_history(&db.pool, &method, &url, &result.response).await;
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -329,5 +371,117 @@ mod tests {
 
         sqlx::query("DROP TABLE orders_e2e").execute(&pool).await.unwrap();
         sqlx::query("DROP TABLE untouched_e2e").execute(&pool).await.unwrap();
+    }
+
+    // --- Fix 2: snapshot_table SQL hardening ---
+
+    #[tokio::test]
+    async fn snapshot_table_rejects_a_malicious_table_name() {
+        let conn = test_connection();
+        let pool = PgPoolOptions::new()
+            .connect(&connection_string(&conn))
+            .await
+            .expect("requires a real local Postgres");
+
+        let result = snapshot_table(&pool, "orders; DROP TABLE users; --", "id").await;
+        assert!(result.is_err(), "should reject malicious table name before executing SQL");
+    }
+
+    #[tokio::test]
+    async fn snapshot_table_rejects_a_malicious_pk_column() {
+        let conn = test_connection();
+        let pool = PgPoolOptions::new()
+            .connect(&connection_string(&conn))
+            .await
+            .expect("requires a real local Postgres");
+
+        let result = snapshot_table(&pool, "orders", "id; DROP TABLE users; --").await;
+        assert!(result.is_err(), "should reject malicious pk column name before executing SQL");
+    }
+
+    // Before this fix, snapshot_table's raw (unquoted) format! interpolation meant
+    // an unquoted `MixedCaseTable` identifier would be folded to lowercase by
+    // Postgres and resolve to `mixedcasetable` — which does NOT match a table that
+    // was actually created quoted as "MixedCaseTable". That's not just an
+    // injection risk, it's a guaranteed functional break on any legitimately
+    // mixed-case (or reserved-word, or hyphenated) table name. This test proves
+    // the double-quoting fix actually resolves the real, case-sensitive table.
+    #[tokio::test]
+    async fn snapshot_table_works_with_a_mixed_case_table_name_needing_quoting() {
+        let conn = test_connection();
+        let pool = PgPoolOptions::new()
+            .connect(&connection_string(&conn))
+            .await
+            .expect("requires a real local Postgres");
+
+        sqlx::query("DROP TABLE IF EXISTS \"MixedCaseTable\"").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE \"MixedCaseTable\" (id serial PRIMARY KEY, val text)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO \"MixedCaseTable\" (val) VALUES ('x')").execute(&pool).await.unwrap();
+
+        let snapshot = snapshot_table(&pool, "MixedCaseTable", "id").await.unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].pk, "1");
+
+        sqlx::query("DROP TABLE \"MixedCaseTable\"").execute(&pool).await.unwrap();
+    }
+
+    // --- Fix 1: request history write-through ---
+
+    #[tokio::test]
+    async fn save_correlation_history_writes_a_row_list_history_can_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+
+        save_correlation_history(
+            &db.pool,
+            "POST",
+            "/orders",
+            &FireRequestOutput { status_code: 201, body: "{\"id\":1}".to_string(), duration_ms: 42 },
+        )
+        .await;
+
+        let entries = crate::commands::history::list_history_impl(&db.pool).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].method, "POST");
+        assert_eq!(entries[0].url, "/orders");
+        assert_eq!(entries[0].status_code, 201);
+        assert_eq!(entries[0].response_body, "{\"id\":1}");
+        assert_eq!(entries[0].duration_ms, 42);
+    }
+
+    // Mirrors exactly what the `run_correlated_request` tauri command body does
+    // (minus unwrapping the `State<LocalDb>` itself, which requires a running
+    // Tauri app and isn't constructible in a plain unit test): run a correlated
+    // request end to end, then persist history from its result, then confirm
+    // list_history can read it back. This is the regression test for the bug
+    // where request history was never written at all — Tasks 6/7 were dead code
+    // at runtime because nothing ever called save_history_entry.
+    #[tokio::test]
+    async fn full_correlated_request_flow_persists_a_history_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        let conn = test_connection();
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
+
+        let url = format!("{}/ping", server.url());
+        let request = FireRequestInput { method: "GET".to_string(), url: url.clone(), body: None };
+        let method = request.method.clone();
+
+        let result = run_correlated_request_impl(request, conn, vec![]).await.unwrap();
+        save_correlation_history(&db.pool, &method, &url, &result.response).await;
+
+        mock.assert_async().await;
+
+        let entries = crate::commands::history::list_history_impl(&db.pool).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].method, "GET");
+        assert_eq!(entries[0].url, url);
+        assert_eq!(entries[0].status_code, 200);
+        assert_eq!(entries[0].response_body, "pong");
     }
 }

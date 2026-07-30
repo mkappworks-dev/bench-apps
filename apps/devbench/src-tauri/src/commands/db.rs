@@ -70,13 +70,20 @@ fn cell_to_string(row: &sqlx::postgres::PgRow, index: usize) -> Option<String> {
     if let Ok(v) = row.try_get::<Option<bool>, _>(index) { return v.map(|b| b.to_string()); }
     if let Ok(v) = row.try_get::<Option<chrono::NaiveDateTime>, _>(index) { return v.map(|d| d.to_string()); }
     if let Ok(v) = row.try_get::<Option<uuid::Uuid>, _>(index) { return v.map(|u| u.to_string()); }
-    None
+    // None of the supported decode paths matched. This is NOT the same thing as a
+    // genuine SQL NULL (which returns early above via `v.map(...)` on `None`) — it
+    // means the column holds a real, non-null value of a type we don't know how to
+    // decode (NUMERIC/DECIMAL, DATE, TIMESTAMPTZ, JSONB, arrays, enums, ...).
+    // Rendering that the same as NULL would silently misrepresent real row data, so
+    // it gets a visible marker instead. Full decode support for every Postgres type
+    // is out of scope here — this only makes the failure mode honest.
+    Some("<unsupported type>".to_string())
 }
 
 /// Validates that a table name is a legitimate Postgres identifier.
 /// Allows only ASCII alphanumeric characters and underscores.
 /// Returns an error if the identifier contains any other characters.
-fn validate_identifier(identifier: &str) -> Result<(), String> {
+pub(crate) fn validate_identifier(identifier: &str) -> Result<(), String> {
     if identifier.is_empty() {
         return Err("table name cannot be empty".to_string());
     }
@@ -278,6 +285,43 @@ mod tests {
 
         // Clean up
         sqlx::query("DROP TABLE test_rows_table")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn unsupported_column_types_render_distinctly_from_genuine_null() {
+        let conn = test_connection();
+        let pool = PgPoolOptions::new()
+            .connect(&connection_string(&conn))
+            .await
+            .expect("requires a real local Postgres — see CONTRIBUTING for setup");
+
+        sqlx::query("DROP TABLE IF EXISTS unsupported_type_test")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // `amount` is NUMERIC, which this codebase doesn't decode (no bigdecimal/
+        // rust_decimal feature enabled) — it's a real, non-null value that must NOT
+        // render the same as `notes`, which is a genuine SQL NULL.
+        sqlx::query(
+            "CREATE TABLE unsupported_type_test (id serial PRIMARY KEY, amount numeric, notes text)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO unsupported_type_test (amount, notes) VALUES (42.50, NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let result = list_table_rows_impl(&conn, "unsupported_type_test").await.unwrap();
+        assert_eq!(result.columns, vec!["id", "amount", "notes"]);
+        assert_eq!(result.rows[0][1], Some("<unsupported type>".to_string()));
+        assert_eq!(result.rows[0][2], None, "a genuine NULL must still render as None");
+
+        sqlx::query("DROP TABLE unsupported_type_test")
             .execute(&pool)
             .await
             .unwrap();

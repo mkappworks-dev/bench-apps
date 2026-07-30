@@ -6,11 +6,13 @@ export function RequestBuilder({
   watchedTables,
   onResult,
   onSendStart,
+  onError,
 }: {
   connection: DbConnectInput;
   watchedTables: Set<string>;
   onResult: (result: CorrelationResult) => void;
   onSendStart?: () => void;
+  onError?: (message: string) => void;
 }) {
   const [method, setMethod] = useState("GET");
   const [url, setUrl] = useState("");
@@ -26,6 +28,8 @@ export function RequestBuilder({
         watchedTables: Array.from(watchedTables),
       });
       onResult(result);
+    } catch (err) {
+      onError?.(err instanceof Error ? err.message : String(err));
     } finally {
       setSending(false);
     }

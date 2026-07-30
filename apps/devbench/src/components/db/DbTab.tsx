@@ -21,10 +21,17 @@ export function DbTab({
   focusTable: string | null;
 }) {
   const [tableRows, setTableRows] = useState<TableRows | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   async function handleSelectTable(table: string) {
-    const rows = await invokeListTableRows(DEV_CONNECTION, table);
-    setTableRows(rows);
+    setError(null);
+    try {
+      const rows = await invokeListTableRows(DEV_CONNECTION, table);
+      setTableRows(rows);
+    } catch (err) {
+      setTableRows(null);
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   useEffect(() => {
@@ -41,7 +48,11 @@ export function DbTab({
         onSelectTable={handleSelectTable}
       />
       <div className="flex-1 overflow-y-auto p-5">
-        {tableRows ? <DataGrid columns={tableRows.columns} rows={tableRows.rows} /> : null}
+        {error ? (
+          <div className="rounded-lg border border-border bg-danger-bg p-3 text-sm text-danger">{error}</div>
+        ) : tableRows ? (
+          <DataGrid columns={tableRows.columns} rows={tableRows.rows} />
+        ) : null}
       </div>
     </div>
   );

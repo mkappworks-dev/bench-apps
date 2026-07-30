@@ -14,9 +14,13 @@ export function SchemaTree({
 }) {
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    invokeDbConnectAndListTables(connection).then(setTables);
+    setError(null);
+    invokeDbConnectAndListTables(connection)
+      .then(setTables)
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, [connection]);
 
   function select(name: string) {
@@ -29,29 +33,35 @@ export function SchemaTree({
       <div className="border-b border-border p-2.5 text-xs font-bold text-text-muted">
         {connection.database}
       </div>
-      <div className="flex flex-col gap-0.5 p-1.5">
-        {tables.map((t) => (
-          <div
-            key={`${t.schema}.${t.name}`}
-            onClick={() => select(t.name)}
-            className={`flex items-center gap-1.5 rounded-sm p-1.5 ${
-              selected === t.name ? "bg-surface-2 text-text" : "text-text-muted"
-            }`}
-          >
-            <button
-              aria-label={`watch ${t.name}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleWatch(t.name);
-              }}
-              className={`h-2.5 w-2.5 flex-shrink-0 rounded-full border ${
-                watchedTables.has(t.name) ? "border-text bg-text" : "border-text-faint"
+      {error ? (
+        <div className="rounded-lg m-1.5 border border-border bg-danger-bg p-2.5 text-xs text-danger">
+          {error}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-0.5 p-1.5">
+          {tables.map((t) => (
+            <div
+              key={`${t.schema}.${t.name}`}
+              onClick={() => select(t.name)}
+              className={`flex items-center gap-1.5 rounded-sm p-1.5 ${
+                selected === t.name ? "bg-surface-2 text-text" : "text-text-muted"
               }`}
-            />
-            <span>{t.name}</span>
-          </div>
-        ))}
-      </div>
+            >
+              <button
+                aria-label={`watch ${t.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleWatch(t.name);
+                }}
+                className={`h-2.5 w-2.5 flex-shrink-0 rounded-full border ${
+                  watchedTables.has(t.name) ? "border-text bg-text" : "border-text-faint"
+                }`}
+              />
+              <span>{t.name}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </aside>
   );
 }

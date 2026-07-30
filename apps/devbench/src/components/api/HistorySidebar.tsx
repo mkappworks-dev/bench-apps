@@ -1,12 +1,23 @@
 import { useEffect, useState } from "react";
 import { invokeListHistory, type HistoryEntry } from "../../lib/tauri";
 
-export function HistorySidebar({ onSelect }: { onSelect: (entry: HistoryEntry) => void }) {
+export function HistorySidebar({
+  onSelect,
+  refreshKey,
+}: {
+  onSelect: (entry: HistoryEntry) => void;
+  /** Bump this (e.g. a counter) to trigger a refetch, such as after a new entry is saved. */
+  refreshKey?: number;
+}) {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
 
   useEffect(() => {
-    invokeListHistory().then(setEntries);
-  }, []);
+    // Non-critical: if listing history fails, an empty sidebar is an acceptable
+    // degraded state — but the rejection must not go unhandled.
+    invokeListHistory()
+      .then(setEntries)
+      .catch(() => setEntries([]));
+  }, [refreshKey]);
 
   return (
     <aside className="w-55 min-w-55 border-r border-border overflow-y-auto">
