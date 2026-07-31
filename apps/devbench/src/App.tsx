@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useAppStore, type ThemePref } from "./store/useAppStore";
+import { useAppStore, type Pane, type ThemePref, type ToolKind } from "./store/useAppStore";
 import { AppStrip } from "./components/shell/AppStrip";
 import { TABS } from "./components/shell/tools";
 import { SessionsSidebar } from "./components/shell/SessionsSidebar";
@@ -28,16 +28,26 @@ export default function App() {
   const setRoute = useAppStore((s) => s.setRoute);
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
-  const activeTab = useAppStore((s) => s.activeTab);
-  const setActiveTab = useAppStore((s) => s.setActiveTab);
-  const secondaryTab = useAppStore((s) => s.secondaryTab);
-  const setSecondaryTab = useAppStore((s) => s.setSecondaryTab);
-  const splitOpen = useAppStore((s) => s.splitOpen);
-  const setSplitOpen = useAppStore((s) => s.setSplitOpen);
+  const tabs = useAppStore((s) => s.tabs);
+  const activeTabId = useAppStore((s) => s.activeTabId);
+  const addTab = useAppStore((s) => s.addTab);
+  const closeTab = useAppStore((s) => s.closeTab);
+  const setActiveTabId = useAppStore((s) => s.setActiveTabId);
+  const splitActiveTab = useAppStore((s) => s.splitActiveTab);
+  const closeSplit = useAppStore((s) => s.closeSplit);
 
   const [dbFocusTable, setDbFocusTable] = useState<string | null>(null);
   const [emailFocusId, setEmailFocusId] = useState<number | null>(null);
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
+
+  // Reimplemented against useTabController in Task 4; AppStrip's own props
+  // never change.
+  function onAddTab(pane: Pane, kind: ToolKind) {
+    addTab(crypto.randomUUID(), kind, pane);
+  }
+  function onToggleSplit(): boolean {
+    return splitActiveTab().moved;
+  }
 
   // Restore the persisted theme at launch — otherwise it stays invisible
   // until the user happens to open Settings > Appearance. A failed read
@@ -83,14 +93,14 @@ export default function App() {
   return (
     <div className="flex h-screen flex-col">
       <AppStrip
-        activeTab={activeTab}
-        secondaryTab={secondaryTab}
-        splitOpen={splitOpen}
+        tabs={tabs}
+        activeTabId={activeTabId}
         chatOpen={chatOpen}
-        onActiveTabChange={setActiveTab}
-        onSecondaryTabChange={setSecondaryTab}
-        onToggleSplit={() => setSplitOpen(!splitOpen)}
-        onCloseSplit={() => setSplitOpen(false)}
+        onSetActiveTab={setActiveTabId}
+        onAddTab={onAddTab}
+        onCloseTab={closeTab}
+        onToggleSplit={onToggleSplit}
+        onCloseSplitPane={closeSplit}
         onToggleChat={() => setChatOpen(!chatOpen)}
       />
       {/* Three columns. The chat dock RESIZES this row rather than overlaying

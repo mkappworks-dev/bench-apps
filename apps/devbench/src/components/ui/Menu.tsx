@@ -20,6 +20,8 @@ export function Menu({
   trigger,
   triggerClassName,
   align = "start",
+  open,
+  onOpenChange,
 }: {
   label: string;
   options: MenuOption[];
@@ -28,6 +30,11 @@ export function Menu({
   trigger: React.ReactNode;
   triggerClassName?: string;
   align?: "start" | "end";
+  /** Omit for the normal click-to-open case. Set only when a caller must
+   *  open the menu without the user clicking its trigger (AppStrip's
+   *  Split-declined flow). */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const isPicker = value !== undefined;
 
@@ -47,7 +54,7 @@ export function Menu({
   );
 
   return (
-    <BaseMenu.Root>
+    <BaseMenu.Root open={open} onOpenChange={onOpenChange}>
       {/* Named by what it controls: the visible text is only the current value. */}
       <BaseMenu.Trigger aria-label={label} className={triggerClassName}>
         {trigger}

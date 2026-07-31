@@ -18,11 +18,12 @@ describe("App shell", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders the three-column workspace with one tab per tool", () => {
+  it("renders the three-column workspace", () => {
     render(<App />);
-    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["API", "DB", "Log", "Email"]);
     expect(screen.getByRole("complementary", { name: "Sessions" })).toBeInTheDocument();
     expect(screen.getByRole("complementary", { name: "AI Assistant" })).toBeInTheDocument();
+    // No tabs open yet — Task 5 covers the empty-state prompt this produces.
+    expect(screen.queryAllByRole("tab")).toHaveLength(0);
   });
 
   it("hides the chat dock when it is toggled off, without overlaying the content", () => {

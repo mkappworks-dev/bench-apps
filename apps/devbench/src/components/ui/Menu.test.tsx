@@ -36,4 +36,21 @@ describe("Menu", () => {
     fireEvent.click(screen.getByRole("button", { name: /add a tool/i }));
     expect(screen.getByRole("menu")).toHaveAccessibleName("Add a tool");
   });
+
+  // AppStrip's Split button needs to force the menu open without a click,
+  // when moving a tab isn't possible (see AppStrip.test.tsx). Base UI's
+  // Menu.Root supports open/onOpenChange natively; this only checks the
+  // wrapper actually forwards them.
+  it("supports a controlled open state for opening without a trigger click", () => {
+    const onOpenChange = vi.fn();
+    const { rerender } = render(
+      <Menu label="Add a tool" options={OPTIONS} onSelect={() => {}} trigger="Add" open={false} onOpenChange={onOpenChange} />,
+    );
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+
+    rerender(
+      <Menu label="Add a tool" options={OPTIONS} onSelect={() => {}} trigger="Add" open onOpenChange={onOpenChange} />,
+    );
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+  });
 });
