@@ -42,22 +42,30 @@ export function SchemaTree({
           {tables.map((t) => (
             <div
               key={`${t.schema}.${t.name}`}
-              onClick={() => select(t.name)}
               className={`flex items-center gap-1.5 rounded-sm p-1.5 ${
                 selected === t.name ? "bg-surface-2 text-text" : "text-text-muted"
               }`}
             >
+              {/* Siblings, not nested: a <button> inside a <button> is invalid
+                  HTML and yields unpredictable focus and activation. */}
               <button
+                type="button"
                 aria-label={`watch ${t.name}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleWatch(t.name);
-                }}
+                aria-pressed={watchedTables.has(t.name)}
+                onClick={() => onToggleWatch(t.name)}
                 className={`h-2.5 w-2.5 flex-shrink-0 rounded-full border ${
                   watchedTables.has(t.name) ? "border-text bg-text" : "border-text-faint"
                 }`}
               />
-              <span>{t.name}</span>
+              <button
+                type="button"
+                aria-label={`Browse ${t.name}`}
+                aria-current={selected === t.name}
+                onClick={() => select(t.name)}
+                className="flex-1 truncate text-left"
+              >
+                {t.name}
+              </button>
             </div>
           ))}
         </div>
