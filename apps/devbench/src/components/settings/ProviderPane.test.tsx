@@ -63,16 +63,13 @@ describe("ProviderPane", () => {
     await waitFor(() => expect(tauriLib.invokeSetSetting).toHaveBeenCalledWith("model", "claude-haiku-4-5"));
   });
 
-  it("uses the styled menu rather than a native select for the model", async () => {
+  it("uses the styled menu rather than a native select for the model", () => {
     vi.spyOn(tauriLib, "invokeGetProviderStatus").mockResolvedValue({
       provider: "anthropic",
       model: "claude-opus-5",
       has_key: true,
     });
-    let container: HTMLElement;
-    await act(async () => {
-      ({ container } = render(<ProviderPane />));
-    });
+    const { container } = render(<ProviderPane />);
     expect(container.querySelector("select")).toBeNull();
     expect(screen.getByRole("button", { name: /model/i })).toBeInTheDocument();
   });
