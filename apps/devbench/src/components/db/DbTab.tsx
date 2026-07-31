@@ -21,31 +21,34 @@ const DEV_CONNECTION: DbConnectInput = {
 export function DbTab({
   watchedTables,
   onToggleWatch,
-  focusTable,
+  table,
+  onPatchState,
 }: {
   watchedTables: Set<string>;
   onToggleWatch: (table: string) => void;
-  focusTable: string | null;
+  table: string | null;
+  onPatchState: (patch: { table: string }) => void;
 }) {
   const [tableRows, setTableRows] = useState<TableRows | null>(null);
   const [error, setError] = useState<string | null>(null);
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
 
-  async function handleSelectTable(table: string) {
+  async function fetchRows(t: string) {
     setError(null);
     try {
-      const rows = await invokeListTableRows(DEV_CONNECTION, table);
-      setTableRows(rows);
+      setTableRows(await invokeListTableRows(DEV_CONNECTION, t));
     } catch (err) {
       setTableRows(null);
       setError(err instanceof Error ? err.message : String(err));
     }
   }
 
+  // Fires on mount if `table` arrives already set (a deep link creating this
+  // tab), and again whenever the schema tree patches it — one path, not two.
   useEffect(() => {
-    if (focusTable) handleSelectTable(focusTable);
+    if (table) void fetchRows(table);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusTable]);
+  }, [table]);
 
   // Watch state lives in SQLite, keyed by connection. Hydrate on mount so a
   // restart does not silently reset what the user is watching — which would
@@ -75,7 +78,7 @@ export function DbTab({
         connection={DEV_CONNECTION}
         watchedTables={watchedTables}
         onToggleWatch={handleToggleWatch}
-        onSelectTable={handleSelectTable}
+        onSelectTable={(t) => onPatchState({ table: t })}
       />
       <div className="flex-1 overflow-y-auto p-5">
         {error ? (

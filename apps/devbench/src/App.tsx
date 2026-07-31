@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useAppStore, type Pane, type ThemePref, type ToolKind } from "./store/useAppStore";
 import { AppStrip } from "./components/shell/AppStrip";
 import { TABS } from "./components/shell/tools";
@@ -33,8 +33,6 @@ export default function App() {
   const activeTabId = useAppStore((s) => s.activeTabId);
   const tabController = useTabController();
 
-  const [dbFocusTable, setDbFocusTable] = useState<string | null>(null);
-  const [emailFocusId, setEmailFocusId] = useState<number | null>(null);
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
 
   function onAddTab(pane: Pane, kind: ToolKind) {
@@ -103,10 +101,12 @@ export default function App() {
       <div className="flex min-h-0 flex-1">
         <SessionsSidebar onOpenSettings={() => setRoute("settings")} />
         <SplitContent
-          dbFocusTable={dbFocusTable}
-          emailFocusId={emailFocusId}
-          onOpenTableInDb={setDbFocusTable}
-          onOpenEmail={setEmailFocusId}
+          onAddTab={onAddTab}
+          onPatchState={tabController.patchTabState}
+          onOpenDb={(table) => tabController.focusOrCreateTab("db", { table })}
+          onOpenLog={() => tabController.focusOrCreateTab("log")}
+          onOpenEmail={() => {}}
+          emailFocusRequest={null}
         />
         {chatOpen ? <ChatDock onClose={() => setChatOpen(false)} /> : null}
       </div>
