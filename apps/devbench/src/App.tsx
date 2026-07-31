@@ -39,11 +39,9 @@ export default function App() {
   const [emailFocusId, setEmailFocusId] = useState<number | null>(null);
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
 
-  // Restore the persisted theme at launch. DbTab and GeneralPane both read
-  // settings on their own mount, but neither is guaranteed to mount before
-  // the user starts interacting with the app — so App itself must hydrate
-  // this too, or a saved theme stays invisible until the user happens to
-  // open Settings. A failed read just leaves the "dark" default in place.
+  // Restore the persisted theme at launch — otherwise it stays invisible
+  // until the user happens to open Settings > Appearance. A failed read
+  // just leaves the "dark" default in place.
   useEffect(() => {
     invokeGetSettings()
       .then((settings) => setTheme(settings.theme as ThemePref))

@@ -1,14 +1,16 @@
 import { useState } from "react";
 import { Tabs } from "../ui/Tabs";
 import { GeneralPane } from "./GeneralPane";
+import { AppearancePane } from "./AppearancePane";
 import { ProviderPane } from "./ProviderPane";
 import { McpPane } from "./McpPane";
 import { ArchivePane } from "./ArchivePane";
 
-type PaneId = "general" | "provider" | "mcp" | "archive";
+type PaneId = "general" | "appearance" | "provider" | "mcp" | "archive";
 
 const PANES: { id: PaneId; label: string }[] = [
   { id: "general", label: "General" },
+  { id: "appearance", label: "Appearance" },
   { id: "provider", label: "Provider" },
   { id: "mcp", label: "MCP" },
   { id: "archive", label: "Archive" },
@@ -59,6 +61,9 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
         <div className="min-h-0 flex-1 overflow-y-auto">
           <Tabs.Panel value="general" className="p-6">
             <GeneralPane />
+          </Tabs.Panel>
+          <Tabs.Panel value="appearance" className="p-6">
+            <AppearancePane />
           </Tabs.Panel>
           <Tabs.Panel value="provider" className="p-6">
             <ProviderPane />

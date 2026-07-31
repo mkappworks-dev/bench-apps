@@ -74,14 +74,10 @@ describe("App shell", () => {
     useAppStore.getState().setTheme("dark");
   });
 
-  // Bug: cycleTheme() (the TopBar button) only called setTheme locally, with
-  // no backend persistence — so cycling the theme from the app's most common
-  // entry point was silently lost on restart.
-  //
-  // Re-enabled and retargeted in Task 7 against Settings > Appearance, which
-  // becomes the theme control's only home once the TopBar button is gone
-  // (spec item 1). The bug it guards is unchanged.
-  it.skip("persists the theme when cycled from the TopBar button", async () => {
+  // Bug: cycleTheme() only called setTheme locally, with no backend
+  // persistence — so changing the theme was silently lost on restart. The
+  // control moved to Settings > Appearance, but the bug class is identical.
+  it("persists the theme when changed from Settings", async () => {
     // Resolve the mount-time hydration to "light" (distinct from the "dark"
     // default) and wait for it to land before clicking, so the hydration
     // effect's setTheme() can't race with — and clobber — the click's.
@@ -92,10 +88,15 @@ describe("App shell", () => {
     render(<App />);
     await waitFor(() => expect(useAppStore.getState().theme).toBe("light"));
 
-    // THEME_CYCLE is ["system", "dark", "light"]; from "light" the next is "system".
-    fireEvent.click(screen.getByRole("button", { name: /theme:/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^settings$/i }));
+    fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /theme/i }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "System" }));
 
     await waitFor(() => expect(setSetting).toHaveBeenCalledWith("theme", "system"));
+    // The theme must actually be applied, not just stored.
+    expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
 
     useAppStore.getState().setTheme("dark");
   });
