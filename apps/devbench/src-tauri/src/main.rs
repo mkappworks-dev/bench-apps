@@ -128,6 +128,7 @@ fn main() {
             commands::mcp::add_mcp_server,
             commands::mcp::remove_mcp_server,
             commands::mcp::check_mcp_server,
+            commands::chat::send_chat_message,
         ])
         .run(tauri::generate_context!())
         .expect("error while running devbench");

@@ -281,3 +281,17 @@ export function invokeRemoveMcpServer(id: string): Promise<void> {
 export function invokeCheckMcpServer(id: string): Promise<McpServerStatus> {
   return invoke("check_mcp_server", { id });
 }
+
+export interface ChatMessage {
+  role: string;
+  content: string;
+}
+
+export interface ChatReply {
+  content: string;
+  tool_calls: string[];
+}
+
+export function invokeSendChatMessage(messages: ChatMessage[]): Promise<ChatReply> {
+  return invoke("send_chat_message", { messages });
+}

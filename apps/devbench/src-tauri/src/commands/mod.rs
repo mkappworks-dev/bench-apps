@@ -1,3 +1,4 @@
+pub mod chat;
 pub mod correlation;
 pub mod db;
 pub mod email;
