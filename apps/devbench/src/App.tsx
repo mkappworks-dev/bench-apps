@@ -6,10 +6,22 @@ import { SessionsSidebar } from "./components/shell/SessionsSidebar";
 import { ChatDock } from "./components/shell/ChatDock";
 import { SettingsScreen } from "./components/settings/SettingsScreen";
 import { SplitContent } from "./components/shell/SplitContent";
+import { invokeGetSettings, invokeListWatchedTables, invokeSetSetting, type DbConnectInput } from "./lib/tauri";
 
 export { TABS };
 
 const THEME_CYCLE: ThemePref[] = ["system", "dark", "light"];
+
+// Same hardcoded dev connection duplicated in ApiTab.tsx and DbTab.tsx — the
+// app only ever talks to one Postgres instance today, so a shared config
+// module is out of scope until multi-connection support exists.
+const DEV_CONNECTION: DbConnectInput = {
+  host: "localhost",
+  port: 5432,
+  database: "devbench_test",
+  username: "postgres",
+  password: "postgres",
+};
 
 export default function App() {
   const chatOpen = useAppStore((s) => s.chatOpen);
@@ -21,6 +33,30 @@ export default function App() {
 
   const [dbFocusTable, setDbFocusTable] = useState<string | null>(null);
   const [emailFocusId, setEmailFocusId] = useState<number | null>(null);
+  const setWatchedTables = useAppStore((s) => s.setWatchedTables);
+
+  // Restore the persisted theme at launch. DbTab and GeneralPane both read
+  // settings on their own mount, but neither is guaranteed to mount before
+  // the user starts interacting with the app — so App itself must hydrate
+  // this too, or a saved theme stays invisible until the user happens to
+  // open Settings. A failed read just leaves the "dark" default in place.
+  useEffect(() => {
+    invokeGetSettings()
+      .then((settings) => setTheme(settings.theme as ThemePref))
+      .catch(() => {});
+  }, [setTheme]);
+
+  // Watch state lives in SQLite, keyed by connection. DbTab.tsx hydrates this
+  // too, but only once it mounts — and it only mounts once the user visits
+  // the DB tab. Since the default tab is "api", a request fired from there
+  // before ever visiting DB would correlate against an empty watch set even
+  // though real watched tables are persisted, falsely reporting "no tables
+  // are being watched". Hydrating here as well closes that gap.
+  useEffect(() => {
+    invokeListWatchedTables(DEV_CONNECTION)
+      .then(setWatchedTables)
+      .catch(() => setWatchedTables([]));
+  }, [setWatchedTables]);
 
   // DESIGN.md's token precedence: base `:root` is dark, a
   // `prefers-color-scheme: light` media query overrides it, and an explicit
@@ -36,6 +72,7 @@ export default function App() {
   function cycleTheme() {
     const next = THEME_CYCLE[(THEME_CYCLE.indexOf(theme) + 1) % THEME_CYCLE.length];
     setTheme(next);
+    void invokeSetSetting("theme", next).catch(() => {});
   }
 
   if (route === "settings") {
