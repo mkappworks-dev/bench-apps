@@ -36,7 +36,8 @@ Decision 6's Task 3 rationale *did* separately rule on watched tables ("a watche
 ALTER TABLE request_history
   ADD COLUMN session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL;
 
-CREATE INDEX idx_request_history_session_id ON request_history (session_id);
+CREATE INDEX idx_request_history_session_fired_at
+  ON request_history (session_id, fired_at DESC);
 ```
 
 Three properties of this statement were verified empirically against real SQLite, not assumed:
@@ -44,6 +45,8 @@ Three properties of this statement were verified empirically against real SQLite
 1. **The `ALTER TABLE` is legal.** SQLite permits a `REFERENCES` clause on an added column only when its default is NULL. A nullable column with no default qualifies.
 2. **Existing rows land as NULL** automatically, which is exactly the intended "unattributed" state — no backfill step, no synthetic session.
 3. **`ON DELETE SET NULL` actually fires.** This depends on `PRAGMA foreign_keys`, which SQLite defaults to **OFF**. sqlx-sqlite 0.8.6 turns it ON in its default pragma set (`options/mod.rs:185`), and `local_db.rs` connects via a URL string that inherits those defaults. Had this gone the other way, the FK would have been decorative and the hard-delete behaviour below silently unimplemented — rows would keep dangling ids pointing at a deleted session.
+
+The index is composite and ordered rather than a bare `(session_id)`, because the scoped query is `WHERE session_id = ? ORDER BY fired_at DESC LIMIT 50` — a single-column index would filter but still force a sort. It costs nothing to get right at creation time.
 
 `watched_tables` is unchanged.
 
@@ -68,6 +71,14 @@ The rejected alternatives, recorded so they are not re-proposed:
 - `Some(id)` → the same, plus `WHERE session_id = ?`.
 
 No active session means the unscoped view, which is byte-for-byte today's behaviour. Selecting a session filters; deselecting returns to All. There is deliberately no toggle to view All while a session is selected — selection is the only control, matching how the sidebar already behaves.
+
+### Switching sessions clears the response pane
+
+`ApiTab` holds the current response and its "what happened" rollup in local state that is reset only when a new request is fired (`ApiTab.tsx:44`, inside `handleSendStart`). Nothing resets it when the session changes.
+
+Left alone, switching from session A to session B would refresh the History sidebar to B's requests while the main pane — the largest, most prominent region — still showed A's response and A's rollup. The rollup would then be narrating "what happened" for a request that does not appear anywhere in the visible history. That is a false attribution of effects to the wrong investigation, which matters more here than ordinary staleness because the rollup is the product's core claim.
+
+Switching the active session therefore clears `result` and `error` in `ApiTab`, returning the pane to its initial empty state. Selecting an entry from the (now scoped) history repopulates it as usual.
 
 ### Writing history
 
@@ -97,7 +108,14 @@ The active session id is stored under the key `active_session_id` in the existin
 
 Without this, every restart drops the user into the unscoped view, which reads as "my session's history vanished" — the exact confusion this feature exists to remove.
 
-**Reconciliation on launch:** the stored id may point at a session that has since been archived or hard-deleted. `SessionsSidebar` already owns the active-session list, so it reconciles there: on its first load only, select the stored id if it appears in that list; otherwise clear both the store value and the stored setting. This keeps `settings.rs` from having to know about sessions. A one-shot guard prevents later refreshes — after a create or an archive — from re-running reconciliation and overriding the user's current selection.
+**Reconciliation on launch:** the stored id may point at a session that has since been archived or hard-deleted. `SessionsSidebar` already owns the active-session list, so it reconciles there: select the stored id if it appears in that list; otherwise clear both the store value and the stored setting. This keeps `settings.rs` from having to know about sessions.
+
+Two ordering constraints make this correct rather than racy:
+
+- Reconciliation must run **after the active-sessions list has resolved**, not in a parallel effect. The stored id can only be validated against a list that exists; checking it against an empty in-flight list would clear a perfectly good selection on every launch.
+- It must run **once**. `refresh()` is also called after create and archive, and re-reconciling then would overwrite the user's current selection with the launch-time stored value. A one-shot guard (a ref, not state, so it cannot itself trigger a render) gates it.
+
+Because reconciliation calls the same `setActiveSessionId` the user's clicks do, persistence stays in the explicit handlers rather than a blanket effect watching `activeSessionId` — otherwise launch reconciliation would immediately rewrite the value it just read.
 
 ## Components
 
@@ -105,7 +123,7 @@ Frontend data flow follows the existing pattern in `ApiTab.tsx`: the container r
 
 | Component | Change |
 |---|---|
-| `ApiTab.tsx` | Reads `activeSessionId`; passes it to `RequestBuilder` and `HistorySidebar` |
+| `ApiTab.tsx` | Reads `activeSessionId`; passes it to `RequestBuilder` and `HistorySidebar`; clears `result`/`error` when it changes |
 | `RequestBuilder.tsx` | Accepts `sessionId`, forwards it to `invokeRunCorrelatedRequest` |
 | `HistorySidebar.tsx` | Accepts `sessionId`; adds it to the fetch effect's deps so switching sessions refetches; distinct empty-state copy |
 | `SessionsSidebar.tsx` | Persists the active session; reconciles the stored id against the active list on first load |
@@ -113,7 +131,7 @@ Frontend data flow follows the existing pattern in `ApiTab.tsx`: the container r
 
 ### Empty state
 
-The sidebar currently renders nothing when the list is empty. Since creating a session auto-selects it (`SessionsSidebar.tsx:35`), the user would land on a blank panel with no explanation — indistinguishable from a broken fetch.
+The sidebar currently renders nothing when the list is empty. Since creating a session auto-selects it (`SessionsSidebar.tsx:34`), the user would land on a blank panel with no explanation — indistinguishable from a broken fetch.
 
 Two distinct messages: in a session, "No requests fired in this session yet."; unscoped, "No requests yet." This is PRODUCT.md principle 4 ("a failure to observe is never displayed as 'nothing happened'") applied to a UI absence rather than a correlation result.
 
@@ -137,6 +155,15 @@ Frontend:
 - Empty-state copy differs inside a session vs unscoped.
 - `RequestBuilder` forwards `sessionId` to the invoke.
 - `SessionsSidebar` clears a stored id that names an archived/absent session, and does not re-reconcile after a later refresh.
+- `ApiTab` clears a displayed response when the active session changes.
+
+### Existing tests this ripples into
+
+Widening the `AppSettings` TypeScript interface breaks every test that builds one as an object literal: `App.test.tsx:9`, `GeneralPane.test.tsx:9`, `SettingsScreen.test.tsx:8`. Each needs the new field.
+
+`vitest run` will **not** catch this — it does not typecheck. The gate is `tsc`, which runs only under `bun run build`. Verification therefore requires `bun run build` (or `tsc --noEmit`) in addition to the two test suites, or the break ships silently green.
+
+Existing `SessionsSidebar` tests do not mock `invokeGetSettings`, but `src/test-setup.ts` mocks Tauri's `invoke` globally to resolve `[]`, so the new settings read degrades to "no stored id" and those tests keep passing unchanged.
 
 ## Non-goals
 
