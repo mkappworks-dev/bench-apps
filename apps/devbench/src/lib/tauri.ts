@@ -228,6 +228,8 @@ export interface AppSettings {
   smtp_port: number;
   provider: string;
   model: string;
+  /** The session the user was last in. `null` = unscoped. */
+  active_session_id: string | null;
 }
 
 export function invokeGetSettings(): Promise<AppSettings> {
