@@ -45,7 +45,7 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
                 key={p.id}
                 value={p.id}
                 // Base UI 1.0.0-rc.0 renamed `[data-selected]` to `[data-active]`
-                // on `<Tabs.Tab>` — see ToolTabs.tsx's identical fix (Task 4/6).
+                // on `<Tabs.Tab>` — see AppStrip.tsx's identical fix.
                 // Without this, the selected-pane highlight is dead CSS.
                 data-selected={p.id === pane ? "" : undefined}
                 className="rounded-sm p-2 text-left text-sm text-text-muted transition-colors duration-150 hover:bg-surface-2 data-[selected]:bg-surface-2 data-[selected]:text-text"

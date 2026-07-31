@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it, beforeEach } from "vitest";
 import { SplitContent } from "./SplitContent";
 import { useAppStore } from "../../store/useAppStore";
@@ -21,33 +21,23 @@ describe("SplitContent", () => {
     useAppStore.getState().setSecondaryTab("db");
   });
 
-  it("shows one tab bar when not split", () => {
+  // The tab bars moved up into AppStrip so they could align with the panes they
+  // control. SplitContent renders panes and nothing else.
+  it("renders no tab bar or split control of its own", () => {
     renderSplit();
-    expect(screen.getAllByRole("tablist")).toHaveLength(1);
+    expect(screen.queryAllByRole("tablist")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: /^split$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /close split/i })).not.toBeInTheDocument();
   });
 
-  it("opens a second, independently-tabbed pane", () => {
+  it("renders one pane when not split", () => {
     renderSplit();
-    fireEvent.click(screen.getByRole("button", { name: "Split" }));
-    expect(useAppStore.getState().splitOpen).toBe(true);
-    expect(screen.getAllByRole("tablist")).toHaveLength(2);
+    expect(screen.getAllByRole("main")).toHaveLength(1);
   });
 
-  it("keeps the two panes' tools independent", () => {
+  it("renders two panes when split, one per tool", () => {
     useAppStore.getState().setSplitOpen(true);
     renderSplit();
-    const [primary, secondary] = screen.getAllByRole("tablist");
-    fireEvent.click(within(secondary).getByRole("tab", { name: "Log" }));
-    expect(useAppStore.getState().secondaryTab).toBe("log");
-    expect(useAppStore.getState().activeTab).toBe("api");
-    expect(within(primary).getByRole("tab", { name: "API" })).toHaveAttribute("data-selected");
-  });
-
-  it("closes the split", () => {
-    useAppStore.getState().setSplitOpen(true);
-    renderSplit();
-    fireEvent.click(screen.getByRole("button", { name: "Close split" }));
-    expect(useAppStore.getState().splitOpen).toBe(false);
-    expect(screen.getAllByRole("tablist")).toHaveLength(1);
+    expect(screen.getAllByRole("main")).toHaveLength(2);
   });
 });
