@@ -210,6 +210,7 @@ async fn firing_a_request_correlates_both_db_writes_and_log_lines() {
         &emails,
         &registry,
         50_000,
+        DEFAULT_CORRELATION_WINDOW_MS,
     )
     .await
     .expect("correlated request should succeed");
@@ -378,6 +379,7 @@ async fn firing_a_request_correlates_db_writes_log_lines_and_sent_mail() {
         &emails,
         &registry,
         started_at_ms,
+        DEFAULT_CORRELATION_WINDOW_MS,
     )
     .await
     .expect("correlated request should succeed");

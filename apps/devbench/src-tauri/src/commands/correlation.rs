@@ -230,21 +230,16 @@ pub async fn run_correlated_request_impl_with_registry(
     emails: &EmailState,
     registry: &CorrelationRegistry,
     now_ms: i64,
+    // How long after the response to keep collecting. Comes from Settings >
+    // General; `DEFAULT_CORRELATION_WINDOW_MS` is the fallback when no row
+    // has been stored.
+    window_ms: i64,
 ) -> Result<CorrelationResult, String> {
-    // Both cursors are snapshotted before anything else: every line logged and
-    // every message sent from this instant on is attributable to this request.
     let from_log_id = logs.next_line_id().saturating_sub(1);
-    let from_email_id = emails
-        .store()
-        .lock()
-        .map(|s| s.next_id().saturating_sub(1))
-        .unwrap_or(0);
+    let from_email_id = emails.store().lock().map(|s| s.next_id().saturating_sub(1)).unwrap_or(0);
 
-    let mut result =
-        run_correlated_request_impl(request, connection, watched_tables, logs).await?;
-
-    result.correlation_id =
-        registry.open(from_log_id, from_email_id, now_ms + DEFAULT_CORRELATION_WINDOW_MS);
+    let mut result = run_correlated_request_impl(request, connection, watched_tables, logs).await?;
+    result.correlation_id = registry.open(from_log_id, from_email_id, now_ms + window_ms);
     Ok(result)
 }
 
@@ -319,6 +314,10 @@ pub async fn run_correlated_request(
 ) -> Result<CorrelationResult, String> {
     let method = request.method.clone();
     let url = request.url.clone();
+    let window_ms = crate::commands::settings::get_settings_impl(&db.pool)
+        .await
+        .map(|s| s.correlation_window_ms)
+        .unwrap_or(DEFAULT_CORRELATION_WINDOW_MS);
     let result = run_correlated_request_impl_with_registry(
         request,
         connection,
@@ -327,6 +326,7 @@ pub async fn run_correlated_request(
         &emails,
         &registry,
         chrono::Utc::now().timestamp_millis(),
+        window_ms,
     )
     .await?;
     save_correlation_history(&db.pool, &method, &url, &result.response).await;
@@ -747,6 +747,7 @@ mod tests {
             &emails,
             &registry,
             10_000,
+            DEFAULT_CORRELATION_WINDOW_MS,
         )
         .await
         .unwrap();
@@ -793,6 +794,7 @@ mod tests {
             &emails,
             &registry,
             10_000,
+            DEFAULT_CORRELATION_WINDOW_MS,
         )
         .await
         .unwrap();
@@ -887,6 +889,7 @@ mod tests {
             &emails,
             &registry,
             10_000,
+            DEFAULT_CORRELATION_WINDOW_MS,
         )
         .await
         .unwrap();
@@ -934,6 +937,7 @@ mod tests {
             &emails,
             &registry,
             10_000,
+            DEFAULT_CORRELATION_WINDOW_MS,
         )
         .await
         .unwrap();
@@ -975,6 +979,7 @@ mod tests {
             &emails,
             &registry,
             10_000,
+            DEFAULT_CORRELATION_WINDOW_MS,
         )
         .await
         .unwrap();
@@ -991,5 +996,37 @@ mod tests {
         .unwrap();
 
         assert_eq!(window.emails, None, "a catcher that is not listening means NOT OBSERVED, not zero mail");
+    }
+
+    #[tokio::test]
+    async fn the_window_length_comes_from_the_caller_not_a_hardcoded_constant() {
+        let conn = test_connection();
+        let logs = LogState::new();
+        let emails = listening_email_state();
+        let registry = CorrelationRegistry::new();
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
+
+        let result = run_correlated_request_impl_with_registry(
+            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
+            conn,
+            vec![],
+            &logs,
+            &emails,
+            &registry,
+            10_000,
+            30_000, // a 30s window, not the 5s default
+        )
+        .await
+        .unwrap();
+        mock.assert_async().await;
+
+        // Collecting at default-window + 1 must still block, because this
+        // window runs to 40_000. Asking at 40_001 returns immediately.
+        let window = collect_correlation_window_impl(&registry, &logs, &emails, result.correlation_id, 40_001)
+            .await
+            .unwrap();
+        assert_eq!(window.emails, Some(vec![]));
     }
 }

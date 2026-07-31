@@ -21,12 +21,17 @@ fn main() {
                 .path()
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
-            tauri::async_runtime::block_on(async move {
+            let (db, smtp_port) = tauri::async_runtime::block_on(async move {
                 let db = LocalDb::connect(data_dir)
                     .await
                     .expect("failed to initialize local database");
-                handle.manage(db);
+                let port = devbench::commands::settings::get_settings_impl(&db.pool)
+                    .await
+                    .map(|s| s.smtp_port)
+                    .unwrap_or(DEFAULT_SMTP_PORT);
+                (db, port)
             });
+            handle.manage(db);
 
             let logs = Arc::new(LogState::new());
             app.manage(Arc::clone(&logs));
@@ -53,12 +58,12 @@ fn main() {
             // Email tab can show — and deliberately does NOT abort startup,
             // because an app that refuses to launch cannot offer the "change
             // the port in Settings" shortcut the spec asks for.
-            match smtp_catcher::bind(DEFAULT_SMTP_PORT) {
+            match smtp_catcher::bind(smtp_port) {
                 Ok(listener) => {
                     let store = emails.store();
                     emails.set_status(SmtpStatus {
                         listening: true,
-                        port: DEFAULT_SMTP_PORT,
+                        port: smtp_port,
                         error: None,
                     });
                     let emails_for_thread = Arc::clone(&emails);
@@ -68,7 +73,7 @@ fn main() {
                         if let Err(e) = smtp_catcher::serve(listener, store) {
                             emails_for_thread.set_status(SmtpStatus {
                                 listening: false,
-                                port: DEFAULT_SMTP_PORT,
+                                port: smtp_port,
                                 error: Some(e),
                             });
                         }
@@ -78,7 +83,7 @@ fn main() {
                     eprintln!("SMTP catcher did not start: {e}");
                     emails.set_status(SmtpStatus {
                         listening: false,
-                        port: DEFAULT_SMTP_PORT,
+                        port: smtp_port,
                         error: Some(e),
                     });
                 }
