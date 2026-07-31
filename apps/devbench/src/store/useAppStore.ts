@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 export type TabId = "api" | "db" | "log" | "email";
 export type ThemePref = "dark" | "light" | "system";
+export type AppRoute = "workspace" | "settings";
 
 interface AppState {
   activeTab: TabId;
@@ -15,6 +16,12 @@ interface AppState {
   /** Which log source the Log tab is showing; null means "all sources". */
   activeLogSourceId: string | null;
   setActiveLogSourceId: (id: string | null) => void;
+  chatOpen: boolean;
+  setChatOpen: (open: boolean) => void;
+  route: AppRoute;
+  setRoute: (route: AppRoute) => void;
+  activeSessionId: string | null;
+  setActiveSessionId: (id: string | null) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -33,4 +40,10 @@ export const useAppStore = create<AppState>((set) => ({
   setWatchedTables: (tables) => set({ watchedTables: new Set(tables) }),
   activeLogSourceId: null,
   setActiveLogSourceId: (id) => set({ activeLogSourceId: id }),
+  chatOpen: true,
+  setChatOpen: (open) => set({ chatOpen: open }),
+  route: "workspace",
+  setRoute: (route) => set({ route }),
+  activeSessionId: null,
+  setActiveSessionId: (id) => set({ activeSessionId: id }),
 }));

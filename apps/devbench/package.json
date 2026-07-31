@@ -15,7 +15,8 @@
     "react-dom": "^18.3.0",
     "zustand": "^4.5.0",
     "@tauri-apps/api": "^2.0.0",
-    "@tanstack/react-virtual": "^3.14.0"
+    "@tanstack/react-virtual": "^3.14.0",
+    "@base-ui-components/react": "1.0.0-rc.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",

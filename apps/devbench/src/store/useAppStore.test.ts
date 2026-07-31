@@ -30,4 +30,22 @@ describe("useAppStore", () => {
     useAppStore.getState().setActiveLogSourceId("src-1");
     expect(useAppStore.getState().activeLogSourceId).toBe("src-1");
   });
+
+  it("opens the chat dock by default and can close it", () => {
+    expect(useAppStore.getState().chatOpen).toBe(true);
+    useAppStore.getState().setChatOpen(false);
+    expect(useAppStore.getState().chatOpen).toBe(false);
+  });
+
+  it("routes between the workspace and settings", () => {
+    expect(useAppStore.getState().route).toBe("workspace");
+    useAppStore.getState().setRoute("settings");
+    expect(useAppStore.getState().route).toBe("settings");
+    useAppStore.getState().setRoute("workspace");
+  });
+
+  it("tracks the active session", () => {
+    useAppStore.getState().setActiveSessionId("sess-1");
+    expect(useAppStore.getState().activeSessionId).toBe("sess-1");
+  });
 });
