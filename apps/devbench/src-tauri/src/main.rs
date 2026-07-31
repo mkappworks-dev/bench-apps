@@ -29,6 +29,15 @@ fn main() {
                     .await
                     .map(|s| s.smtp_port)
                     .unwrap_or(DEFAULT_SMTP_PORT);
+                let secrets_for_seed = devbench::secrets::KeyringSecretStore;
+                if let Err(e) = devbench::commands::connections::seed_default_connection_password_if_missing(
+                    &db.pool,
+                    &secrets_for_seed,
+                )
+                .await
+                {
+                    eprintln!("failed to seed default connection password: {e}");
+                }
                 (db, port)
             });
             handle.manage(db);
@@ -119,6 +128,12 @@ fn main() {
             commands::sessions::delete_session,
             commands::watched::list_watched_tables,
             commands::watched::set_watched_table,
+            commands::connections::list_connections,
+            commands::connections::create_connection,
+            commands::connections::update_connection,
+            commands::connections::delete_connection,
+            commands::connections::set_connection_password,
+            commands::connections::clear_connection_password,
             commands::settings::get_settings,
             commands::settings::set_setting,
             commands::provider::get_provider_status,
