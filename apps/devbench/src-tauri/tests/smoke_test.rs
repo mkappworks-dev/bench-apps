@@ -241,3 +241,186 @@ async fn firing_a_request_correlates_both_db_writes_and_log_lines() {
 
     sqlx::query("DROP TABLE smoke_log_orders").execute(&pool).await.unwrap();
 }
+
+use devbench::email_state::SmtpStatus;
+use devbench::smtp_catcher;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpStream;
+
+/// Reads SMTP reply lines until one has a space after the code.
+fn read_smtp_reply(reader: &mut BufReader<TcpStream>) -> String {
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap() == 0 {
+            return String::new();
+        }
+        if line.len() >= 4 && line.as_bytes()[3] == b' ' {
+            return line;
+        }
+    }
+}
+
+/// Sends one message through a real SMTP conversation, exactly as a target
+/// backend's mailer would.
+fn send_test_mail(port: u16, subject: &str) {
+    let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+
+    assert!(read_smtp_reply(&mut reader).starts_with("220"));
+    write!(writer, "EHLO backend\r\n").unwrap();
+    read_smtp_reply(&mut reader);
+    write!(writer, "MAIL FROM:<orders@shop.test>\r\n").unwrap();
+    read_smtp_reply(&mut reader);
+    write!(writer, "RCPT TO:<customer@example.com>\r\n").unwrap();
+    read_smtp_reply(&mut reader);
+    write!(writer, "DATA\r\n").unwrap();
+    read_smtp_reply(&mut reader);
+    write!(writer, "Subject: {subject}\r\n\r\nThanks for your order.\r\n.\r\n").unwrap();
+    read_smtp_reply(&mut reader);
+    write!(writer, "QUIT\r\n").unwrap();
+    read_smtp_reply(&mut reader);
+}
+
+#[tokio::test]
+async fn firing_a_request_correlates_db_writes_log_lines_and_sent_mail() {
+    let conn = test_connection();
+    let pool = PgPoolOptions::new()
+        .connect(&format!(
+            "postgres://{}:{}@{}:{}/{}",
+            conn.username, conn.password, conn.host, conn.port, conn.database
+        ))
+        .await
+        .expect("requires a real local Postgres");
+
+    sqlx::query("DROP TABLE IF EXISTS smoke_full_orders").execute(&pool).await.unwrap();
+    sqlx::query("CREATE TABLE smoke_full_orders (id serial PRIMARY KEY, status text)")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // --- log source ---
+    let dir = tempfile::tempdir().unwrap();
+    let log_path = dir.path().join("backend.log");
+    std::fs::write(&log_path, "").unwrap();
+    let logs = LogState::new();
+    logs.add_source("backend.log".into(), log_path.clone()).unwrap();
+    logs.poll_all(1_000);
+
+    // --- SMTP catcher on an OS-assigned port, so the test never collides
+    //     with a real Mailhog on 1025 ---
+    let emails = EmailState::new();
+    let listener = smtp_catcher::bind(0).unwrap();
+    let smtp_port = listener.local_addr().unwrap().port();
+    let store = emails.store();
+    std::thread::spawn(move || {
+        let _ = smtp_catcher::serve(listener, store);
+    });
+    emails.set_status(SmtpStatus { listening: true, port: smtp_port, error: None });
+
+    let registry = CorrelationRegistry::new();
+
+    // The mocked backend does all three things a real one would during the
+    // request: writes a row, writes a log line, and sends mail.
+    let mut server = mockito::Server::new_async().await;
+    let insert_conn = format!(
+        "postgres://{}:{}@{}:{}/{}",
+        conn.username, conn.password, conn.host, conn.port, conn.database
+    );
+    let log_for_mock = log_path.clone();
+    let mock = server
+        .mock("POST", "/orders")
+        .with_status(201)
+        .with_body_from_request(move |_req| {
+            let conn_str = insert_conn.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+                rt.block_on(async {
+                    let p = PgPoolOptions::new().max_connections(1).connect(&conn_str).await.unwrap();
+                    sqlx::query("INSERT INTO smoke_full_orders (status) VALUES ('pending')")
+                        .execute(&p)
+                        .await
+                        .unwrap();
+                });
+            })
+            .join()
+            .unwrap();
+
+            let mut f = std::fs::OpenOptions::new().append(true).open(&log_for_mock).unwrap();
+            writeln!(f, r#"{{"level":"info","msg":"order created id=1"}}"#).unwrap();
+            f.flush().unwrap();
+
+            send_test_mail(smtp_port, "Order confirmation #8841");
+
+            br#"{"id":1}"#.to_vec()
+        })
+        .create_async()
+        .await;
+
+    // Real wall-clock "now", captured once so the window's cursors and
+    // `window_ends_at_ms` are all derived from the same instant. The SMTP
+    // catcher timestamps captured mail with `chrono::Utc::now()` (a real
+    // epoch-millis value, ~1.7+ trillion) rather than a synthetic small
+    // integer, so the window bound must be drawn from the same real clock or
+    // `EmailStore::between`'s upper-bound check would reject every real
+    // capture.
+    let started_at_ms = chrono::Utc::now().timestamp_millis();
+
+    let result = run_correlated_request_impl_with_registry(
+        FireRequestInput {
+            method: "POST".to_string(),
+            url: format!("{}/orders", server.url()),
+            body: None,
+        },
+        conn,
+        vec!["smoke_full_orders".to_string()],
+        &logs,
+        &emails,
+        &registry,
+        started_at_ms,
+    )
+    .await
+    .expect("correlated request should succeed");
+
+    mock.assert_async().await;
+
+    // --- DB ---
+    let diffs = result.table_diffs.expect("DB should have been verified");
+    assert_eq!(diffs.len(), 1);
+    assert_eq!(diffs[0].table, "smoke_full_orders");
+    assert_eq!(diffs[0].inserted, 1);
+
+    // The tailer and the SMTP handler both run outside this task; drive the
+    // tailer explicitly and give the catcher thread a moment to finish DATA.
+    for _ in 0..100 {
+        logs.poll_all(chrono::Utc::now().timestamp_millis());
+        if emails.store().lock().unwrap().list(10).len() == 1 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let window = collect_correlation_window_impl(
+        &registry,
+        &logs,
+        &emails,
+        result.correlation_id,
+        chrono::Utc::now().timestamp_millis() + DEFAULT_CORRELATION_WINDOW_MS + 1,
+    )
+    .await
+    .unwrap();
+
+    // --- Log ---
+    let lines = window.log_lines.expect("a source is configured, so lines must be Some");
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].message, "order created id=1");
+
+    // --- Email ---
+    let captured = window.emails.expect("the catcher is listening, so emails must be Some");
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].subject, "Order confirmation #8841");
+    assert_eq!(captured[0].from, "orders@shop.test");
+    assert_eq!(captured[0].to, vec!["customer@example.com".to_string()]);
+
+    sqlx::query("DROP TABLE smoke_full_orders").execute(&pool).await.unwrap();
+}
