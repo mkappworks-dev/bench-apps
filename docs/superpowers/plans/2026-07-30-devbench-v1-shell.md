@@ -1524,7 +1524,11 @@ describe("SessionsSidebar", () => {
     vi.spyOn(tauriLib, "invokeListSessions").mockResolvedValue(sessions);
     render(<SessionsSidebar onOpenSettings={() => {}} />);
     await waitFor(() => screen.getByText("Checkout API"));
-    fireEvent.click(screen.getByRole("button", { name: /Checkout API/ }));
+    // Each row also has an "Archive <name>" button, whose accessible name is a
+    // superstring of the session name — a regex matcher here would match both
+    // buttons and getByRole would throw "Found multiple elements". Use the
+    // exact string so only the select button matches.
+    fireEvent.click(screen.getByRole("button", { name: "Checkout API" }));
     expect(useAppStore.getState().activeSessionId).toBe("b");
   });
 
