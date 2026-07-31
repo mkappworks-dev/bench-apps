@@ -19,19 +19,31 @@ export function HistorySidebar({
   // must refetch, or the sidebar keeps rendering the previous session's
   // requests under the new session's heading.
   useEffect(() => {
+    // Refetching alone is not enough: across a session switch two reads are in
+    // flight and nothing orders their resolution. If the older one lands last
+    // it overwrites the newer, putting the previous session's requests under
+    // this session's heading — the exact failure scoping exists to prevent.
+    let cancelled = false;
+
     // A failed read is tracked separately from an empty one. Collapsing both
     // into "no entries" would render a fetch failure as "No requests yet." —
     // telling the user they fired nothing when the truth is we could not
     // look (PRODUCT.md principle 4).
     invokeListHistory(sessionId)
       .then((loaded) => {
+        if (cancelled) return;
         setEntries(loaded);
         setFailed(false);
       })
       .catch(() => {
+        if (cancelled) return;
         setEntries([]);
         setFailed(true);
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [refreshKey, sessionId]);
 
   return (

@@ -1,8 +1,17 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { HistorySidebar } from "./HistorySidebar";
 import * as tauriLib from "../../lib/tauri";
 import type { HistoryEntry } from "../../lib/tauri";
+
+/** A promise whose settlement this test controls, so fetches can be landed out of order. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
 
 function entry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
   return {
@@ -72,6 +81,36 @@ describe("HistorySidebar", () => {
 
     rerender(<HistorySidebar onSelect={() => {}} sessionId={null} />);
     await waitFor(() => expect(screen.getByText("No requests yet.")).toBeInTheDocument());
+  });
+
+  // Refetching is not enough on its own: two reads are in flight across a
+  // session switch and nothing orders their resolution. If the older one lands
+  // last it overwrites the newer, putting session A's requests under session
+  // B's heading — the exact thing scoping exists to prevent.
+  it("ignores a stale fetch that resolves after a newer one", async () => {
+    const first = deferred<HistoryEntry[]>();
+    const second = deferred<HistoryEntry[]>();
+    const list = vi
+      .spyOn(tauriLib, "invokeListHistory")
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+
+    const { rerender } = render(<HistorySidebar onSelect={() => {}} sessionId="sess-a" />);
+    rerender(<HistorySidebar onSelect={() => {}} sessionId="sess-b" />);
+    expect(list).toHaveBeenCalledTimes(2);
+
+    // The newer read lands first...
+    second.resolve([entry({ id: "2", url: "/in-b", session_id: "sess-b" })]);
+    await waitFor(() => expect(screen.getByText("/in-b")).toBeInTheDocument());
+
+    // ...and only then does the read for the session we already left resolve.
+    await act(async () => {
+      first.resolve([entry({ url: "/in-a", session_id: "sess-a" })]);
+      await first.promise;
+    });
+
+    expect(screen.queryByText("/in-a")).not.toBeInTheDocument();
+    expect(screen.getByText("/in-b")).toBeInTheDocument();
   });
 
   // PRODUCT.md principle 4: a failure to observe is never rendered as
