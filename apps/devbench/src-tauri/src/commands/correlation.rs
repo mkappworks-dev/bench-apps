@@ -998,6 +998,17 @@ mod tests {
         assert_eq!(window.emails, None, "a catcher that is not listening means NOT OBSERVED, not zero mail");
     }
 
+    // NOTE: this test was originally written (per the plan) to open a window
+    // with `window_ms = 30_000` and then assert `window.emails == Some(vec![])`
+    // when collecting at `now_ms = 40_001`. That passes identically whether
+    // `window_ms` is genuinely threaded through or the implementation
+    // silently ignores it and hardcodes `DEFAULT_CORRELATION_WINDOW_MS`
+    // (5_000) instead: 40_001 is past BOTH windows' ends (40_000 and 15_000),
+    // so `remaining_ms` is negative either way and no blocking occurs; and
+    // with no email ever pushed, `EmailStore::between`'s upper bound never
+    // gets a chance to matter, so an empty result says nothing about which
+    // window length was actually used. Rewritten below to push a message at a
+    // timestamp that only one of the two candidate window ends would include.
     #[tokio::test]
     async fn the_window_length_comes_from_the_caller_not_a_hardcoded_constant() {
         let conn = test_connection();
@@ -1005,8 +1016,28 @@ mod tests {
         let emails = listening_email_state();
         let registry = CorrelationRegistry::new();
 
+        let store_for_mock = emails.store();
         let mut server = mockito::Server::new_async().await;
-        let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
+        let mock = server
+            .mock("GET", "/ping")
+            .with_status(200)
+            // Captured at 25_000: strictly AFTER where a hardcoded 5s default
+            // window opened at 10_000 would end (10_000 + 5_000 = 15_000),
+            // but strictly BEFORE where the real 30s window this test passes
+            // ends (10_000 + 30_000 = 40_000). Only a `window_ms` that was
+            // genuinely threaded through as 30_000 — not silently replaced by
+            // the 5s default — includes this message in the collected window.
+            .with_body_from_request(move |_req| {
+                store_for_mock.lock().unwrap().push(
+                    "orders@shop.test",
+                    &["customer@example.com".into()],
+                    TEST_EMAIL,
+                    25_000,
+                );
+                b"pong".to_vec()
+            })
+            .create_async()
+            .await;
 
         let result = run_correlated_request_impl_with_registry(
             FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
@@ -1022,11 +1053,20 @@ mod tests {
         .unwrap();
         mock.assert_async().await;
 
-        // Collecting at default-window + 1 must still block, because this
-        // window runs to 40_000. Asking at 40_001 returns immediately.
+        // Collecting at 40_001 is past the REAL window's end (40_000), so no
+        // sleep occurs here regardless of which window length was used —
+        // the differentiator is entirely in whether the 25_000-timestamped
+        // message below survives `EmailStore::between`'s upper bound.
         let window = collect_correlation_window_impl(&registry, &logs, &emails, result.correlation_id, 40_001)
             .await
             .unwrap();
-        assert_eq!(window.emails, Some(vec![]));
+
+        // If `window_ms` had silently fallen back to the 5s default, the
+        // window would have closed at 15_000 and this message (captured at
+        // 25_000) would be excluded, failing this assertion.
+        let captured = window.emails.expect("the catcher is running, so emails must be Some");
+        assert_eq!(captured.len(), 1, "a real 30s window must include mail captured at 25_000");
+        assert_eq!(captured[0].subject, "Order confirmation #8841");
+        assert_eq!(captured[0].to, vec!["customer@example.com".to_string()]);
     }
 }
