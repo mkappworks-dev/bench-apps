@@ -56,7 +56,7 @@ export function Menu({
         <BaseMenu.Positioner sideOffset={6} align={align} className="z-50">
           <BaseMenu.Popup
             aria-label={label}
-            className="min-w-52 rounded-lg border border-border p-1.5 shadow-lg backdrop-blur-[24px] backdrop-saturate-150"
+            className="min-w-52 rounded-lg border border-border p-1.5 shadow-lg backdrop-blur-xl backdrop-saturate-150"
             style={{
               background: "color-mix(in srgb, var(--surface) 72%, transparent)",
               boxShadow: "inset 0 1px 0 0 rgb(255 255 255 / 0.06)",
