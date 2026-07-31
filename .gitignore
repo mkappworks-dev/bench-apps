@@ -30,3 +30,9 @@ target/
 # Git worktrees created by EnterWorktree (isolated per-session workspaces,
 # each with its own nested .git - must never be swept into this repo)
 .claude/worktrees/
+
+# superpowers:brainstorming visual-companion session files
+.superpowers/
+
+# Playwright MCP scratch output (screenshots/snapshots from ad-hoc verification)
+.playwright-mcp/
