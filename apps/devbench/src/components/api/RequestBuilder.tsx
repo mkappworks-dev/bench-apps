@@ -4,12 +4,17 @@ import { invokeRunCorrelatedRequest, type CorrelationResult, type DbConnectInput
 export function RequestBuilder({
   connection,
   watchedTables,
+  // Omitted means the request is unattributed, which the backend spells `null`,
+  // not `undefined` — normalise here so the invoke payload is always explicit.
+  sessionId = null,
   onResult,
   onSendStart,
   onError,
 }: {
   connection: DbConnectInput;
   watchedTables: Set<string>;
+  /** Attributes the fired request's history entry to this session. `null` = unattributed. */
+  sessionId?: string | null;
   onResult: (result: CorrelationResult) => void;
   onSendStart?: () => void;
   onError?: (message: string) => void;
@@ -26,6 +31,7 @@ export function RequestBuilder({
         request: { method, url, body: undefined },
         connection,
         watchedTables: Array.from(watchedTables),
+        sessionId,
       });
       onResult(result);
     } catch (err) {

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { RequestBuilder } from "./RequestBuilder";
 import { ResponseViewer } from "./ResponseViewer";
 import { HistorySidebar } from "./HistorySidebar";
@@ -34,10 +34,20 @@ export function ApiTab({
 }) {
   const watchedTables = useAppStore((s) => s.watchedTables);
   const setActiveTab = useAppStore((s) => s.setActiveTab);
+  const activeSessionId = useAppStore((s) => s.activeSessionId);
   const [result, setResult] = useState<DisplayResult | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+
+  // Switching investigations must not leave the previous session's response
+  // and rollup on screen. The rollup describes what one specific request
+  // caused; keeping it visible beside a history list that no longer contains
+  // that request attributes those effects to the wrong investigation.
+  useEffect(() => {
+    setResult(null);
+    setError(null);
+  }, [activeSessionId]);
 
   function handleSendStart() {
     setSending(true);
@@ -127,11 +137,16 @@ export function ApiTab({
 
   return (
     <div className="-m-6 flex h-full">
-      <HistorySidebar onSelect={handleHistorySelect} refreshKey={historyRefreshKey} />
+      <HistorySidebar
+        onSelect={handleHistorySelect}
+        refreshKey={historyRefreshKey}
+        sessionId={activeSessionId}
+      />
       <div className="mx-auto flex max-w-180 flex-1 flex-col gap-4 overflow-y-auto p-6">
         <RequestBuilder
           connection={DEV_CONNECTION}
           watchedTables={watchedTables}
+          sessionId={activeSessionId}
           onSendStart={handleSendStart}
           onResult={handleResult}
           onError={handleError}

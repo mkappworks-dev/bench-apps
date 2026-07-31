@@ -24,10 +24,13 @@ export interface HistoryEntry {
   response_body: string;
   duration_ms: number;
   fired_at: string;
+  /** `null` = unattributed: fired with no active session, or predating session scoping. */
+  session_id: string | null;
 }
 
-export function invokeListHistory(): Promise<HistoryEntry[]> {
-  return invoke("list_history");
+/** `sessionId` omitted or null lists every request ever fired (the unscoped view). */
+export function invokeListHistory(sessionId?: string | null): Promise<HistoryEntry[]> {
+  return invoke("list_history", { sessionId: sessionId ?? null });
 }
 
 export interface TableDiff {
@@ -57,11 +60,13 @@ export function invokeRunCorrelatedRequest(args: {
   request: FireRequestInput;
   connection: DbConnectInput;
   watchedTables: string[];
+  sessionId?: string | null;
 }): Promise<CorrelationResult> {
   return invoke("run_correlated_request", {
     request: args.request,
     connection: args.connection,
     watchedTables: args.watchedTables,
+    sessionId: args.sessionId ?? null,
   });
 }
 
