@@ -3,6 +3,7 @@ pub mod db;
 pub mod email;
 pub mod history;
 pub mod logs;
+pub mod provider;
 pub mod request;
 pub mod sessions;
 pub mod settings;

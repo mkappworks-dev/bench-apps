@@ -237,3 +237,20 @@ export function invokeGetSettings(): Promise<AppSettings> {
 export function invokeSetSetting(key: string, value: string): Promise<void> {
   return invoke("set_setting", { key, value });
 }
+
+export interface ProviderStatus {
+  provider: string;
+  model: string;
+  /** The key itself is never sent to the frontend — only whether one exists. */
+  has_key: boolean;
+}
+
+export function invokeGetProviderStatus(): Promise<ProviderStatus> {
+  return invoke("get_provider_status");
+}
+export function invokeSetProviderApiKey(key: string): Promise<void> {
+  return invoke("set_provider_api_key", { key });
+}
+export function invokeClearProviderApiKey(): Promise<void> {
+  return invoke("clear_provider_api_key");
+}

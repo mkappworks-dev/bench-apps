@@ -90,6 +90,8 @@ fn main() {
             }
             app.manage(emails);
 
+            app.manage(Arc::new(devbench::secrets::KeyringSecretStore) as Arc<dyn devbench::secrets::SecretStore>);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -119,6 +121,9 @@ fn main() {
             commands::watched::set_watched_table,
             commands::settings::get_settings,
             commands::settings::set_setting,
+            commands::provider::get_provider_status,
+            commands::provider::set_provider_api_key,
+            commands::provider::clear_provider_api_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running devbench");
