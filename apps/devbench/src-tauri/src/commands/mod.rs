@@ -4,5 +4,6 @@ pub mod email;
 pub mod history;
 pub mod logs;
 pub mod request;
+pub mod settings;
 pub mod sessions;
 pub mod watched;

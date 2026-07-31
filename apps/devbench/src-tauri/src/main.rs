@@ -112,6 +112,8 @@ fn main() {
             commands::sessions::delete_session,
             commands::watched::list_watched_tables,
             commands::watched::set_watched_table,
+            commands::settings::get_settings,
+            commands::settings::set_setting,
         ])
         .run(tauri::generate_context!())
         .expect("error while running devbench");
