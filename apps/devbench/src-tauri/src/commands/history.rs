@@ -12,9 +12,7 @@ pub struct HistoryEntryInput {
     pub status_code: u16,
     pub response_body: String,
     pub duration_ms: u64,
-    /// `None` = unattributed: fired with no active session, or predating
-    /// session scoping. `#[serde(default)]` so a payload that omits the
-    /// field entirely still deserializes rather than erroring.
+    /// `None` = unattributed (no active session, or predates session scoping).
     #[serde(default)]
     pub session_id: Option<String>,
 }
@@ -61,12 +59,9 @@ pub async fn list_history_impl(
     pool: &sqlx::SqlitePool,
     session_id: Option<&str>,
 ) -> Result<Vec<HistoryEntry>, String> {
-    // Two distinct queries rather than one `(?1 IS NULL OR session_id = ?1)`
-    // predicate. That trick reads as clever but is wrong here: it is easy to
-    // write a NULL-tolerant variant that also matches unattributed rows into
-    // a named session, which is precisely the behaviour that must not exist.
-    // Keeping the unscoped branch as its own literal query also keeps it
-    // byte-for-byte what shipped in v1.
+    // Two distinct queries, not one `(?1 IS NULL OR session_id = ?1)` predicate
+    // — that reads as clever but risks matching unattributed rows into a named
+    // session, which must never happen.
     const COLUMNS: &str =
         "SELECT id, method, url, status_code, response_body, duration_ms, fired_at, session_id \
          FROM request_history";
@@ -176,9 +171,7 @@ mod tests {
         assert_eq!(in_b[0].url, "/in-b");
     }
 
-    // NULL means "unattributed", NOT "belongs to everything". A request
-    // fired outside any session must never be attributed to one the user
-    // happens to have selected later.
+    // NULL means "unattributed", not "belongs to everything".
     #[tokio::test]
     async fn an_unattributed_row_never_appears_in_a_named_session() {
         let (_dir, db) = db().await;
@@ -199,11 +192,9 @@ mod tests {
         assert_eq!(all.len(), 2);
     }
 
-    // The sharpest test here. Asserting only "no row points at a missing
-    // session" would ALSO pass if the rows had been deleted outright, and
-    // would pass if foreign keys were unenforced and the id left dangling
-    // (since the unscoped query has no join to notice). Both halves must
-    // be asserted: the row SURVIVES, and its link is NULL.
+    // Asserting only "no row points at a missing session" would pass even if
+    // the rows were deleted outright, or if foreign keys were unenforced and
+    // the id left dangling. Both halves matter: the row survives, link is NULL.
     #[tokio::test]
     async fn deleting_a_session_keeps_its_history_and_nulls_the_link() {
         let (_dir, db) = db().await;
@@ -217,18 +208,15 @@ mod tests {
         assert_eq!(all[0].url, "/orders");
         assert_eq!(all[0].session_id, None, "the link must be nulled, not left dangling");
 
-        // And the orphaned row must not resurface inside an unrelated session.
         let other = create_session_impl(&db.pool, "Unrelated", None).await.unwrap();
         assert!(list_history_impl(&db.pool, Some(&other.id)).await.unwrap().is_empty());
     }
 
-    // Every other test here starts from a fresh tempdir, so migration 0003 has
-    // only ever been exercised against an EMPTY `request_history`. The upgrade
-    // path that actually ships is the opposite one: an existing install with
-    // rows already in the table. This builds a genuinely pre-0003 database —
-    // the same file `LocalDb::connect` will open, migrated only as far as 0002
-    // — writes a row into it, and then opens it the way the app does, so the
-    // ALTER runs over real data.
+    // Every other test starts from a fresh tempdir, so migration 0003 has only
+    // ever run against an empty table. This builds a genuinely pre-0003 db —
+    // the file `LocalDb::connect` will open, migrated only through 0002 — and
+    // writes a row before opening it the way the app does, so the ALTER runs
+    // over real data.
     #[tokio::test]
     async fn a_row_written_before_the_migration_survives_it_as_unattributed() {
         use sqlx::migrate::Migration;
@@ -245,8 +233,8 @@ mod tests {
             .await
             .unwrap();
 
-        // The real migrator with 0003 withheld — not hand-written DDL, so the
-        // starting point is byte-for-byte the schema v1 users are actually on.
+        // Real migrator with 0003 withheld — not hand-written DDL — so this is
+        // byte-for-byte the schema v1 users are actually on.
         let mut pre_session = sqlx::migrate!("./migrations");
         let earlier: Vec<Migration> = pre_session
             .migrations
@@ -258,8 +246,7 @@ mod tests {
         pre_session.migrations = Cow::Owned(earlier);
         pre_session.run(&legacy_pool).await.unwrap();
 
-        // Without this the test could silently degrade into a post-migration
-        // one, asserting nothing about the upgrade at all.
+        // Without this check the test could silently degrade to post-migration.
         let columns: Vec<String> = sqlx::query("PRAGMA table_info(request_history)")
             .fetch_all(&legacy_pool)
             .await
@@ -296,15 +283,12 @@ mod tests {
         assert_eq!(all[0].url, "/legacy");
         assert_eq!(all[0].session_id, None, "a pre-existing row lands unattributed");
 
-        // Unattributed means it belongs to no named session — not that it
-        // belongs to whichever one the user selects next.
         let session = create_session_impl(&db.pool, "Order flow", None).await.unwrap();
         assert!(list_history_impl(&db.pool, Some(&session.id)).await.unwrap().is_empty());
     }
 
-    // Archiving is reversible and must not touch history at all. The rows
-    // stay attributed to the session throughout, so restoring it needs no
-    // recovery step — nothing was ever hidden at the data layer.
+    // Archiving must not touch history — rows stay attributed throughout, so
+    // restoring needs no recovery step.
     #[tokio::test]
     async fn archiving_and_restoring_a_session_preserves_its_scoped_history() {
         use crate::commands::sessions::{archive_session_impl, restore_session_impl};

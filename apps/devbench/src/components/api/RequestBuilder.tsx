@@ -4,11 +4,8 @@ import { invokeRunCorrelatedRequest, type CorrelationResult, type DbConnectInput
 export function RequestBuilder({
   connection,
   watchedTables,
-  // Omitted means the request is unattributed. Normalising to `null` here is
-  // no longer what makes the invoke payload explicit — `invokeRunCorrelatedRequest`
-  // already does `sessionId ?? null` in lib/tauri.ts. What this default still
-  // buys is the exact-payload assertion in RequestBuilder.test.tsx, which
-  // checks this component passes `sessionId: null` rather than dropping the key.
+  // `lib/tauri.ts` already normalises to `null`; this default only satisfies
+  // the exact-payload assertion in RequestBuilder.test.tsx.
   sessionId = null,
   onResult,
   onSendStart,

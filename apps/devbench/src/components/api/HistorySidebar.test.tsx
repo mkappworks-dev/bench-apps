@@ -68,11 +68,8 @@ describe("HistorySidebar", () => {
     expect(list).toHaveBeenLastCalledWith("sess-b");
   });
 
-  // Refetching on its own only replaces the rows once the NEW read lands. In
-  // the gap the previous session's requests stay on screen — and stay
-  // clickable — under the new session's heading, and selecting one repopulates
-  // the response pane with a foreign session's request. That is the same
-  // misattribution ApiTab clears its result for on a session switch.
+  // Otherwise the previous session's rows stay visible AND clickable under
+  // the new heading until the new read lands.
   it("drops the previous session's rows while the new session's read is in flight", async () => {
     const pending = deferred<HistoryEntry[]>();
     vi.spyOn(tauriLib, "invokeListHistory")
@@ -84,13 +81,12 @@ describe("HistorySidebar", () => {
 
     rerender(<HistorySidebar onSelect={() => {}} sessionId="sess-b" />);
 
-    // Nothing resolved yet, so this is the in-flight gap, not the settled state.
     expect(screen.queryByText("/in-a")).not.toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
-  // A stale failure must not label a fresh read either: clearing `failed` at
-  // the top of the effect is only safe because the `.catch` sets it again.
+  // Clearing `failed` at the top of the effect is only safe because the
+  // `.catch` sets it again on a genuine failure.
   it("still reports a failure that happens after a successful read", async () => {
     const list = vi
       .spyOn(tauriLib, "invokeListHistory")
@@ -105,9 +101,6 @@ describe("HistorySidebar", () => {
     await waitFor(() => expect(screen.getByText("Couldn't load history.")).toBeInTheDocument());
   });
 
-  // Creating a session auto-selects it, so an empty scoped list is the very
-  // first thing a new session shows. Rendering nothing at all there is
-  // indistinguishable from a broken fetch.
   it("explains an empty list differently inside a session than outside one", async () => {
     vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([]);
 
@@ -120,10 +113,8 @@ describe("HistorySidebar", () => {
     await waitFor(() => expect(screen.getByText("No requests yet.")).toBeInTheDocument());
   });
 
-  // Refetching is not enough on its own: two reads are in flight across a
-  // session switch and nothing orders their resolution. If the older one lands
-  // last it overwrites the newer, putting session A's requests under session
-  // B's heading — the exact thing scoping exists to prevent.
+  // Two reads are in flight across a switch; if the older lands last it must
+  // not overwrite the newer one.
   it("ignores a stale fetch that resolves after a newer one", async () => {
     const first = deferred<HistoryEntry[]>();
     const second = deferred<HistoryEntry[]>();
@@ -136,11 +127,10 @@ describe("HistorySidebar", () => {
     rerender(<HistorySidebar onSelect={() => {}} sessionId="sess-b" />);
     expect(list).toHaveBeenCalledTimes(2);
 
-    // The newer read lands first...
+    // The newer read lands first, then the one for the session we already left.
     second.resolve([entry({ id: "2", url: "/in-b", session_id: "sess-b" })]);
     await waitFor(() => expect(screen.getByText("/in-b")).toBeInTheDocument());
 
-    // ...and only then does the read for the session we already left resolve.
     await act(async () => {
       first.resolve([entry({ url: "/in-a", session_id: "sess-a" })]);
       await first.promise;
@@ -151,9 +141,7 @@ describe("HistorySidebar", () => {
   });
 
   // PRODUCT.md principle 4: a failure to observe is never rendered as
-  // "nothing happened". Adding empty-state copy makes this newly reachable —
-  // before, a failed fetch rendered nothing at all, which was vague but did
-  // not actively claim the user had fired no requests.
+  // "nothing happened".
   it("says it could not load rather than claiming there are no requests", async () => {
     vi.spyOn(tauriLib, "invokeListHistory").mockRejectedValue(new Error("db is gone"));
 

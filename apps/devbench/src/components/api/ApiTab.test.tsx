@@ -41,10 +41,8 @@ describe("ApiTab", () => {
     useAppStore.getState().setActiveSessionId(null);
   });
 
-  // The rollup narrates "what happened" for a fired request. Leaving it on
-  // screen after switching sessions would attribute one investigation's
-  // effects to another, while the history sidebar beside it shows a list
-  // that does not contain the request being described.
+  // Leaving the rollup up after a switch attributes one investigation's
+  // effects to another.
   it("clears a displayed response when the active session changes", async () => {
     vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([
       {
@@ -61,8 +59,7 @@ describe("ApiTab", () => {
 
     render(<ApiTab onOpenTableInDb={() => {}} onOpenEmail={() => {}} />);
 
-    // Selecting a history entry populates the response pane. ResponseViewer
-    // renders the body verbatim inside a <pre>, so the raw string matches.
+    // ResponseViewer renders the body verbatim inside a <pre>.
     const historyButton = await screen.findByRole("button", { name: /\/api\/orders/ });
     fireEvent.click(historyButton);
     await waitFor(() => expect(screen.getByText('{"id":8841}')).toBeInTheDocument());
@@ -72,15 +69,13 @@ describe("ApiTab", () => {
     await waitFor(() => expect(screen.queryByText('{"id":8841}')).not.toBeInTheDocument());
   });
 
-  // Not a tight race: a correlated send stays pending for the whole correlation
-  // window — 5s by default, up to 60s — so firing a request and then switching
-  // investigation while it collects is ordinary use.
+  // A correlated send stays pending for the whole window (5s default, up to
+  // 60), so switching investigation mid-collect is ordinary use.
   it("drops a send that resolves after the session it was fired in was left", async () => {
     vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([]);
     const send = deferred<CorrelationResult>();
     vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockReturnValue(send.promise);
-    // Left pending: if the guard fails and the send is processed anyway, this
-    // test should fail on its assertions rather than crash somewhere downstream.
+    // Left pending: a guard failure should fail an assertion, not crash downstream.
     vi.spyOn(tauriLib, "invokeCollectCorrelationWindow").mockReturnValue(
       deferred<tauriLib.CorrelationWindowResult>().promise,
     );
@@ -99,15 +94,12 @@ describe("ApiTab", () => {
     });
 
     expect(screen.queryByText('{"id":8841}')).not.toBeInTheDocument();
-    // And the pane is not stuck mid-send: the rollup only appears while a send
-    // is outstanding or a result is displayed, and neither is true here.
+    // Not stuck mid-send either: the rollup shows only while sending or displayed.
     expect(screen.queryByText("What happened")).not.toBeInTheDocument();
   });
 
-  // The late continuation is the sharper half: the correlation window resolves
-  // long after the response did, and splices log lines and emails into whatever
-  // result is on screen. Unguarded, one session's observed side effects get
-  // attributed to a different request in a different investigation.
+  // The window resolves long after the response, and unguarded would splice
+  // one session's log lines/emails into whatever result is on screen.
   it("does not splice a left session's correlation window into the current one", async () => {
     vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeRunCorrelatedRequest")
@@ -146,20 +138,13 @@ describe("ApiTab", () => {
     });
 
     expect(screen.queryByText("3 lines")).not.toBeInTheDocument();
-    // The current request's own window is still open, so its log slot is
-    // pending rather than filled in with someone else's lines.
+    // The current request's own window is still open, so its slot is pending.
     expect(screen.getByTestId("rollup-log-pending")).toBeInTheDocument();
   });
 
-  // The session guard is blind to this one: both sends belong to the SAME
-  // investigation, so it passes for each. What tells them apart is which
-  // request they describe — that is what `correlation_id` identifies.
-  //
-  // This is the ordinary debugging loop, not an edge case: fire, tweak, fire
-  // again inside the 5s window. Unguarded, the rollup shows the second
-  // request's response and DB writes beside the FIRST request's log lines and
-  // emails, marked settled, with nothing on screen admitting the mismatch —
-  // a confident wrong answer about what a request caused.
+  // The session guard is blind to this: two sends in the SAME session both
+  // pass it. Only `correlation_id` tells them apart, and fire-tweak-fire
+  // inside the 5s window is the ordinary debugging loop, not an edge case.
   it("does not splice one request's correlation window into a later request in the same session", async () => {
     vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeRunCorrelatedRequest")

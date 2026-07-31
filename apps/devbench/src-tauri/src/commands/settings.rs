@@ -20,9 +20,7 @@ pub struct AppSettings {
     pub provider: String,
     pub model: String,
     /// The session the user was last in. `None` = unscoped. Not validated
-    /// here: whether the id still names an active session is a question
-    /// only the sessions list can answer, so the frontend reconciles it at
-    /// launch rather than coupling this module to `commands::sessions`.
+    /// here — the frontend reconciles it against the live sessions list.
     pub active_session_id: Option<String>,
 }
 
@@ -53,8 +51,7 @@ pub async fn get_settings_impl(pool: &SqlitePool) -> Result<AppSettings, String>
             .unwrap_or(DEFAULT_SMTP_PORT),
         provider: get_raw(pool, "provider").await?.unwrap_or_else(|| DEFAULT_PROVIDER.to_string()),
         model: get_raw(pool, "model").await?.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-        // An empty string means "cleared" — `set_setting` can only upsert,
-        // so that is how the frontend removes a stale id.
+        // Empty string means "cleared" — `set_setting` can only upsert.
         active_session_id: get_raw(pool, "active_session_id").await?.filter(|v| !v.is_empty()),
     })
 }
@@ -151,10 +148,8 @@ mod tests {
         );
     }
 
-    // `set_setting` only upserts — there is no delete command. Writing an
-    // empty string is therefore how the frontend clears a stored id that
-    // points at an archived or deleted session, so an empty value must read
-    // back as absent rather than as a session literally named "".
+    // `set_setting` only upserts, so empty string is how a stale id gets
+    // cleared — it must read back as absent, not as a session named "".
     #[tokio::test]
     async fn an_empty_active_session_reads_back_as_none() {
         let (_dir, db) = db().await;

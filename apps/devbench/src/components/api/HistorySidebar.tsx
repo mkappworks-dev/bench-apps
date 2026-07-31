@@ -15,33 +15,21 @@ export function HistorySidebar({
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [failed, setFailed] = useState(false);
 
-  // `sessionId` is a dependency, not just an argument: switching sessions
-  // must refetch, or the sidebar keeps rendering the previous session's
-  // requests under the new session's heading.
+  // `sessionId` is a dependency: switching sessions must refetch. `cancelled`
+  // guards against the two in-flight reads resolving out of order.
   useEffect(() => {
-    // Refetching alone is not enough: across a session switch two reads are in
-    // flight and nothing orders their resolution. If the older one lands last
-    // it overwrites the newer, putting the previous session's requests under
-    // this session's heading — the exact failure scoping exists to prevent.
     let cancelled = false;
 
-    // Clear before the read, not just after it. Refetching leaves the previous
-    // session's rows on screen for the whole in-flight read — visible AND
-    // clickable under the new session's heading, and clicking one repopulates
-    // the response pane with a foreign session's request, which is the exact
-    // misattribution ApiTab's clear-on-switch effect exists to prevent. An
-    // empty/loading sidebar is honest; a stale one is not.
-    //
-    // Resetting `failed` here does not paper over a failed read: the `.catch`
-    // below sets it again, so a failure still ends on "Couldn't load history."
-    // It only stops a PREVIOUS failure from labelling a fresh read.
+    // Clear before the read, not just after: otherwise the previous session's
+    // rows stay visible AND clickable for the whole in-flight read, and
+    // clicking one repopulates the response pane with a foreign session's
+    // request. `failed` resets too, but the `.catch` below sets it again on a
+    // genuine failure — this only clears a PREVIOUS failure's label.
     setEntries([]);
     setFailed(false);
 
-    // A failed read is tracked separately from an empty one. Collapsing both
-    // into "no entries" would render a fetch failure as "No requests yet." —
-    // telling the user they fired nothing when the truth is we could not
-    // look (PRODUCT.md principle 4).
+    // Tracked separately from an empty list — collapsing them would render a
+    // fetch failure as "No requests yet." (PRODUCT.md principle 4).
     invokeListHistory(sessionId)
       .then((loaded) => {
         if (cancelled) return;
@@ -64,10 +52,8 @@ export function HistorySidebar({
       <div className="border-b border-border p-2.5 text-xs font-bold text-text-muted">History</div>
       <div className="flex flex-col gap-0.5 p-1.5">
         {entries.length === 0 ? (
-          // Creating a session auto-selects it, so an empty scoped list is
-          // the first thing a new session shows. Saying nothing at all here
-          // reads as a broken fetch rather than as "nothing yet" — but a
-          // genuine failure must not be dressed up as emptiness either.
+          // A new session auto-selects itself, so an empty scoped list is the
+          // first thing it shows — say so explicitly rather than nothing.
           <div className="p-2 text-xs text-text-faint">
             {failed
               ? "Couldn't load history."

@@ -92,9 +92,8 @@ describe("SessionsSidebar", () => {
     await waitFor(() => expect(useAppStore.getState().activeSessionId).toBe("b"));
   });
 
-  // A stored id can name a session that has since been archived or hard
-  // deleted. Selecting it anyway would leave the app scoped to a session
-  // that is not in the list and cannot be deselected.
+  // A stored id can name an archived/deleted session; selecting it would
+  // scope the app to something absent from the list.
   it("clears a stored session that is no longer active", async () => {
     vi.spyOn(tauriLib, "invokeListSessions").mockResolvedValue(sessions);
     vi.spyOn(tauriLib, "invokeGetSettings").mockResolvedValue({
@@ -121,9 +120,8 @@ describe("SessionsSidebar", () => {
     await waitFor(() => expect(setSetting).toHaveBeenCalledWith("active_session_id", "b"));
   });
 
-  // `refresh()` runs again after create and archive. Re-running
-  // reconciliation there would overwrite whatever the user just selected
-  // with the value read at launch.
+  // `refresh()` runs again after create/archive; reconciliation must not
+  // re-fire and overwrite the user's new selection with the launch value.
   it("does not re-apply the stored session after a later refresh", async () => {
     vi.spyOn(tauriLib, "invokeListSessions").mockResolvedValue(sessions);
     vi.spyOn(tauriLib, "invokeGetSettings").mockResolvedValue({
@@ -143,8 +141,8 @@ describe("SessionsSidebar", () => {
     render(<SessionsSidebar onOpenSettings={() => {}} />);
     await waitFor(() => expect(useAppStore.getState().activeSessionId).toBe("a"));
 
-    // NewSessionDialog's input has no label — it is reached by placeholder —
-    // and its submit button reads "Create session", not "Create".
+    // NewSessionDialog's input has no label (reached by placeholder); its
+    // submit button reads "Create session", not "Create".
     fireEvent.click(screen.getByRole("button", { name: "New session" }));
     fireEvent.change(screen.getByPlaceholderText("Order flow debug"), {
       target: { value: "Fresh" },
@@ -152,16 +150,12 @@ describe("SessionsSidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create session" }));
 
     await waitFor(() => expect(useAppStore.getState().activeSessionId).toBe("c"));
-    // Give the refresh that follows creation time to settle, then confirm
-    // reconciliation did not fire a second time and reset us to "a".
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(useAppStore.getState().activeSessionId).toBe("c");
   });
 
-  // `main.tsx` wraps the app in <React.StrictMode>, which double-invokes mount
-  // effects in dev on the same fiber (refs survive the simulated remount). The
-  // `reconciled` ref is what collapses that back into a single settings read —
-  // the stable effect deps that keep the test above green do NOT cover this.
+  // `main.tsx` wraps the app in StrictMode, which double-invokes mount effects
+  // in dev (refs survive it). `reconciled` collapses that to one settings read.
   it("reconciles only once under StrictMode's double-invoked effect", async () => {
     vi.spyOn(tauriLib, "invokeListSessions").mockResolvedValue(sessions);
     const getSettings = vi.spyOn(tauriLib, "invokeGetSettings").mockResolvedValue({
@@ -180,9 +174,8 @@ describe("SessionsSidebar", () => {
     expect(getSettings).toHaveBeenCalledTimes(1);
   });
 
-  // Settings can be unreadable (locked db, failed migration). Reconciliation
-  // must not take the sidebar down with it, and must not leak an unhandled
-  // rejection out of the effect.
+  // Settings can be unreadable (locked db); reconciliation must not take the
+  // sidebar down with it or leak an unhandled rejection.
   it("stays unscoped and usable when settings cannot be read", async () => {
     vi.spyOn(tauriLib, "invokeListSessions").mockResolvedValue(sessions);
     vi.spyOn(tauriLib, "invokeGetSettings").mockRejectedValue(new Error("db locked"));
@@ -192,15 +185,12 @@ describe("SessionsSidebar", () => {
     await waitFor(() => expect(screen.getByText("Checkout API")).toBeInTheDocument());
     expect(useAppStore.getState().activeSessionId).toBeNull();
 
-    // Still interactive afterwards — an unscoped app is a usable app.
     fireEvent.click(screen.getByRole("button", { name: "Checkout API" }));
     expect(useAppStore.getState().activeSessionId).toBe("b");
   });
 
-  // A failed list load is NOT the same as "no sessions exist". If they are
-  // conflated, a momentary failure at launch permanently clears a perfectly
-  // good stored id — the exact failure the reconcile-after-the-list ordering
-  // exists to prevent, reintroduced through the catch.
+  // A failed list load is not "no sessions exist" — conflating them would
+  // clear a good stored id over a momentary failure.
   it("keeps a stored session when the session list fails to load", async () => {
     vi.spyOn(tauriLib, "invokeListSessions").mockRejectedValue(new Error("db locked"));
     vi.spyOn(tauriLib, "invokeGetSettings").mockResolvedValue({
@@ -214,15 +204,12 @@ describe("SessionsSidebar", () => {
     await waitFor(() => expect(screen.getByText(/no sessions yet/i)).toBeInTheDocument());
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    // The stored id must survive untouched for the next launch.
     expect(setSetting).not.toHaveBeenCalledWith("active_session_id", "");
-    // And we stay unscoped rather than selecting an id we could not validate.
     expect(useAppStore.getState().activeSessionId).toBeNull();
   });
 
-  // The list renders before the settings read resolves, so a fast user can
-  // click in that gap. Reconciliation must not silently overwrite that click
-  // (which would leave the screen showing one session and disk holding another).
+  // The list renders before the settings read resolves, so a fast click can
+  // land in that gap; reconciliation must not silently overwrite it.
   it("does not revert a selection made while settings are still loading", async () => {
     vi.spyOn(tauriLib, "invokeListSessions").mockResolvedValue(sessions);
     let resolveSettings!: (value: tauriLib.AppSettings) => void;
@@ -236,20 +223,18 @@ describe("SessionsSidebar", () => {
     render(<SessionsSidebar onOpenSettings={() => {}} />);
     await waitFor(() => screen.getByText("Checkout API"));
 
-    // User clicks before reconciliation has had its answer.
     fireEvent.click(screen.getByRole("button", { name: "Checkout API" }));
     expect(useAppStore.getState().activeSessionId).toBe("b");
 
-    // Settings now arrive, naming a different session.
+    // Settings arrive late, naming a different session — the click must win.
     resolveSettings({ ...storedSettings, active_session_id: "a" });
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    // The deliberate click wins over the launch-time stored value.
     expect(useAppStore.getState().activeSessionId).toBe("b");
   });
 
-  // Persisting is best-effort: the current view depends on the in-memory
-  // selection, so a failed write must never roll it back.
+  // Persisting is best-effort: a failed write must never roll back the
+  // in-memory selection the view depends on.
   it("keeps the selection when persisting it fails", async () => {
     vi.spyOn(tauriLib, "invokeListSessions").mockResolvedValue(sessions);
     vi.spyOn(tauriLib, "invokeGetSettings").mockResolvedValue(storedSettings);

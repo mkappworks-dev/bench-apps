@@ -3,26 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invokeListHistory, invokeRunCorrelatedRequest } from "./tauri";
 
 /**
- * Why this file asserts raw `invoke` payloads instead of spying on the wrappers.
+ * Asserts raw `invoke` payloads rather than spying on the wrappers, because
+ * `lib/tauri.ts` is the only place the TS→Rust argument boundary is spelled
+ * out. Tauri v2 maps a camelCase JS key to the same-named snake_case Rust
+ * param; write `session_id` here and Tauri finds no match, passes `None`,
+ * and the command still succeeds — session scoping becomes a silent no-op.
+ * Nothing else catches that (`tsc` sees a valid object, `cargo test` never
+ * crosses the bridge, every other test mocks these wrappers), so this file
+ * checks the key NAMES against the mocked `invoke` (`src/test-setup.ts`).
  *
- * `lib/tauri.ts` is the only place the TS→Rust argument boundary is spelled out,
- * and that boundary is name-sensitive in a way nothing else in the toolchain
- * checks. Tauri v2 maps a camelCase JS key onto the snake_case Rust parameter
- * of the same name: `{ sessionId }` binds `session_id: Option<String>`. Write
- * `{ session_id }` here instead and Tauri finds no matching argument, passes
- * `None`, and the command still succeeds — every fired request would be saved
- * unattributed and every read would come back unscoped. Session scoping would
- * become a silent no-op.
- *
- * Nothing else catches that. `tsc` sees a valid object literal, `cargo test`
- * exercises the Rust side directly and never crosses the bridge, and every other
- * frontend test mocks these wrapper functions — so the payload they build is the
- * one thing never observed. Hence: assert the key NAMES, exactly, against the
- * mocked `invoke` (set up globally in `src/test-setup.ts`).
- *
- * The `null` cases are equally load-bearing. `undefined` is dropped during
- * serialisation, so an omitted `sessionId` must reach the bridge as an explicit
- * `null` — which is what `?? null` in the wrappers is for.
+ * `null` vs `undefined` matters too: `undefined` is dropped during
+ * serialisation, so an omitted `sessionId` must reach the bridge as `null`.
  */
 
 const invoked = vi.mocked(invoke);
@@ -58,8 +49,6 @@ describe("invokeListHistory", () => {
     expect(command).toBe("list_history");
     expect(payload).toStrictEqual({ sessionId: null });
     expect(payload.sessionId).toBeNull();
-    // An `undefined` value would vanish from the serialised payload entirely,
-    // which is indistinguishable to Rust from never sending the key.
     expect(JSON.stringify(payload)).toBe('{"sessionId":null}');
   });
 
@@ -93,7 +82,6 @@ describe("invokeRunCorrelatedRequest", () => {
       watchedTables: ["orders"],
       sessionId: "sess-1",
     });
-    // Ordering is irrelevant to Tauri, but an unexpected or renamed key is not.
     expect(Object.keys(payload).sort()).toEqual([
       "connection",
       "request",
