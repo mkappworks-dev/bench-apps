@@ -40,7 +40,34 @@ describe("RequestBuilder", () => {
       request: { method: "GET", url: "/api/orders", body: undefined },
       connection,
       watchedTables: ["orders"],
+      sessionId: null,
     });
+  });
+
+  it("attributes the request to the active session", async () => {
+    const invoked = vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
+      correlation_id: "corr-3",
+      response: { status_code: 200, body: "{}", duration_ms: 5 },
+      table_diffs: [],
+      db_error: null,
+    });
+
+    render(
+      <RequestBuilder
+        connection={connection}
+        watchedTables={new Set()}
+        onResult={() => {}}
+        sessionId="sess-1"
+      />,
+    );
+    fireEvent.change(screen.getByPlaceholderText("/api/orders"), {
+      target: { value: "/api/orders" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() =>
+      expect(invoked).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "sess-1" })),
+    );
   });
 
   it("calls onSendStart synchronously before the correlated request resolves", async () => {

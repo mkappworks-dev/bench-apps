@@ -19,6 +19,9 @@ pub struct AppSettings {
     pub smtp_port: u16,
     pub provider: String,
     pub model: String,
+    /// The session the user was last in. `None` = unscoped. Not validated
+    /// here — the frontend reconciles it against the live sessions list.
+    pub active_session_id: Option<String>,
 }
 
 async fn get_raw(pool: &SqlitePool, key: &str) -> Result<Option<String>, String> {
@@ -48,6 +51,8 @@ pub async fn get_settings_impl(pool: &SqlitePool) -> Result<AppSettings, String>
             .unwrap_or(DEFAULT_SMTP_PORT),
         provider: get_raw(pool, "provider").await?.unwrap_or_else(|| DEFAULT_PROVIDER.to_string()),
         model: get_raw(pool, "model").await?.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
+        // Empty string means "cleared" — `set_setting` can only upsert.
+        active_session_id: get_raw(pool, "active_session_id").await?.filter(|v| !v.is_empty()),
     })
 }
 
@@ -125,5 +130,31 @@ mod tests {
             get_settings_impl(&db.pool).await.unwrap().correlation_window_ms,
             DEFAULT_CORRELATION_WINDOW_MS
         );
+    }
+
+    #[tokio::test]
+    async fn no_stored_active_session_yields_none() {
+        let (_dir, db) = db().await;
+        assert_eq!(get_settings_impl(&db.pool).await.unwrap().active_session_id, None);
+    }
+
+    #[tokio::test]
+    async fn a_stored_active_session_round_trips() {
+        let (_dir, db) = db().await;
+        set_setting_impl(&db.pool, "active_session_id", "sess-1").await.unwrap();
+        assert_eq!(
+            get_settings_impl(&db.pool).await.unwrap().active_session_id.as_deref(),
+            Some("sess-1")
+        );
+    }
+
+    // `set_setting` only upserts, so empty string is how a stale id gets
+    // cleared — it must read back as absent, not as a session named "".
+    #[tokio::test]
+    async fn an_empty_active_session_reads_back_as_none() {
+        let (_dir, db) = db().await;
+        set_setting_impl(&db.pool, "active_session_id", "sess-1").await.unwrap();
+        set_setting_impl(&db.pool, "active_session_id", "").await.unwrap();
+        assert_eq!(get_settings_impl(&db.pool).await.unwrap().active_session_id, None);
     }
 }

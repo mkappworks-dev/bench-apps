@@ -189,6 +189,7 @@ async fn save_correlation_history(
     method: &str,
     url: &str,
     response: &FireRequestOutput,
+    session_id: Option<&str>,
 ) {
     let entry = HistoryEntryInput {
         method: method.to_string(),
@@ -196,6 +197,7 @@ async fn save_correlation_history(
         status_code: response.status_code,
         response_body: response.body.clone(),
         duration_ms: response.duration_ms,
+        session_id: session_id.map(str::to_string),
     };
     if let Err(e) = save_history_entry_impl(pool, entry).await {
         eprintln!("failed to save request history entry after a successful correlated request: {e}");
@@ -322,6 +324,10 @@ pub async fn collect_correlation_window(
     .await
 }
 
+// The argument list IS the IPC surface: four `State` injections plus the
+// request payload. Collapsing it into a params struct would change the shape
+// the frontend has to invoke with, for no gain on this side.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn run_correlated_request(
     db: State<'_, LocalDb>,
@@ -331,6 +337,7 @@ pub async fn run_correlated_request(
     request: FireRequestInput,
     connection: DbConnectInput,
     watched_tables: Vec<String>,
+    session_id: Option<String>,
 ) -> Result<CorrelationResult, String> {
     let method = request.method.clone();
     let url = request.url.clone();
@@ -349,7 +356,7 @@ pub async fn run_correlated_request(
         window_ms,
     )
     .await?;
-    save_correlation_history(&db.pool, &method, &url, &result.response).await;
+    save_correlation_history(&db.pool, &method, &url, &result.response, session_id.as_deref()).await;
     Ok(result)
 }
 
@@ -628,10 +635,11 @@ mod tests {
             "POST",
             "/orders",
             &FireRequestOutput { status_code: 201, body: "{\"id\":1}".to_string(), duration_ms: 42 },
+            None,
         )
         .await;
 
-        let entries = crate::commands::history::list_history_impl(&db.pool).await.unwrap();
+        let entries = crate::commands::history::list_history_impl(&db.pool, None).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].method, "POST");
         assert_eq!(entries[0].url, "/orders");
@@ -661,16 +669,62 @@ mod tests {
         let method = request.method.clone();
 
         let result = run_correlated_request_impl(request, conn, vec![], &crate::log_state::LogState::new()).await.unwrap();
-        save_correlation_history(&db.pool, &method, &url, &result.response).await;
+        save_correlation_history(&db.pool, &method, &url, &result.response, None).await;
 
         mock.assert_async().await;
 
-        let entries = crate::commands::history::list_history_impl(&db.pool).await.unwrap();
+        let entries = crate::commands::history::list_history_impl(&db.pool, None).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].method, "GET");
         assert_eq!(entries[0].url, url);
         assert_eq!(entries[0].status_code, 200);
         assert_eq!(entries[0].response_body, "pong");
+    }
+
+    #[tokio::test]
+    async fn save_correlation_history_attributes_the_row_to_the_active_session() {
+        use crate::commands::sessions::create_session_impl;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        let session = create_session_impl(&db.pool, "Order flow", None).await.unwrap();
+
+        save_correlation_history(
+            &db.pool,
+            "POST",
+            "/orders",
+            &FireRequestOutput { status_code: 201, body: "{}".to_string(), duration_ms: 42 },
+            Some(&session.id),
+        )
+        .await;
+
+        let scoped = crate::commands::history::list_history_impl(&db.pool, Some(&session.id))
+            .await
+            .unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].url, "/orders");
+        assert_eq!(scoped[0].session_id.as_deref(), Some(session.id.as_str()));
+    }
+
+    // Firing with no session selected is a supported, non-error path. The
+    // row lands unattributed and shows only in the unscoped view.
+    #[tokio::test]
+    async fn a_request_fired_with_no_active_session_is_saved_unattributed() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+
+        save_correlation_history(
+            &db.pool,
+            "GET",
+            "/ping",
+            &FireRequestOutput { status_code: 200, body: "pong".to_string(), duration_ms: 3 },
+            None,
+        )
+        .await;
+
+        let all = crate::commands::history::list_history_impl(&db.pool, None).await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].session_id, None);
     }
 
     // A watched table that does not exist stands in for any mid-diff DB

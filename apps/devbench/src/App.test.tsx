@@ -10,6 +10,7 @@ const settings = {
   smtp_port: 1025,
   provider: "anthropic",
   model: "claude-opus-5",
+  active_session_id: null,
 };
 
 describe("App shell", () => {
