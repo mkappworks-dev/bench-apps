@@ -4,12 +4,17 @@ import { invokeRunCorrelatedRequest, type CorrelationResult, type DbConnectInput
 export function RequestBuilder({
   connection,
   watchedTables,
+  // `lib/tauri.ts` already normalises to `null`; this default only satisfies
+  // the exact-payload assertion in RequestBuilder.test.tsx.
+  sessionId = null,
   onResult,
   onSendStart,
   onError,
 }: {
   connection: DbConnectInput;
   watchedTables: Set<string>;
+  /** Attributes the fired request's history entry to this session. `null` = unattributed. */
+  sessionId?: string | null;
   onResult: (result: CorrelationResult) => void;
   onSendStart?: () => void;
   onError?: (message: string) => void;
@@ -26,6 +31,7 @@ export function RequestBuilder({
         request: { method, url, body: undefined },
         connection,
         watchedTables: Array.from(watchedTables),
+        sessionId,
       });
       onResult(result);
     } catch (err) {
