@@ -156,10 +156,20 @@ which is an acceptable trade for a local dev tool's "don't lose everything on
 restart" goal — this isn't an audit log.
 
 (Considered and rejected: synchronous write-through, which ties the poll tick
-and a command source's stdout reader to disk I/O on every line; and an async
-batched writer behind an mpsc channel, which adds a task type and a
-shutdown-coordination edge case — what happens to lines still in the channel
-when the app quits — for a durability guarantee this tool doesn't need.)
+and a command source's stdout reader to disk I/O on every line — a burst from
+a command source, e.g. hundreds of lines during a `npm run dev` rebuild,
+would stall ingestion on disk I/O one line at a time instead of one batched
+insert; and an async batched writer behind an mpsc channel, which adds a task
+type and a shutdown-coordination edge case — what happens to lines still in
+the channel when the app quits — for a durability guarantee this tool
+doesn't need.)
+
+DevBench also runs one **explicit final flush on graceful shutdown** (in
+`main.rs`, before exit), so a normal quit never loses anything — only an
+actual crash or `kill -9` can lose the last partial interval. This is nearly
+free (it's the same sweep, called once more) and it means the periodic
+interval only has to bound worst-case loss on an unclean exit, not on the
+common case of the user just closing the app.
 
 **Retention**: a periodic prune keeps `log_lines` under a global cap
 (proposing **100,000** rows, hardcoded constant — matching this codebase's
@@ -228,7 +238,9 @@ abstract:
 **Rust**: per-source buffer isolation (a chatty source doesn't evict a quiet
 source's lines), command-source stdout+stderr merge-by-arrival, kill-on-drop,
 `"exited"` state on natural exit, the flush sweep writes exactly the new
-lines since the last flush, retention prune keeps the row cap, `read_since`'s
+lines since the last flush (as one `flush_now()`-style function called by
+both the periodic ticker and the shutdown hook, so testing it once covers
+both call sites), retention prune keeps the row cap, `read_since`'s
 merge-across-sources ordering, and `collect_window`'s `None`/`Some(vec![])`
 behavior re-verified against the merged-per-source implementation (this is
 the one piece of existing, carefully-tested logic this spec touches — it
