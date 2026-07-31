@@ -548,7 +548,8 @@ mod tests {
             FireRequestInput {
                 method: "POST".to_string(),
                 url: format!("{}/orders", server.url()),
-                body: None,
+                headers: vec![],
+            body: None,
             },
             conn,
             vec!["orders_e2e".to_string(), "untouched_e2e".to_string()],
@@ -634,7 +635,7 @@ mod tests {
             &db.pool,
             "POST",
             "/orders",
-            &FireRequestOutput { status_code: 201, body: "{\"id\":1}".to_string(), duration_ms: 42 },
+            &FireRequestOutput { status_code: 201, headers: vec![], body: "{\"id\":1}".to_string(), duration_ms: 42 },
             None,
         )
         .await;
@@ -665,7 +666,8 @@ mod tests {
         let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
 
         let url = format!("{}/ping", server.url());
-        let request = FireRequestInput { method: "GET".to_string(), url: url.clone(), body: None };
+        let request = FireRequestInput { method: "GET".to_string(), url: url.clone(), headers: vec![],
+            body: None };
         let method = request.method.clone();
 
         let result = run_correlated_request_impl(request, conn, vec![], &crate::log_state::LogState::new()).await.unwrap();
@@ -693,7 +695,7 @@ mod tests {
             &db.pool,
             "POST",
             "/orders",
-            &FireRequestOutput { status_code: 201, body: "{}".to_string(), duration_ms: 42 },
+            &FireRequestOutput { status_code: 201, headers: vec![], body: "{}".to_string(), duration_ms: 42 },
             Some(&session.id),
         )
         .await;
@@ -717,7 +719,7 @@ mod tests {
             &db.pool,
             "GET",
             "/ping",
-            &FireRequestOutput { status_code: 200, body: "pong".to_string(), duration_ms: 3 },
+            &FireRequestOutput { status_code: 200, headers: vec![], body: "pong".to_string(), duration_ms: 3 },
             None,
         )
         .await;
@@ -742,7 +744,8 @@ mod tests {
             FireRequestInput {
                 method: "GET".to_string(),
                 url: format!("{}/ping", server.url()),
-                body: None,
+                headers: vec![],
+            body: None,
             },
             conn,
             vec!["table_that_does_not_exist_anywhere".to_string()],
@@ -765,7 +768,8 @@ mod tests {
         let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
 
         let result = run_correlated_request_impl(
-            FireRequestInput { method: "GET".to_string(), url: format!("{}/ping", server.url()), body: None },
+            FireRequestInput { method: "GET".to_string(), url: format!("{}/ping", server.url()), headers: vec![],
+            body: None },
             conn,
             vec![],
             &crate::log_state::LogState::new(),
@@ -813,7 +817,8 @@ mod tests {
             FireRequestInput {
                 method: "POST".to_string(),
                 url: format!("{}/orders", server.url()),
-                body: None,
+                headers: vec![],
+            body: None,
             },
             conn,
             vec![],
@@ -861,7 +866,8 @@ mod tests {
         let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
 
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
+            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), headers: vec![],
+            body: None },
             conn,
             vec![],
             &logs,
@@ -955,7 +961,8 @@ mod tests {
             FireRequestInput {
                 method: "POST".to_string(),
                 url: format!("{}/orders", server.url()),
-                body: None,
+                headers: vec![],
+            body: None,
             },
             conn,
             vec![],
@@ -1041,7 +1048,8 @@ mod tests {
             FireRequestInput {
                 method: "POST".to_string(),
                 url: format!("{}/orders", server.url()),
-                body: None,
+                headers: vec![],
+            body: None,
             },
             conn,
             vec![],
@@ -1096,7 +1104,8 @@ mod tests {
         let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
 
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
+            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), headers: vec![],
+            body: None },
             conn,
             vec![],
             &logs,
@@ -1138,7 +1147,8 @@ mod tests {
         let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
 
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
+            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), headers: vec![],
+            body: None },
             conn,
             vec![],
             &logs,
@@ -1206,7 +1216,8 @@ mod tests {
             .await;
 
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
+            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), headers: vec![],
+            body: None },
             conn,
             vec![],
             &logs,
