@@ -31,7 +31,7 @@ body {
 }
 
 @media (prefers-reduced-transparency: reduce) {
-  .backdrop-blur-\[24px\] {
+  .backdrop-blur-xl {
     backdrop-filter: none;
     background: var(--surface) !important;
   }
