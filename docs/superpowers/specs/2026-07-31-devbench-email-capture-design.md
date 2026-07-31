@@ -195,10 +195,16 @@ is nothing to attach it to.
 ## Query path & commands
 
 - **`list_emails(session_id: Option<String>, limit)`** mirrors
-  `list_history_impl`'s two-query pattern (`history.rs:60-71`) — a distinct
-  equality query and a distinct `session_id IS NULL` query, not one
-  `(?1 IS NULL OR session_id = ?1)` predicate, for the same index-usage reason
-  history already settled. Returns
+  `list_history_impl`'s exact scoping semantics (`history.rs:58-81`), not just
+  its shape: `Some(id)` queries `WHERE session_id = ?`; `None` runs a second,
+  distinct query with **no `WHERE session_id` clause at all** — every row,
+  regardless of session — matching `invokeListHistory`'s documented behavior
+  ("`sessionId` omitted or null lists every request ever fired, the unscoped
+  view"). This is deliberately **not** `WHERE session_id IS NULL`: with no
+  active session, History already shows every request ever fired, not just
+  unattributed ones, and Email should read the same way for the same reason.
+  Two distinct queries, not one `(?1 IS NULL OR session_id = ?1)` predicate,
+  for the index-usage reason `history.rs`'s own comment already gives. Returns
   `ListEmailsResult { emails: Vec<EmailSummary>, evicted_through_id: i64 }`
   instead of a bare list, so `EmailInbox` can render **"Showing latest 5,000 —
   N earlier evicted"** — the mockup's inbox footer — closing the real gap of
@@ -209,14 +215,24 @@ is nothing to attach it to.
   frontend round-trip, because `EmailViewer` needs the method+url to render
   "Sent by ..." and nothing else in this codebase does N+1 lookups to render a
   single detail view.
-- **`clear_emails(session_id: Option<String>)`** becomes scoped:
-  `DELETE FROM captured_emails WHERE session_id = ?` (or `IS NULL` when
-  unscoped) — "Clear inbox" clears what the user is currently looking at, not
-  every session's mail. A global "clear everything ever captured" is out of
-  scope (see Scope table).
+- **`clear_emails(session_id: Option<String>)`** uses the **same** scoping as
+  `list_emails` — `Some(id)` deletes only that session's rows; `None` deletes
+  every row, unscoped. Matching list's semantics is not optional here: if
+  clearing used a different scope than listing (e.g. only `session_id IS NULL`
+  rows when unscoped), "Clear inbox" with no active session would leave most of
+  what's on screen untouched — a clear button that visibly doesn't clear. A
+  global "clear everything" action distinct from "clear what I'm looking at" is
+  out of scope (see Scope table) — this spec has only the one action, scoped
+  identically to the view it clears.
 
 ## Frontend
 
+- **`EmailTab`** reads `activeSessionId` from the app store — the same value
+  `ApiTab.tsx:39` already reads (`useAppStore((s) => s.activeSessionId)`) and
+  passes to `HistorySidebar` — and passes it to both `invokeListEmails` and
+  `invokeClearEmails`. This is the one missing wire without which none of the
+  session-scoping above reaches the screen: the backend can filter by session,
+  but only if the frontend tells it which one is active.
 - **`EmailInbox`** gains the filter input from the mockup: one `<input>` above
   the list, client-side filtering the already-polled `EmailSummary[]` by
   subject/from/to substring — no new command, since `list_emails` already
