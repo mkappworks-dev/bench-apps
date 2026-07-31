@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAppStore, type ThemePref } from "./store/useAppStore";
 import { TopBar } from "./components/shell/TopBar";
-import { TABS } from "./components/shell/ToolTabs";
+import { TABS } from "./components/shell/tools";
 import { SessionsSidebar } from "./components/shell/SessionsSidebar";
 import { ChatDock } from "./components/shell/ChatDock";
 import { SettingsScreen } from "./components/settings/SettingsScreen";

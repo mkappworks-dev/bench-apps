@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Tabs } from "@base-ui-components/react/tabs";
+import { Tabs } from "../ui/Tabs";
 import { GeneralPane } from "./GeneralPane";
 import { ProviderPane } from "./ProviderPane";
 import { McpPane } from "./McpPane";

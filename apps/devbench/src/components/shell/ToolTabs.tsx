@@ -1,26 +1,13 @@
-import { Tabs } from "@base-ui-components/react/tabs";
+import { Tabs } from "../ui/Tabs";
+import { TABS } from "./tools";
 import type { TabId } from "../../store/useAppStore";
 
 /**
- * Single source of truth for the tool tabs. Adding a fifth tool is one entry
- * here (see the post-v1 roadmap: outbound HTTP inspector, jobs, cache…).
- */
-export const TABS: { id: TabId; label: string }[] = [
-  { id: "api", label: "API" },
-  { id: "db", label: "DB" },
-  { id: "log", label: "Log" },
-  { id: "email", label: "Email" },
-];
-
-/**
- * The app's ONLY Base UI import. Base UI is here for the behaviour a hand-
- * rolled tab bar keeps getting wrong — roving tabindex, arrow-key navigation,
- * correct `tablist`/`tab` wiring — across the three tab bars this plan creates
- * (tools, split-pane tools, settings nav). Keeping the import in one file means
- * dropping the dependency later is a one-file change.
+ * The tool tab bar. Styling is ours, ghosty per DESIGN.md — transparent until
+ * hover, hairline border, no blur, `--radius-sm`.
  *
- * Styling is entirely ours: ghosty per DESIGN.md — transparent until hover,
- * hairline border, no blur, `--radius-sm`.
+ * Base UI now comes via `../ui/Tabs`; see that file for why the dependency is
+ * confined to one directory.
  */
 export function ToolTabs({
   value,
