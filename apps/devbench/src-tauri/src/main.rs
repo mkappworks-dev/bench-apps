@@ -124,6 +124,10 @@ fn main() {
             commands::provider::get_provider_status,
             commands::provider::set_provider_api_key,
             commands::provider::clear_provider_api_key,
+            commands::mcp::list_mcp_servers,
+            commands::mcp::add_mcp_server,
+            commands::mcp::remove_mcp_server,
+            commands::mcp::check_mcp_server,
         ])
         .run(tauri::generate_context!())
         .expect("error while running devbench");

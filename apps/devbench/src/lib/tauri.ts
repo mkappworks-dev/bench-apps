@@ -254,3 +254,30 @@ export function invokeSetProviderApiKey(key: string): Promise<void> {
 export function invokeClearProviderApiKey(): Promise<void> {
   return invoke("clear_provider_api_key");
 }
+
+export interface McpServerConfig {
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+}
+
+export interface McpServerStatus {
+  config: McpServerConfig;
+  state: string;
+  error: string | null;
+  tool_count: number;
+}
+
+export function invokeListMcpServers(): Promise<McpServerConfig[]> {
+  return invoke("list_mcp_servers");
+}
+export function invokeAddMcpServer(name: string, command: string, args: string[]): Promise<McpServerConfig> {
+  return invoke("add_mcp_server", { name, command, args });
+}
+export function invokeRemoveMcpServer(id: string): Promise<void> {
+  return invoke("remove_mcp_server", { id });
+}
+export function invokeCheckMcpServer(id: string): Promise<McpServerStatus> {
+  return invoke("check_mcp_server", { id });
+}
