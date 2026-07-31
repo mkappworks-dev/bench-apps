@@ -8,6 +8,8 @@ function data(over: Partial<RollupData> = {}): RollupData {
     watchedTableCount: 0,
     logLines: null,
     logLinesTruncated: false,
+    emails: null,
+    emailsTruncated: false,
     dbError: null,
     windowOpen: false,
     ...over,
@@ -16,7 +18,7 @@ function data(over: Partial<RollupData> = {}): RollupData {
 
 describe("Rollup", () => {
   it("shows a loading skeleton", () => {
-    render(<Rollup data={null} loading onOpenDb={() => {}} onOpenLog={() => {}} />);
+    render(<Rollup data={null} loading onOpenDb={() => {}} onOpenLog={() => {}} onOpenEmail={() => {}} />);
     expect(screen.getByTestId("rollup-loading")).toBeInTheDocument();
   });
 
@@ -27,6 +29,7 @@ describe("Rollup", () => {
         loading={false}
         onOpenDb={() => {}}
         onOpenLog={() => {}}
+        onOpenEmail={() => {}}
       />,
     );
     expect(screen.getByText(/not available for past requests/i)).toBeInTheDocument();
@@ -39,6 +42,7 @@ describe("Rollup", () => {
         loading={false}
         onOpenDb={() => {}}
         onOpenLog={() => {}}
+        onOpenEmail={() => {}}
       />,
     );
     expect(screen.getByText(/unable to verify/i)).toBeInTheDocument();
@@ -46,7 +50,15 @@ describe("Rollup", () => {
   });
 
   it("says no tables are watched, distinctly from nothing having changed", () => {
-    render(<Rollup data={data({ watchedTableCount: 0 })} loading={false} onOpenDb={() => {}} onOpenLog={() => {}} />);
+    render(
+      <Rollup
+        data={data({ watchedTableCount: 0 })}
+        loading={false}
+        onOpenDb={() => {}}
+        onOpenLog={() => {}}
+        onOpenEmail={() => {}}
+      />,
+    );
     expect(screen.getByText(/no tables are being watched/i)).toBeInTheDocument();
   });
 
@@ -64,6 +76,7 @@ describe("Rollup", () => {
         loading={false}
         onOpenDb={onOpenDb}
         onOpenLog={() => {}}
+        onOpenEmail={() => {}}
       />,
     );
     expect(screen.getByRole("button", { name: /DB.*3 writes/ })).toBeInTheDocument();
@@ -87,6 +100,7 @@ describe("Rollup", () => {
         loading={false}
         onOpenDb={() => {}}
         onOpenLog={onOpenLog}
+        onOpenEmail={() => {}}
       />,
     );
     const chip = screen.getByRole("button", { name: /Log.*2 lines/ });
@@ -105,6 +119,7 @@ describe("Rollup", () => {
         loading={false}
         onOpenDb={() => {}}
         onOpenLog={() => {}}
+        onOpenEmail={() => {}}
       />,
     );
     expect(screen.getByRole("button", { name: /Log.*1\+ lines/ })).toBeInTheDocument();
@@ -112,7 +127,13 @@ describe("Rollup", () => {
 
   it("says logs were not observed when no source is configured, not '0 lines'", () => {
     render(
-      <Rollup data={data({ watchedTableCount: 1, logLines: null })} loading={false} onOpenDb={() => {}} onOpenLog={() => {}} />,
+      <Rollup
+        data={data({ watchedTableCount: 1, logLines: null })}
+        loading={false}
+        onOpenDb={() => {}}
+        onOpenLog={() => {}}
+        onOpenEmail={() => {}}
+      />,
     );
     expect(screen.getByText(/log: not observed/i)).toBeInTheDocument();
   });
@@ -124,8 +145,84 @@ describe("Rollup", () => {
         loading={false}
         onOpenDb={() => {}}
         onOpenLog={() => {}}
+        onOpenEmail={() => {}}
       />,
     );
     expect(screen.getByTestId("rollup-log-pending")).toBeInTheDocument();
+  });
+
+  it("shows an email chip with the sent count and deep-links to the Email tab", () => {
+    const onOpenEmail = vi.fn();
+    render(
+      <Rollup
+        data={data({
+          watchedTableCount: 1,
+          emails: [
+            {
+              id: 7,
+              captured_at_ms: 1,
+              from: "orders@shop.test",
+              to: ["customer@example.com"],
+              subject: "Order confirmation #8841",
+              size_bytes: 100,
+            },
+          ],
+        })}
+        loading={false}
+        onOpenDb={() => {}}
+        onOpenLog={() => {}}
+        onOpenEmail={onOpenEmail}
+      />,
+    );
+    const chip = screen.getByRole("button", { name: /Email.*1 sent/ });
+    fireEvent.click(chip);
+    // Deep-links to the specific message, not just the tab.
+    expect(onOpenEmail).toHaveBeenCalledWith(7);
+  });
+
+  it("says mail was not observed when the catcher is not listening, not '0 sent'", () => {
+    render(
+      <Rollup
+        data={data({ watchedTableCount: 1, emails: null })}
+        loading={false}
+        onOpenDb={() => {}}
+        onOpenLog={() => {}}
+        onOpenEmail={() => {}}
+      />,
+    );
+    expect(screen.getByText(/email: not observed/i)).toBeInTheDocument();
+  });
+
+  it("reports zero sent distinctly from not observed", () => {
+    render(
+      <Rollup
+        data={data({ watchedTableCount: 1, emails: [] })}
+        loading={false}
+        onOpenDb={() => {}}
+        onOpenLog={() => {}}
+        onOpenEmail={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Email.*0 sent/ })).toBeInTheDocument();
+    expect(screen.queryByText(/email: not observed/i)).not.toBeInTheDocument();
+  });
+
+  it("renders the email count as N+ when the inbox evicted messages from the window", () => {
+    render(
+      <Rollup
+        data={data({
+          watchedTableCount: 1,
+          emails: [
+            { id: 1, captured_at_ms: 1, from: "a@x.test", to: ["b@y.test"], subject: "s", size_bytes: 1 },
+          ],
+          emailsTruncated: true,
+        })}
+        loading={false}
+        onOpenDb={() => {}}
+        onOpenLog={() => {}}
+        onOpenEmail={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Email.*1\+ sent/ })).toBeInTheDocument();
   });
 });

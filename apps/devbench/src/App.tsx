@@ -22,6 +22,7 @@ export default function App() {
   const watchedTables = useAppStore((s) => s.watchedTables);
   const toggleWatchedTable = useAppStore((s) => s.toggleWatchedTable);
   const [dbFocusTable, setDbFocusTable] = useState<string | null>(null);
+  const [emailFocusId, setEmailFocusId] = useState<number | null>(null);
 
   return (
     <div className="flex h-screen flex-col">
@@ -44,12 +45,14 @@ export default function App() {
         </nav>
       </header>
       <main className="flex-1 overflow-y-auto p-6">
-        {activeTab === "api" ? <ApiTab onOpenTableInDb={setDbFocusTable} /> : null}
+        {activeTab === "api" ? (
+          <ApiTab onOpenTableInDb={setDbFocusTable} onOpenEmail={setEmailFocusId} />
+        ) : null}
         {activeTab === "db" ? (
           <DbTab watchedTables={watchedTables} onToggleWatch={toggleWatchedTable} focusTable={dbFocusTable} />
         ) : null}
         {activeTab === "log" ? <LogTab /> : null}
-        {activeTab === "email" ? <EmailTab /> : null}
+        {activeTab === "email" ? <EmailTab focusEmailId={emailFocusId} /> : null}
       </main>
     </div>
   );

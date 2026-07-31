@@ -25,7 +25,13 @@ interface DisplayResult {
   rollup: RollupData;
 }
 
-export function ApiTab({ onOpenTableInDb }: { onOpenTableInDb: (table: string) => void }) {
+export function ApiTab({
+  onOpenTableInDb,
+  onOpenEmail,
+}: {
+  onOpenTableInDb: (table: string) => void;
+  onOpenEmail: (emailId: number | null) => void;
+}) {
   const watchedTables = useAppStore((s) => s.watchedTables);
   const setActiveTab = useAppStore((s) => s.setActiveTab);
   const [result, setResult] = useState<DisplayResult | null>(null);
@@ -50,6 +56,8 @@ export function ApiTab({ onOpenTableInDb }: { onOpenTableInDb: (table: string) =
         watchedTableCount: watchedTables.size,
         logLines: null,
         logLinesTruncated: false,
+        emails: null,
+        emailsTruncated: false,
         dbError: correlation.db_error,
         windowOpen: true,
       },
@@ -66,6 +74,8 @@ export function ApiTab({ onOpenTableInDb }: { onOpenTableInDb: (table: string) =
                 ...prev.rollup,
                 logLines: window.log_lines,
                 logLinesTruncated: window.log_lines_truncated,
+                emails: window.emails,
+                emailsTruncated: window.emails_truncated,
                 windowOpen: false,
               },
             }
@@ -75,7 +85,9 @@ export function ApiTab({ onOpenTableInDb }: { onOpenTableInDb: (table: string) =
       // The window could not be collected (app restarted, id expired). Closing
       // it as "not observed" is honest; claiming zero lines would not be.
       setResult((prev) =>
-        prev ? { ...prev, rollup: { ...prev.rollup, logLines: null, windowOpen: false } } : prev,
+        prev
+          ? { ...prev, rollup: { ...prev.rollup, logLines: null, emails: null, windowOpen: false } }
+          : prev,
       );
     }
   }
@@ -95,6 +107,8 @@ export function ApiTab({ onOpenTableInDb }: { onOpenTableInDb: (table: string) =
         watchedTableCount: watchedTables.size,
         logLines: null,
         logLinesTruncated: false,
+        emails: null,
+        emailsTruncated: false,
         dbError: null,
         windowOpen: false,
       },
@@ -104,6 +118,11 @@ export function ApiTab({ onOpenTableInDb }: { onOpenTableInDb: (table: string) =
   function handleOpenDb(table: string) {
     setActiveTab("db");
     onOpenTableInDb(table);
+  }
+
+  function handleOpenEmail(emailId: number | null) {
+    setActiveTab("email");
+    onOpenEmail(emailId);
   }
 
   return (
@@ -132,6 +151,7 @@ export function ApiTab({ onOpenTableInDb }: { onOpenTableInDb: (table: string) =
                 loading={sending}
                 onOpenDb={handleOpenDb}
                 onOpenLog={() => setActiveTab("log")}
+                onOpenEmail={handleOpenEmail}
               />
             </div>
           </div>

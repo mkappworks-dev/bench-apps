@@ -1,4 +1,4 @@
-import type { LogLine, TableDiff } from "../../lib/tauri";
+import type { EmailSummary, LogLine, TableDiff } from "../../lib/tauri";
 
 export interface RollupData {
   /** `null` = the DB was not verified. `[]` = verified, nothing changed. */
@@ -8,6 +8,9 @@ export interface RollupData {
   logLines: LogLine[] | null;
   /** True when the buffer evicted lines belonging to this window. */
   logLinesTruncated: boolean;
+  /** `null` = the SMTP catcher is not listening, so mail was not observed. */
+  emails: EmailSummary[] | null;
+  emailsTruncated: boolean;
   dbError: string | null;
   /** True while the correlation window has not closed yet. */
   windowOpen: boolean;
@@ -58,11 +61,13 @@ export function Rollup({
   loading,
   onOpenDb,
   onOpenLog,
+  onOpenEmail,
 }: {
   data: RollupData | null;
   loading: boolean;
   onOpenDb: (table: string) => void;
   onOpenLog: () => void;
+  onOpenEmail: (emailId: number | null) => void;
 }) {
   if (loading) {
     return (
@@ -120,6 +125,30 @@ export function Rollup({
         label="Log"
         count={`${n}${data.logLinesTruncated ? "+" : ""} line${n === 1 && !data.logLinesTruncated ? "" : "s"}`}
         onClick={onOpenLog}
+      />,
+    );
+  }
+
+  // --- Email ---
+  if (data.windowOpen) {
+    chips.push(
+      <span key="email" data-testid="rollup-email-pending" className="flex items-center gap-1.5 text-sm text-text-faint">
+        <span className="h-3 w-16 animate-pulse rounded bg-surface-2" />
+      </span>,
+    );
+  } else if (data.emails === null) {
+    chips.push(<Note key="email">Email: not observed — the SMTP catcher is not running.</Note>);
+  } else {
+    const n = data.emails.length;
+    chips.push(
+      <Chip
+        key="email"
+        label="Email"
+        count={`${n}${data.emailsTruncated ? "+" : ""} sent`}
+        // Deep-link to the first message in the window when there is one, so
+        // the Email tab opens on the mail this request actually caused rather
+        // than on whatever happened to be selected.
+        onClick={() => onOpenEmail(data.emails && data.emails.length > 0 ? data.emails[0].id : null)}
       />,
     );
   }
