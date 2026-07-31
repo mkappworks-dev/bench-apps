@@ -18,35 +18,58 @@ export function SessionsSidebar({ onOpenSettings }: { onOpenSettings: () => void
   const [showNew, setShowNew] = useState(false);
 
   // Reconciliation needs the list itself, not just the state setter, so
-  // `refresh` returns what it fetched.
-  const refresh = useCallback(async (): Promise<Session[]> => {
+  // `refresh` returns what it fetched. `null` means the fetch FAILED, which is
+  // a different thing from an empty list: an empty list is grounds for clearing
+  // a stale stored id, a failure is not.
+  const refresh = useCallback(async (): Promise<Session[] | null> => {
     try {
       const listed = await invokeListSessions();
       setSessions(listed);
       return listed;
     } catch {
+      // The UI still renders its empty state; only reconciliation treats this
+      // as "unknown" rather than "none".
       setSessions([]);
-      return [];
+      return null;
     }
   }, []);
+
+  // Refs, not state: flipping them must not trigger a re-render, and they must
+  // be readable synchronously across an await.
+  //
+  // Two flags because they guard two different moments. `reconciled` claims the
+  // settings READ (so StrictMode's double-invoked effect issues only one), and
+  // is necessarily set before that read starts. `userSelected` vetoes APPLYING
+  // the result, and can only be observed after it — a click that lands while
+  // the read is in flight arrives too late for `reconciled` to see.
+  const reconciled = useRef(false);
+  const userSelected = useRef(false);
 
   // Persisting is best-effort: the in-memory selection is what the current
   // view actually depends on, so a failed write must never block it.
   const selectSession = useCallback(
     (id: string | null) => {
+      // A deliberate selection outranks the launch-time stored value. The list
+      // renders before the settings read resolves, so a fast user can click in
+      // that gap; without this, reconciliation would silently revert the click
+      // and leave the screen and the stored value disagreeing.
+      reconciled.current = true;
+      userSelected.current = true;
       setActiveSessionId(id);
       void invokeSetSetting("active_session_id", id ?? "").catch(() => {});
     },
     [setActiveSessionId],
   );
 
-  // A ref, not state: flipping it must not trigger a re-render, and it must
-  // be readable synchronously by the time the next refresh runs.
-  const reconciled = useRef(false);
-
   useEffect(() => {
     void (async () => {
       const listed = await refresh();
+
+      // The list did not load. Leave the stored id untouched for the next
+      // launch rather than validating against a list we never really got —
+      // clearing it here would destroy a good selection over a transient
+      // failure.
+      if (listed === null) return;
 
       // Runs once, and only after the list resolves. Validating a stored id
       // against a list that has not loaded would clear a perfectly good
@@ -57,6 +80,9 @@ export function SessionsSidebar({ onOpenSettings }: { onOpenSettings: () => void
 
       try {
         const { active_session_id: storedId } = await invokeGetSettings();
+        // The user chose while we were reading. Their click wins — applying the
+        // stored id now would revert it on screen while disk keeps their choice.
+        if (userSelected.current) return;
         if (!storedId) return;
         if (listed.some((s) => s.id === storedId)) {
           setActiveSessionId(storedId);

@@ -197,6 +197,57 @@ describe("SessionsSidebar", () => {
     expect(useAppStore.getState().activeSessionId).toBe("b");
   });
 
+  // A failed list load is NOT the same as "no sessions exist". If they are
+  // conflated, a momentary failure at launch permanently clears a perfectly
+  // good stored id — the exact failure the reconcile-after-the-list ordering
+  // exists to prevent, reintroduced through the catch.
+  it("keeps a stored session when the session list fails to load", async () => {
+    vi.spyOn(tauriLib, "invokeListSessions").mockRejectedValue(new Error("db locked"));
+    vi.spyOn(tauriLib, "invokeGetSettings").mockResolvedValue({
+      ...storedSettings,
+      active_session_id: "b",
+    });
+    const setSetting = vi.spyOn(tauriLib, "invokeSetSetting").mockResolvedValue(undefined);
+
+    render(<SessionsSidebar onOpenSettings={() => {}} />);
+
+    await waitFor(() => expect(screen.getByText(/no sessions yet/i)).toBeInTheDocument());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // The stored id must survive untouched for the next launch.
+    expect(setSetting).not.toHaveBeenCalledWith("active_session_id", "");
+    // And we stay unscoped rather than selecting an id we could not validate.
+    expect(useAppStore.getState().activeSessionId).toBeNull();
+  });
+
+  // The list renders before the settings read resolves, so a fast user can
+  // click in that gap. Reconciliation must not silently overwrite that click
+  // (which would leave the screen showing one session and disk holding another).
+  it("does not revert a selection made while settings are still loading", async () => {
+    vi.spyOn(tauriLib, "invokeListSessions").mockResolvedValue(sessions);
+    let resolveSettings!: (value: tauriLib.AppSettings) => void;
+    vi.spyOn(tauriLib, "invokeGetSettings").mockReturnValue(
+      new Promise<tauriLib.AppSettings>((resolve) => {
+        resolveSettings = resolve;
+      }),
+    );
+    vi.spyOn(tauriLib, "invokeSetSetting").mockResolvedValue(undefined);
+
+    render(<SessionsSidebar onOpenSettings={() => {}} />);
+    await waitFor(() => screen.getByText("Checkout API"));
+
+    // User clicks before reconciliation has had its answer.
+    fireEvent.click(screen.getByRole("button", { name: "Checkout API" }));
+    expect(useAppStore.getState().activeSessionId).toBe("b");
+
+    // Settings now arrive, naming a different session.
+    resolveSettings({ ...storedSettings, active_session_id: "a" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // The deliberate click wins over the launch-time stored value.
+    expect(useAppStore.getState().activeSessionId).toBe("b");
+  });
+
   // Persisting is best-effort: the current view depends on the in-memory
   // selection, so a failed write must never roll it back.
   it("keeps the selection when persisting it fails", async () => {
