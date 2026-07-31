@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { ProviderPane } from "./ProviderPane";
 import * as tauriLib from "../../lib/tauri";
@@ -57,8 +57,23 @@ describe("ProviderPane", () => {
       has_key: true,
     });
     render(<ProviderPane />);
-    await waitFor(() => screen.getByLabelText(/model/i));
-    fireEvent.change(screen.getByLabelText(/model/i), { target: { value: "claude-haiku-4-5" } });
+    await waitFor(() => screen.getByRole("button", { name: /model/i }));
+    fireEvent.click(screen.getByRole("button", { name: /model/i }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Claude Haiku 4.5 — fastest" }));
     await waitFor(() => expect(tauriLib.invokeSetSetting).toHaveBeenCalledWith("model", "claude-haiku-4-5"));
+  });
+
+  it("uses the styled menu rather than a native select for the model", async () => {
+    vi.spyOn(tauriLib, "invokeGetProviderStatus").mockResolvedValue({
+      provider: "anthropic",
+      model: "claude-opus-5",
+      has_key: true,
+    });
+    let container: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<ProviderPane />));
+    });
+    expect(container.querySelector("select")).toBeNull();
+    expect(screen.getByRole("button", { name: /model/i })).toBeInTheDocument();
   });
 });

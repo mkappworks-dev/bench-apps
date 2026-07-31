@@ -1,5 +1,8 @@
 import { useState } from "react";
 import { invokeRunCorrelatedRequest, type CorrelationResult, type DbConnectInput } from "../../lib/tauri";
+import { Menu, ChevronIcon } from "../ui/Menu";
+
+const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"].map((m) => ({ value: m, label: m }));
 
 export function RequestBuilder({
   connection,
@@ -37,16 +40,19 @@ export function RequestBuilder({
 
   return (
     <div className="flex gap-2 rounded-t-lg border border-b-0 border-border bg-surface p-3">
-      <select
+      <Menu
+        label="Method"
+        options={METHODS}
         value={method}
-        onChange={(e) => setMethod(e.target.value)}
-        className="rounded-sm border border-border bg-surface-2 px-2.5 py-2 font-bold text-text"
-      >
-        <option>GET</option>
-        <option>POST</option>
-        <option>PUT</option>
-        <option>DELETE</option>
-      </select>
+        onSelect={setMethod}
+        trigger={
+          <>
+            {method}
+            <ChevronIcon />
+          </>
+        }
+        triggerClassName="flex h-9 w-28 shrink-0 items-center justify-between gap-2 rounded-sm border border-border bg-surface px-3 font-mono text-sm font-semibold text-text transition-colors duration-150 hover:border-text-faint hover:bg-surface-2"
+      />
       <input
         value={url}
         onChange={(e) => setUrl(e.target.value)}

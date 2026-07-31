@@ -77,4 +77,21 @@ describe("RequestBuilder", () => {
     });
     await waitFor(() => expect(onResult).toHaveBeenCalledTimes(1));
   });
+
+  it("uses the styled menu rather than a native select for the method", () => {
+    const { container } = render(
+      <RequestBuilder connection={connection} watchedTables={new Set()} onResult={() => {}} />,
+    );
+    expect(container.querySelector("select")).toBeNull();
+    expect(screen.getByRole("button", { name: /method/i })).toBeInTheDocument();
+  });
+
+  it("changes the method through the menu, including PATCH", () => {
+    render(
+      <RequestBuilder connection={connection} watchedTables={new Set()} onResult={() => {}} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /method/i }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "PATCH" }));
+    expect(screen.getByRole("button", { name: /method/i })).toHaveTextContent("PATCH");
+  });
 });
