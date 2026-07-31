@@ -93,6 +93,46 @@ export interface CorrelationWindowResult {
   /** `null` means no log source is configured — logs were not observed at all. */
   log_lines: LogLine[] | null;
   log_lines_truncated: boolean;
+  /** `null` means the SMTP catcher is not listening — mail was not observed at all. */
+  emails: EmailSummary[] | null;
+  emails_truncated: boolean;
+}
+
+export interface EmailSummary {
+  id: number;
+  captured_at_ms: number;
+  from: string;
+  to: string[];
+  subject: string;
+  size_bytes: number;
+}
+
+export interface CapturedEmail extends EmailSummary {
+  html_body: string | null;
+  text_body: string | null;
+  raw: string;
+}
+
+export interface SmtpStatus {
+  listening: boolean;
+  port: number;
+  error: string | null;
+}
+
+export function invokeListEmails(limit: number): Promise<EmailSummary[]> {
+  return invoke("list_emails", { limit });
+}
+
+export function invokeGetEmail(id: number): Promise<CapturedEmail> {
+  return invoke("get_email", { id });
+}
+
+export function invokeClearEmails(): Promise<void> {
+  return invoke("clear_emails");
+}
+
+export function invokeSmtpStatus(): Promise<SmtpStatus> {
+  return invoke("smtp_status");
 }
 
 export function invokeAddLogSource(label: string, path: string): Promise<LogSourceStatus> {

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type TabId = "api" | "db" | "log";
+export type TabId = "api" | "db" | "log" | "email";
 export type ThemePref = "dark" | "light" | "system";
 
 interface AppState {

@@ -7,7 +7,7 @@ describe("App shell", () => {
     render(<App />);
     expect(screen.getByText("DevBench")).toBeInTheDocument();
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((t) => t.textContent)).toEqual(["API", "DB", "Log"]);
+    expect(tabs.map((t) => t.textContent)).toEqual(["API", "DB", "Log", "Email"]);
   });
 
   it("marks exactly one tab selected", () => {

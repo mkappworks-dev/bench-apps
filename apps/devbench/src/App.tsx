@@ -3,6 +3,7 @@ import { useAppStore, type TabId } from "./store/useAppStore";
 import { ApiTab } from "./components/api/ApiTab";
 import { DbTab } from "./components/db/DbTab";
 import { LogTab } from "./components/log/LogTab";
+import { EmailTab } from "./components/email/EmailTab";
 
 /**
  * Single source of truth for the tool tabs. Plan 3 adds `{ id: "email", label: "Email" }`
@@ -12,6 +13,7 @@ export const TABS: { id: TabId; label: string }[] = [
   { id: "api", label: "API" },
   { id: "db", label: "DB" },
   { id: "log", label: "Log" },
+  { id: "email", label: "Email" },
 ];
 
 export default function App() {
@@ -47,6 +49,7 @@ export default function App() {
           <DbTab watchedTables={watchedTables} onToggleWatch={toggleWatchedTable} focusTable={dbFocusTable} />
         ) : null}
         {activeTab === "log" ? <LogTab /> : null}
+        {activeTab === "email" ? <EmailTab /> : null}
       </main>
     </div>
   );
