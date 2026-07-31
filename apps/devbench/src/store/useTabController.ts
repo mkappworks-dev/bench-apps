@@ -8,6 +8,7 @@ import {
   invokeSetTabState,
   type TabRow,
 } from "../lib/tauri";
+import { TABS } from "../components/shell/tools";
 
 const DEBOUNCE_MS = 300;
 
@@ -21,8 +22,18 @@ function parseState(raw: string | null): Record<string, unknown> {
   }
 }
 
-function hydrateTab(row: TabRow): Tab {
-  return { id: row.id, kind: row.kind as ToolKind, pane: row.pane as Pane, ordinal: row.ordinal, state: parseState(row.state) };
+function isValidPane(pane: string): pane is Pane {
+  return pane === "left" || pane === "right";
+}
+
+// A row with an unrecognized kind/pane can't be trusted to render — ToolPane's
+// switch has no default case for a bad kind (React throws), and a bad pane
+// value silently drops the tab from both AppStrip and SplitContent. Rather
+// than trust the cast, reject the row before it enters the store.
+function hydrateTab(row: TabRow): Tab | null {
+  if (!TABS.some((t) => t.id === row.kind)) return null;
+  if (!isValidPane(row.pane)) return null;
+  return { id: row.id, kind: row.kind as ToolKind, pane: row.pane, ordinal: row.ordinal, state: parseState(row.state) };
 }
 
 /**
@@ -54,10 +65,13 @@ export function useTabController() {
     let cancelled = false;
     void invokeListTabs(activeSessionId)
       .then((rows) => {
-        if (!cancelled) replaceTabs(rows.map(hydrateTab));
+        if (!cancelled) replaceTabs(rows.map(hydrateTab).filter((t): t is Tab => t !== null));
       })
       .catch(() => {
-        if (!cancelled) replaceTabs([]);
+        // Leave the store untouched — a failed read (locked DB, IPC error) is
+        // not evidence this session has zero tabs. Replacing with [] would
+        // wipe a stale-but-real tab set and render as EmptyPane's "No tools
+        // open", indistinguishable from genuine emptiness.
       });
     return () => {
       cancelled = true;

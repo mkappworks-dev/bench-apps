@@ -43,13 +43,30 @@ describe("ApiTab", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     useAppStore.getState().setActiveSessionId(null);
+    useAppStore.getState().setWatchedTables([]);
   });
 
-  it("forwards the Rollup's deep links to the received callbacks, not a local store call", () => {
-    // Regression guard for the bug this migration fixes: ApiTab used to call
+  it("forwards the Rollup's deep links to the received callbacks, not a local store call", async () => {
+    // Regression guard for the bug this migration fixed: ApiTab used to call
     // the store's setActiveTab directly, which stopped existing when tabs
-    // became instances. There is now nothing in ApiTab that reaches the
-    // store for tab switching at all — it only calls what it's given.
+    // became instances. This drives a real send through to a rendered DB
+    // chip and clicks it — if ApiTab regressed to calling a nonexistent
+    // store action instead of forwarding to the onOpenDb prop, either the
+    // store call would throw (no such action) or onOpenDb would never fire.
+    useAppStore.getState().setWatchedTables(["orders"]);
+    vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
+      correlation_id: "corr-1",
+      response: { status_code: 201, body: '{"id":1}', duration_ms: 10 },
+      table_diffs: [{ table: "orders", inserted: 1, updated: 0, deleted: 0 }],
+      db_error: null,
+    });
+    // Left pending: the DB chip is filled in from Phase 1 data, before the
+    // correlation window closes, so this test never needs to resolve it.
+    vi.spyOn(tauriLib, "invokeCollectCorrelationWindow").mockReturnValue(
+      deferred<tauriLib.CorrelationWindowResult>().promise,
+    );
+
     const onOpenDb = vi.fn();
     render(
       <ApiTab
@@ -60,10 +77,13 @@ describe("ApiTab", () => {
         onOpenEmail={() => {}}
       />,
     );
-    // Rollup only renders once a result exists; this asserts ApiTab renders
-    // without touching the store, which is the regression this guards. The
-    // click-through path itself is Rollup.test.tsx's responsibility.
-    expect(() => useAppStore.getState()).not.toThrow();
+    fireEvent.change(screen.getByPlaceholderText("/api/orders"), { target: { value: "/api/orders" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    const dbChip = await screen.findByRole("button", { name: /DB.*1 write/ });
+    fireEvent.click(dbChip);
+
+    expect(onOpenDb).toHaveBeenCalledWith("orders");
   });
 
   // Leaving the rollup up after a switch attributes one investigation's

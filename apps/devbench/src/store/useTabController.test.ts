@@ -38,6 +38,35 @@ describe("useTabController", () => {
     expect(tabs[1].state).toEqual({});
   });
 
+  it("leaves the store's tabs untouched when invokeListTabs rejects, rather than wiping to empty", async () => {
+    useAppStore.setState({
+      tabs: [{ id: "existing", kind: "api", pane: "left", ordinal: 0, state: {} }],
+      activeTabId: { left: "existing", right: null },
+    });
+    vi.spyOn(tauriLib, "invokeListTabs").mockRejectedValue(new Error("db locked"));
+    renderHook(() => useTabController());
+
+    // Let the rejected promise's .catch handler run.
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(useAppStore.getState().tabs).toEqual([{ id: "existing", kind: "api", pane: "left", ordinal: 0, state: {} }]);
+    expect(useAppStore.getState().activeTabId).toEqual({ left: "existing", right: null });
+  });
+
+  it("drops rows with an invalid kind or pane instead of hydrating them", async () => {
+    vi.spyOn(tauriLib, "invokeListTabs").mockResolvedValue([
+      { id: "good", session_id: null, kind: "db", pane: "left", ordinal: 0, state: null },
+      { id: "bad-kind", session_id: null, kind: "unknown-tool", pane: "left", ordinal: 1, state: null },
+      { id: "bad-pane", session_id: null, kind: "api", pane: "middle", ordinal: 2, state: null },
+    ]);
+    renderHook(() => useTabController());
+
+    await waitFor(() => expect(useAppStore.getState().tabs).toHaveLength(1));
+    expect(useAppStore.getState().tabs.map((t) => t.id)).toEqual(["good"]);
+  });
+
   it("reloads when the active session changes", async () => {
     const listTabs = vi
       .spyOn(tauriLib, "invokeListTabs")

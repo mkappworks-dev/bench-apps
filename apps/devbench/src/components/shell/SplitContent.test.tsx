@@ -88,13 +88,16 @@ describe("SplitContent", () => {
   });
 
   // Two DB tabs in the SAME pane (the actual "duplicates allowed" scenario
-  // reachable from EmptyPane's/+'s menu) — this is where `key={tab.id}` is
-  // load-bearing: without it, React would reconcile the two DbTab elements
-  // as one instance and its `tableRows` useState would leak between them.
-  // Cross-pane placement wouldn't catch that, since separate panes are
-  // already structurally separate subtrees. RTL's text queries ignore the
-  // CSS class-swap that hides the inactive tab, so both instances' fetched
-  // rows must be independently queryable even though only "a" is visible.
+  // reachable from EmptyPane's/+'s menu) — this covers state isolation: each
+  // tab gets its own DbTab instance with its own `tableRows` useState, so
+  // neither's fetched rows leak into the other's. It does NOT exercise
+  // `key={tab.id}`'s reconciliation role — the tabs array here never
+  // reorders or changes membership, so React never needs the key to tell the
+  // instances apart. Cross-pane placement wouldn't catch a state leak either,
+  // since separate panes are already structurally separate subtrees. RTL's
+  // text queries ignore the CSS class-swap that hides the inactive tab, so
+  // both instances' fetched rows must be independently queryable even though
+  // only "a" is visible.
   it("gives two simultaneously-mounted DB tabs in the same pane independent, distinctly-rendered rows", async () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation(async (_conn, table: string) => ({
       columns: ["table"],
