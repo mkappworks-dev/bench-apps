@@ -324,6 +324,10 @@ pub async fn collect_correlation_window(
     .await
 }
 
+// The argument list IS the IPC surface: four `State` injections plus the
+// request payload. Collapsing it into a params struct would change the shape
+// the frontend has to invoke with, for no gain on this side.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn run_correlated_request(
     db: State<'_, LocalDb>,

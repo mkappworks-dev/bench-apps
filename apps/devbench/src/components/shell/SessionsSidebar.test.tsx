@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { SessionsSidebar } from "./SessionsSidebar";
@@ -155,5 +156,60 @@ describe("SessionsSidebar", () => {
     // reconciliation did not fire a second time and reset us to "a".
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(useAppStore.getState().activeSessionId).toBe("c");
+  });
+
+  // `main.tsx` wraps the app in <React.StrictMode>, which double-invokes mount
+  // effects in dev on the same fiber (refs survive the simulated remount). The
+  // `reconciled` ref is what collapses that back into a single settings read —
+  // the stable effect deps that keep the test above green do NOT cover this.
+  it("reconciles only once under StrictMode's double-invoked effect", async () => {
+    vi.spyOn(tauriLib, "invokeListSessions").mockResolvedValue(sessions);
+    const getSettings = vi.spyOn(tauriLib, "invokeGetSettings").mockResolvedValue({
+      ...storedSettings,
+      active_session_id: "b",
+    });
+
+    render(
+      <StrictMode>
+        <SessionsSidebar onOpenSettings={() => {}} />
+      </StrictMode>,
+    );
+
+    await waitFor(() => expect(useAppStore.getState().activeSessionId).toBe("b"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(getSettings).toHaveBeenCalledTimes(1);
+  });
+
+  // Settings can be unreadable (locked db, failed migration). Reconciliation
+  // must not take the sidebar down with it, and must not leak an unhandled
+  // rejection out of the effect.
+  it("stays unscoped and usable when settings cannot be read", async () => {
+    vi.spyOn(tauriLib, "invokeListSessions").mockResolvedValue(sessions);
+    vi.spyOn(tauriLib, "invokeGetSettings").mockRejectedValue(new Error("db locked"));
+
+    render(<SessionsSidebar onOpenSettings={() => {}} />);
+
+    await waitFor(() => expect(screen.getByText("Checkout API")).toBeInTheDocument());
+    expect(useAppStore.getState().activeSessionId).toBeNull();
+
+    // Still interactive afterwards — an unscoped app is a usable app.
+    fireEvent.click(screen.getByRole("button", { name: "Checkout API" }));
+    expect(useAppStore.getState().activeSessionId).toBe("b");
+  });
+
+  // Persisting is best-effort: the current view depends on the in-memory
+  // selection, so a failed write must never roll it back.
+  it("keeps the selection when persisting it fails", async () => {
+    vi.spyOn(tauriLib, "invokeListSessions").mockResolvedValue(sessions);
+    vi.spyOn(tauriLib, "invokeGetSettings").mockResolvedValue(storedSettings);
+    vi.spyOn(tauriLib, "invokeSetSetting").mockRejectedValue(new Error("disk full"));
+
+    render(<SessionsSidebar onOpenSettings={() => {}} />);
+    await waitFor(() => screen.getByText("Checkout API"));
+    fireEvent.click(screen.getByRole("button", { name: "Checkout API" }));
+
+    expect(useAppStore.getState().activeSessionId).toBe("b");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(useAppStore.getState().activeSessionId).toBe("b");
   });
 });
