@@ -13,7 +13,7 @@ describe("Menu", () => {
     render(<Menu label="Add a tool" options={OPTIONS} onSelect={onSelect} trigger="Add" />);
 
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("button", { name: /add a tool/i }));
 
     fireEvent.click(screen.getByRole("menuitem", { name: /DB/ }));
     expect(onSelect).toHaveBeenCalledWith("db");
@@ -33,7 +33,7 @@ describe("Menu", () => {
 
   it("labels the popup for screen readers", () => {
     render(<Menu label="Add a tool" options={OPTIONS} onSelect={() => {}} trigger="Add" />);
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("button", { name: /add a tool/i }));
     expect(screen.getByRole("menu")).toHaveAccessibleName("Add a tool");
   });
 });

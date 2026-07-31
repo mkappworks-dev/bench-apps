@@ -31,6 +31,8 @@ change in plan 2.
 - **Motion:** 150–250ms, state-conveying only.
 - **Radius:** `--radius-sm` (6px) for interactive controls, `--radius-lg` (12px) for cards/surfaces/popups.
 - **Never use raw emoji as icons.** Inline stroke SVGs, `currentColor`, ~1.6–1.8px stroke.
+- **Comments stay sparse.** No multi-paragraph doc blocks above components, no comments restating what the code says. Comment only what a reader cannot infer: non-obvious library behaviour, a bug being guarded against, a deliberate deviation from the obvious approach. Design rationale belongs in the spec, not duplicated above every component. **This overrides the comment volume shown in this plan's own code blocks** — where they disagree, this rule wins.
+- **Every `Menu` trigger is named by its `label` prop** via `aria-label`, in both picker and action-list mode. Its visible text is the current value ("POST", "Dark") or an icon, neither of which identifies the control. Tests locate triggers by that name.
 
 ## File Structure
 
@@ -177,7 +179,7 @@ describe("Menu", () => {
     render(<Menu label="Add a tool" options={OPTIONS} onSelect={onSelect} trigger="Add" />);
 
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("button", { name: /add a tool/i }));
 
     fireEvent.click(screen.getByRole("menuitem", { name: /DB/ }));
     expect(onSelect).toHaveBeenCalledWith("db");
@@ -197,7 +199,7 @@ describe("Menu", () => {
 
   it("labels the popup for screen readers", () => {
     render(<Menu label="Add a tool" options={OPTIONS} onSelect={() => {}} trigger="Add" />);
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("button", { name: /add a tool/i }));
     expect(screen.getByRole("menu")).toHaveAccessibleName("Add a tool");
   });
 });
@@ -804,20 +806,7 @@ import { Tabs } from "../ui/Tabs";
 import { TABS } from "./tools";
 import type { TabId } from "../../store/useAppStore";
 
-/**
- * The app's topmost row — simultaneously the window drag region, both panes'
- * tab bars, and the home of the global actions. It replaces BOTH the native
- * title bar and the old branded header (DESIGN.md's topbar is gone; identity
- * does not need a permanent 52px row in a data-dense tool).
- *
- * The load-bearing detail is the grid: its columns are the SAME as the body's,
- * so each tab group sits directly above the pane it controls and the strip's
- * internal divider lands exactly on the pane divider. An earlier attempt put
- * the secondary pane's tabs in a second row inside the pane, and the two tab
- * bars ended up at different heights — neither read as belonging to its pane.
- *
- * Ghosty per DESIGN.md: transparent, hairline division, no blur.
- */
+/** Grid columns mirror the body's so each tab group sits above the pane it controls. */
 export function AppStrip({
   activeTab,
   secondaryTab,
