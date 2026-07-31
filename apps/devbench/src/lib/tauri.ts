@@ -221,3 +221,19 @@ export function invokeRestoreSession(id: string): Promise<void> {
 export function invokeDeleteSession(id: string): Promise<void> {
   return invoke("delete_session", { id });
 }
+
+export interface AppSettings {
+  theme: string;
+  correlation_window_ms: number;
+  smtp_port: number;
+  provider: string;
+  model: string;
+}
+
+export function invokeGetSettings(): Promise<AppSettings> {
+  return invoke("get_settings");
+}
+
+export function invokeSetSetting(key: string, value: string): Promise<void> {
+  return invoke("set_setting", { key, value });
+}
