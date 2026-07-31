@@ -217,19 +217,25 @@ pub async fn create_connection(
 pub async fn update_connection(
     db: tauri::State<'_, crate::local_db::LocalDb>,
     secrets: tauri::State<'_, std::sync::Arc<dyn SecretStore>>,
+    registry: tauri::State<'_, std::sync::Arc<crate::connection_registry::ConnectionRegistry>>,
     id: String,
     input: ConnectionInput,
 ) -> Result<ConnectionSummary, String> {
-    update_connection_impl(&db.pool, secrets.as_ref(), &id, input).await
+    let summary = update_connection_impl(&db.pool, secrets.as_ref(), &id, input).await?;
+    registry.invalidate(&id);
+    Ok(summary)
 }
 
 #[tauri::command]
 pub async fn delete_connection(
     db: tauri::State<'_, crate::local_db::LocalDb>,
     secrets: tauri::State<'_, std::sync::Arc<dyn SecretStore>>,
+    registry: tauri::State<'_, std::sync::Arc<crate::connection_registry::ConnectionRegistry>>,
     id: String,
 ) -> Result<(), String> {
-    delete_connection_impl(&db.pool, secrets.as_ref(), &id).await
+    delete_connection_impl(&db.pool, secrets.as_ref(), &id).await?;
+    registry.invalidate(&id);
+    Ok(())
 }
 
 #[tauri::command]

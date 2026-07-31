@@ -59,6 +59,7 @@ fn main() {
             });
 
             app.manage(Arc::new(devbench::correlation_state::CorrelationRegistry::new()));
+            app.manage(Arc::new(devbench::connection_registry::ConnectionRegistry::new()));
 
             let emails = Arc::new(EmailState::new());
             // Bind BEFORE spawning: `serve()` blocks forever and can only

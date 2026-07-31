@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod connection_registry;
 pub mod correlation_state;
 pub mod email_state;
 pub mod local_db;
