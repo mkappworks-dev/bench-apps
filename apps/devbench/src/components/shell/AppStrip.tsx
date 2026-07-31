@@ -112,7 +112,7 @@ function TabGroup({
             value={tab.id}
             // Base UI renders selection state; this data-selected powers the styling.
             data-selected={tab.id === value ? "" : undefined}
-            className="shrink-0 rounded-sm px-2.5 py-1.5 text-xs font-medium text-text-muted transition-colors duration-150 hover:bg-surface-2 data-[selected]:bg-surface-2 data-[selected]:font-semibold data-[selected]:text-text"
+            className="shrink-0 rounded-sm px-2.5 py-1.5 text-xs font-medium text-text-muted transition-colors duration-150 hover:bg-surface-2 data-selected:bg-surface-2 data-selected:font-semibold data-selected:text-text"
           >
             {tab.label}
           </Tabs.Tab>

@@ -50,7 +50,7 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
                 // on `<Tabs.Tab>` — see AppStrip.tsx's identical fix.
                 // Without this, the selected-pane highlight is dead CSS.
                 data-selected={p.id === pane ? "" : undefined}
-                className="rounded-sm p-2 text-left text-sm text-text-muted transition-colors duration-150 hover:bg-surface-2 data-[selected]:bg-surface-2 data-[selected]:text-text"
+                className="rounded-sm p-2 text-left text-sm text-text-muted transition-colors duration-150 hover:bg-surface-2 data-selected:bg-surface-2 data-selected:text-text"
               >
                 {p.label}
               </Tabs.Tab>

@@ -112,7 +112,7 @@ export function SessionsSidebar({ onOpenSettings }: { onOpenSettings: () => void
 
   return (
     // Ghosty: transparent, hairline division, no blur.
-    <aside aria-label="Sessions" className="flex w-[var(--w-sidebar)] min-w-[var(--w-sidebar)] flex-col border-r border-border">
+    <aside aria-label="Sessions" className="flex w-(--w-sidebar) min-w-(--w-sidebar) flex-col border-r border-border">
       <div className="flex items-center justify-between border-b border-border p-2.5 text-xs font-bold text-text-muted">
         Sessions
         <button

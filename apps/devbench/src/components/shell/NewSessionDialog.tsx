@@ -46,7 +46,7 @@ export function NewSessionDialog({
           extra — a translucent panel with no fallback is a broken surface for
           anyone who has asked the OS to stop doing that. */}
       <div
-        className="w-100 rounded-lg border border-border p-4 shadow-2xl backdrop-blur-[24px] backdrop-saturate-150"
+        className="w-100 rounded-lg border border-border p-4 shadow-2xl backdrop-blur-xl backdrop-saturate-150"
         style={{
           background: "color-mix(in srgb, var(--surface) 72%, transparent)",
           boxShadow: "inset 0 1px 0 0 rgb(255 255 255 / 0.06)",
