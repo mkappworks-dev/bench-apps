@@ -21,6 +21,13 @@ const DEV_CONNECTION: DbConnectInput = {
 };
 
 interface DisplayResult {
+  /**
+   * Which fired request this pane is describing, so a correlation window
+   * arriving late can tell whether it belongs to what is currently on screen.
+   * `null` for a result restored from history, which has no open window and
+   * must therefore never be filled in by one.
+   */
+  correlationId: string | null;
   response: FireRequestOutput;
   rollup: RollupData;
 }
@@ -76,6 +83,26 @@ export function ApiTab({
     return sendSessionId === activeSessionIdRef.current;
   }
 
+  /**
+   * Whether the pane is still showing the send whose window just closed.
+   *
+   * The session check above cannot answer this: two requests fired in the same
+   * investigation both pass it, so send 1's window would merge its log lines
+   * and emails into send 2's rollup — the second request's response and DB
+   * writes shown beside the first request's observed effects, flagged settled.
+   * Firing, tweaking, and firing again inside the 5s window is the ordinary
+   * debugging loop, so this is reached in normal use, not only under stress.
+   *
+   * Written as a type guard so the callers below narrow `prev` to non-null and
+   * keep returning it untouched when the window is not ours.
+   */
+  function describesThisSend(
+    prev: DisplayResult | null,
+    correlationId: string,
+  ): prev is DisplayResult {
+    return prev !== null && prev.correlationId === correlationId;
+  }
+
   function handleSendStart() {
     setSending(true);
     setResult(null);
@@ -92,6 +119,7 @@ export function ApiTab({
     if (!belongsToCurrentSession(sendSessionId)) return;
     setSending(false);
     setResult({
+      correlationId: correlation.correlation_id,
       response: correlation.response,
       rollup: {
         tableDiffs: correlation.table_diffs,
@@ -110,40 +138,32 @@ export function ApiTab({
       const window = await invokeCollectCorrelationWindow(correlation.correlation_id);
       // Re-checked after the await, not just before it: this continuation lands
       // a full correlation window later, by which time the user may have
-      // switched investigation. It compares SESSIONS, so all it prevents is
-      // splicing one session's log lines and emails into another session's
-      // result. It does NOT prevent cross-request splicing WITHIN a session:
-      // two sends in the same session both pass this guard, so send 1's window
-      // resolving after send 2 has painted merges send 1's lines into send 2's
-      // rollup.
-      // TODO: close the same-session case by carrying `correlation_id` in
-      // `DisplayResult` and comparing that here as well — the session check
-      // alone cannot distinguish two requests fired in the same session.
+      // switched investigation.
       if (!belongsToCurrentSession(sendSessionId)) return;
-      setResult((prev) =>
-        prev
-          ? {
-              ...prev,
-              rollup: {
-                ...prev.rollup,
-                logLines: window.log_lines,
-                logLinesTruncated: window.log_lines_truncated,
-                emails: window.emails,
-                emailsTruncated: window.emails_truncated,
-                windowOpen: false,
-              },
-            }
-          : prev,
+      setResult((prev) => describesThisSend(prev, correlation.correlation_id)
+        ? {
+            ...prev,
+            rollup: {
+              ...prev.rollup,
+              logLines: window.log_lines,
+              logLinesTruncated: window.log_lines_truncated,
+              emails: window.emails,
+              emailsTruncated: window.emails_truncated,
+              windowOpen: false,
+            },
+          }
+        : prev,
       );
     } catch {
       // The window could not be collected (app restarted, id expired). Closing
       // it as "not observed" is honest; claiming zero lines would not be.
-      // Same session check as the success path — this lands just as late.
+      // Same two checks as the success path — this lands just as late, and
+      // closing a *different* request's window as "not observed" would be its
+      // own false report.
       if (!belongsToCurrentSession(sendSessionId)) return;
-      setResult((prev) =>
-        prev
-          ? { ...prev, rollup: { ...prev.rollup, logLines: null, emails: null, windowOpen: false } }
-          : prev,
+      setResult((prev) => describesThisSend(prev, correlation.correlation_id)
+        ? { ...prev, rollup: { ...prev.rollup, logLines: null, emails: null, windowOpen: false } }
+        : prev,
       );
     }
   }
@@ -161,6 +181,10 @@ export function ApiTab({
     setSending(false);
     setError(null);
     setResult({
+      // A restored entry has no open correlation window, so no window may ever
+      // fill it in. `null` matches no live correlation id, which is what keeps
+      // an outstanding send from writing its lines into a history view.
+      correlationId: null,
       response: { status_code: entry.status_code, body: entry.response_body, duration_ms: entry.duration_ms },
       rollup: {
         tableDiffs: null,

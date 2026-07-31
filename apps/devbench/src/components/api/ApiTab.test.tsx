@@ -150,4 +150,66 @@ describe("ApiTab", () => {
     // pending rather than filled in with someone else's lines.
     expect(screen.getByTestId("rollup-log-pending")).toBeInTheDocument();
   });
+
+  // The session guard is blind to this one: both sends belong to the SAME
+  // investigation, so it passes for each. What tells them apart is which
+  // request they describe — that is what `correlation_id` identifies.
+  //
+  // This is the ordinary debugging loop, not an edge case: fire, tweak, fire
+  // again inside the 5s window. Unguarded, the rollup shows the second
+  // request's response and DB writes beside the FIRST request's log lines and
+  // emails, marked settled, with nothing on screen admitting the mismatch —
+  // a confident wrong answer about what a request caused.
+  it("does not splice one request's correlation window into a later request in the same session", async () => {
+    vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeRunCorrelatedRequest")
+      .mockResolvedValueOnce(sendResult('{"first":1}'))
+      .mockResolvedValueOnce(sendResult('{"second":2}'));
+
+    const windowA = deferred<tauriLib.CorrelationWindowResult>();
+    const windowB = deferred<tauriLib.CorrelationWindowResult>();
+    vi.spyOn(tauriLib, "invokeCollectCorrelationWindow")
+      .mockReturnValueOnce(windowA.promise)
+      .mockReturnValueOnce(windowB.promise);
+
+    render(<ApiTab onOpenTableInDb={() => {}} onOpenEmail={() => {}} />);
+    const url = screen.getByPlaceholderText("/api/orders");
+
+    fireEvent.change(url, { target: { value: "/api/orders" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(screen.getByText('{"first":1}')).toBeInTheDocument());
+
+    // No session change anywhere in this test — same investigation throughout.
+    fireEvent.change(url, { target: { value: "/api/refunds" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(screen.getByText('{"second":2}')).toBeInTheDocument());
+
+    // The first request's window closes late, carrying its log lines.
+    await act(async () => {
+      windowA.resolve({
+        log_lines: [logLine(1), logLine(2), logLine(3)],
+        log_lines_truncated: false,
+        emails: [],
+        emails_truncated: false,
+      });
+      await windowA.promise;
+    });
+
+    expect(screen.queryByText("3 lines")).not.toBeInTheDocument();
+    expect(screen.getByTestId("rollup-log-pending")).toBeInTheDocument();
+
+    // And the second request's own window still fills its own slot — the fix
+    // must drop the foreign window, not freeze the pane against every update.
+    await act(async () => {
+      windowB.resolve({
+        log_lines: [logLine(9)],
+        log_lines_truncated: false,
+        emails: [],
+        emails_truncated: false,
+      });
+      await windowB.promise;
+    });
+
+    expect(screen.getByText("1 line")).toBeInTheDocument();
+  });
 });
