@@ -10,6 +10,9 @@ export function RequestBuilder({
   // `lib/tauri.ts` already normalises to `null`; this default only satisfies
   // the exact-payload assertion in RequestBuilder.test.tsx.
   sessionId = null,
+  method,
+  url,
+  onPatchState,
   onResult,
   onSendStart,
   onError,
@@ -18,12 +21,13 @@ export function RequestBuilder({
   watchedTables: Set<string>;
   /** Attributes the fired request's history entry to this session. `null` = unattributed. */
   sessionId?: string | null;
+  method: string;
+  url: string;
+  onPatchState: (patch: { method?: string; url?: string }) => void;
   onResult: (result: CorrelationResult) => void;
   onSendStart?: () => void;
   onError?: (message: string) => void;
 }) {
-  const [method, setMethod] = useState("GET");
-  const [url, setUrl] = useState("");
   const [sending, setSending] = useState(false);
 
   async function handleSend() {
@@ -50,7 +54,7 @@ export function RequestBuilder({
         label="Method"
         options={METHODS}
         value={method}
-        onSelect={setMethod}
+        onSelect={(m) => onPatchState({ method: m })}
         trigger={
           <>
             {method}
@@ -61,7 +65,7 @@ export function RequestBuilder({
       />
       <input
         value={url}
-        onChange={(e) => setUrl(e.target.value)}
+        onChange={(e) => onPatchState({ url: e.target.value })}
         placeholder="/api/orders"
         className="flex-1 rounded-sm border border-border bg-bg px-2.5 py-2 font-mono text-text"
       />

@@ -3,7 +3,7 @@ import { RequestBuilder } from "./RequestBuilder";
 import { ResponseViewer } from "./ResponseViewer";
 import { HistorySidebar } from "./HistorySidebar";
 import { Rollup, type RollupData } from "../rollup/Rollup";
-import { useAppStore } from "../../store/useAppStore";
+import { useAppStore, type Tab } from "../../store/useAppStore";
 import {
   invokeCollectCorrelationWindow,
   type CorrelationResult,
@@ -28,14 +28,19 @@ interface DisplayResult {
 }
 
 export function ApiTab({
-  onOpenTableInDb,
+  tab,
+  onPatchState,
+  onOpenDb,
+  onOpenLog,
   onOpenEmail,
 }: {
-  onOpenTableInDb: (table: string) => void;
+  tab: Tab;
+  onPatchState: (patch: Record<string, unknown>) => void;
+  onOpenDb: (table: string) => void;
+  onOpenLog: () => void;
   onOpenEmail: (emailId: number | null) => void;
 }) {
   const watchedTables = useAppStore((s) => s.watchedTables);
-  const setActiveTab = useAppStore((s) => s.setActiveTab);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const [result, setResult] = useState<DisplayResult | null>(null);
   const [sending, setSending] = useState(false);
@@ -156,16 +161,6 @@ export function ApiTab({
     });
   }
 
-  function handleOpenDb(table: string) {
-    setActiveTab("db");
-    onOpenTableInDb(table);
-  }
-
-  function handleOpenEmail(emailId: number | null) {
-    setActiveTab("email");
-    onOpenEmail(emailId);
-  }
-
   return (
     <div className="-m-6 flex h-full">
       <HistorySidebar
@@ -178,6 +173,9 @@ export function ApiTab({
           connection={DEV_CONNECTION}
           watchedTables={watchedTables}
           sessionId={activeSessionId}
+          method={typeof tab.state.method === "string" ? tab.state.method : "GET"}
+          url={typeof tab.state.url === "string" ? tab.state.url : ""}
+          onPatchState={onPatchState}
           onSendStart={handleSendStart}
           onResult={handleResult}
           onError={handleError}
@@ -192,13 +190,7 @@ export function ApiTab({
               What happened
             </div>
             <div className="rounded-lg border border-border bg-surface">
-              <Rollup
-                data={result?.rollup ?? null}
-                loading={sending}
-                onOpenDb={handleOpenDb}
-                onOpenLog={() => setActiveTab("log")}
-                onOpenEmail={handleOpenEmail}
-              />
+              <Rollup data={result?.rollup ?? null} loading={sending} onOpenDb={onOpenDb} onOpenLog={onOpenLog} onOpenEmail={onOpenEmail} />
             </div>
           </div>
         ) : null}

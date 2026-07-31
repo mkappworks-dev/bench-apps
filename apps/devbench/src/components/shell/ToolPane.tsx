@@ -33,9 +33,7 @@ export function ToolPane({
 
   switch (tab.kind) {
     case "api":
-      // ApiTab still takes its Task-1-era prop names here; Task 6 renames
-      // them on ApiTab itself and this bridge goes away.
-      return <ApiTab onOpenTableInDb={onOpenDb} onOpenEmail={onOpenEmail} />;
+      return <ApiTab tab={tab} onPatchState={onPatchState} onOpenDb={onOpenDb} onOpenLog={onOpenLog} onOpenEmail={onOpenEmail} />;
     case "db":
       return (
         <DbTab

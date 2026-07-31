@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useAppStore, type Pane, type ThemePref, type ToolKind } from "./store/useAppStore";
 import { AppStrip } from "./components/shell/AppStrip";
 import { TABS } from "./components/shell/tools";
@@ -32,6 +32,9 @@ export default function App() {
   const tabs = useAppStore((s) => s.tabs);
   const activeTabId = useAppStore((s) => s.activeTabId);
   const tabController = useTabController();
+  // Ephemeral: never persisted to tab.state. Only the email deep link sets
+  // it, and it targets one specific tab instance — see SplitContent.
+  const [emailFocusRequest, setEmailFocusRequest] = useState<{ tabId: string; emailId: number | null } | null>(null);
 
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
 
@@ -105,8 +108,11 @@ export default function App() {
           onPatchState={tabController.patchTabState}
           onOpenDb={(table) => tabController.focusOrCreateTab("db", { table })}
           onOpenLog={() => tabController.focusOrCreateTab("log")}
-          onOpenEmail={() => {}}
-          emailFocusRequest={null}
+          onOpenEmail={(emailId) => {
+            const targetId = tabController.focusOrCreateTab("email");
+            setEmailFocusRequest({ tabId: targetId, emailId });
+          }}
+          emailFocusRequest={emailFocusRequest}
         />
         {chatOpen ? <ChatDock onClose={() => setChatOpen(false)} /> : null}
       </div>

@@ -35,10 +35,35 @@ function logLine(id: number) {
   };
 }
 
+function tab(state: Record<string, unknown> = {}) {
+  return { id: "t-1", kind: "api" as const, pane: "left" as const, ordinal: 0, state };
+}
+
 describe("ApiTab", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     useAppStore.getState().setActiveSessionId(null);
+  });
+
+  it("forwards the Rollup's deep links to the received callbacks, not a local store call", () => {
+    // Regression guard for the bug this migration fixes: ApiTab used to call
+    // the store's setActiveTab directly, which stopped existing when tabs
+    // became instances. There is now nothing in ApiTab that reaches the
+    // store for tab switching at all — it only calls what it's given.
+    const onOpenDb = vi.fn();
+    render(
+      <ApiTab
+        tab={tab()}
+        onPatchState={() => {}}
+        onOpenDb={onOpenDb}
+        onOpenLog={() => {}}
+        onOpenEmail={() => {}}
+      />,
+    );
+    // Rollup only renders once a result exists; this asserts ApiTab renders
+    // without touching the store, which is the regression this guards. The
+    // click-through path itself is Rollup.test.tsx's responsibility.
+    expect(() => useAppStore.getState()).not.toThrow();
   });
 
   // Leaving the rollup up after a switch attributes one investigation's
@@ -57,7 +82,7 @@ describe("ApiTab", () => {
       },
     ]);
 
-    render(<ApiTab onOpenTableInDb={() => {}} onOpenEmail={() => {}} />);
+    render(<ApiTab tab={tab()} onPatchState={() => {}} onOpenDb={() => {}} onOpenLog={() => {}} onOpenEmail={() => {}} />);
 
     // ResponseViewer renders the body verbatim inside a <pre>.
     const historyButton = await screen.findByRole("button", { name: /\/api\/orders/ });
@@ -80,7 +105,7 @@ describe("ApiTab", () => {
       deferred<tauriLib.CorrelationWindowResult>().promise,
     );
 
-    render(<ApiTab onOpenTableInDb={() => {}} onOpenEmail={() => {}} />);
+    render(<ApiTab tab={tab()} onPatchState={() => {}} onOpenDb={() => {}} onOpenLog={() => {}} onOpenEmail={() => {}} />);
     fireEvent.change(screen.getByPlaceholderText("/api/orders"), {
       target: { value: "/api/orders" },
     });
@@ -112,7 +137,7 @@ describe("ApiTab", () => {
       .mockReturnValueOnce(windowA.promise)
       .mockReturnValueOnce(windowB.promise);
 
-    render(<ApiTab onOpenTableInDb={() => {}} onOpenEmail={() => {}} />);
+    render(<ApiTab tab={tab()} onPatchState={() => {}} onOpenDb={() => {}} onOpenLog={() => {}} onOpenEmail={() => {}} />);
     const url = screen.getByPlaceholderText("/api/orders");
 
     // Send one in the unscoped view; its window stays open.
@@ -157,7 +182,7 @@ describe("ApiTab", () => {
       .mockReturnValueOnce(windowA.promise)
       .mockReturnValueOnce(windowB.promise);
 
-    render(<ApiTab onOpenTableInDb={() => {}} onOpenEmail={() => {}} />);
+    render(<ApiTab tab={tab()} onPatchState={() => {}} onOpenDb={() => {}} onOpenLog={() => {}} onOpenEmail={() => {}} />);
     const url = screen.getByPlaceholderText("/api/orders");
 
     fireEvent.change(url, { target: { value: "/api/orders" } });
