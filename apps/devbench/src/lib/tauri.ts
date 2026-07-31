@@ -190,3 +190,34 @@ export function invokeSetWatchedTable(
 ): Promise<void> {
   return invoke("set_watched_table", { connection, table, watched });
 }
+
+export interface Session {
+  id: string;
+  name: string;
+  kind: string | null;
+  created_at: string;
+  updated_at: string;
+  archived_at: string | null;
+}
+
+export function invokeCreateSession(name: string, kind?: string): Promise<Session> {
+  return invoke("create_session", { name, kind: kind ?? null });
+}
+export function invokeListSessions(): Promise<Session[]> {
+  return invoke("list_sessions");
+}
+export function invokeListArchivedSessions(): Promise<Session[]> {
+  return invoke("list_archived_sessions");
+}
+export function invokeRenameSession(id: string, name: string): Promise<Session> {
+  return invoke("rename_session", { id, name });
+}
+export function invokeArchiveSession(id: string): Promise<void> {
+  return invoke("archive_session", { id });
+}
+export function invokeRestoreSession(id: string): Promise<void> {
+  return invoke("restore_session", { id });
+}
+export function invokeDeleteSession(id: string): Promise<void> {
+  return invoke("delete_session", { id });
+}
