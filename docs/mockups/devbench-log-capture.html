@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DevBench — log capture redesign</title>
+<style>
+  /* ---- DevBench log capture mockup ----
+     Forked from docs/mockups/devbench-v2-shell.html — same tokens, same strip/
+     tabs/sessions/chat-dock chrome and popup primitive, verbatim. Only the Log
+     tool's content is new. Two Log tab *instances* are pre-loaded (server.log
+     in Live mode, the "web" command source in Search mode) to make the
+     per-tab-state / per-source-buffer story in the spec visible rather than
+     described: switching tabs keeps each one's mode and source independent.
+     This file is the reusable shell for later DevBench mockups, not a
+     one-off — extend toolBody()/TOOLS for anything beyond Log.
+  */
+  :root {
+    --bg: #08090c; --surface: #121419; --surface-2: #191c22; --border: #24262e;
+    --text: #ecedf2; --text-muted: #999fac; --text-faint: #666d7a;
+    --accent: #f2f3f5; --accent-strong: #ffffff; --accent-on: #0a0b0e;
+    --page-glow: rgba(255, 255, 255, 0.07);
+    --success: #3fce85; --success-bg: #12271c;
+    --warning: #e3a438; --warning-bg: #2b2210;
+    --danger: #e5695f; --danger-bg: #2b1514;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.5);
+    --glass-bg: rgba(18,20,25,.72); --glass-border: rgba(255,255,255,.08);
+    --glass-hi: inset 0 1px 0 rgba(255,255,255,.06);
+    --radius-sm: 6px; --radius-lg: 12px;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+    --fs-xs: 10.5px; --fs-sm: 12px; --fs-md: 13.5px; --fs-h: 16px;
+  }
+  :root[data-theme="light"] {
+    --bg:#f5f7fa; --surface:#ffffff; --surface-2:#eef1f6; --border:#dde3ec;
+    --text:#10151f; --text-muted:#5b6472; --text-faint:#8a92a1;
+    --accent:#10151f; --accent-strong:#000000; --accent-on:#ffffff;
+    --page-glow: rgba(16,21,31,.025);
+    --success:#167a45; --success-bg:#e3f5eb; --warning:#a3660a; --warning-bg:#faf0dc;
+    --danger:#b93a3a; --danger-bg:#fbe9e9;
+    --shadow:0 1px 2px rgba(16,21,31,.05), 0 10px 28px rgba(16,21,31,.09);
+    --glass-bg: rgba(255,255,255,.78); --glass-border: rgba(16,21,31,.07);
+    --glass-hi: inset 0 1px 0 rgba(255,255,255,.6);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; font-family: var(--font-sans); font-size: var(--fs-md); line-height: 1.5;
+    background: radial-gradient(1000px 520px at 8% -12%, var(--page-glow), transparent 60%), var(--bg);
+    color: var(--text); -webkit-font-smoothing: antialiased;
+    font-variant-numeric: tabular-nums;
+  }
+  button, input, select, textarea { font-family: inherit; font-size: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  svg { display: block; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; border: 3px solid transparent; background-clip: padding-box; }
+
+  .app { display: flex; flex-direction: column; height: 100vh; min-height: 560px; }
+
+  /* ============ top strip: title bar + tab bar + global actions ============ */
+  .strip { display: grid; height: 44px; min-height: 44px; border-bottom: 1px solid var(--border); -webkit-app-region: drag; position: relative; }
+  .strip button, .strip .tab { -webkit-app-region: no-drag; }
+  .strip-col { display: flex; align-items: center; min-width: 0; }
+  .tabs-col { padding: 0; }
+  .tabgroup { flex: 1 1 50%; display: flex; align-items: center; gap: 2px; min-width: 0; padding: 0 8px; }
+  .tabgroup + .tabgroup { border-left: 1px solid var(--border); }
+  .actions-col { justify-content: flex-end; gap: 2px; padding: 0 10px; }
+
+  .lights { display: flex; gap: 8px; align-items: center; padding: 0 0 0 14px; }
+  .light { width: 12px; height: 12px; border-radius: 50%; }
+  .light.r { background: #ff5f57; } .light.y { background: #febc2e; } .light.g { background: #28c840; }
+
+  .tabs { display: flex; align-items: center; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab {
+    appearance: none; border: 1px solid transparent; background: transparent; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0;
+    height: 30px; padding: 0 8px 0 9px; border-radius: var(--radius-sm);
+    color: var(--text-muted); font-size: var(--fs-sm); font-weight: 500; white-space: nowrap;
+    transition: background-color 150ms ease, color 150ms ease;
+  }
+  .tab:hover { background: var(--surface-2); color: var(--text); }
+  .tab[aria-selected="true"] { background: var(--surface-2); color: var(--text); font-weight: 600; }
+  .tab .glyph { color: var(--text-faint); flex-shrink: 0; }
+  .tab[aria-selected="true"] .glyph { color: var(--text); }
+  .tab .sub { color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-sm); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tab[aria-selected="true"] .sub { color: var(--text-muted); }
+  .tab-x {
+    appearance: none; border: 0; background: transparent; cursor: pointer; padding: 0;
+    width: 16px; height: 16px; border-radius: 4px; display: grid; place-items: center;
+    color: var(--text-faint); opacity: 0; transition: opacity 150ms ease, background-color 150ms ease;
+  }
+  .tab:hover .tab-x, .tab[aria-selected="true"] .tab-x { opacity: 1; }
+  .tab-x:hover { background: var(--border); color: var(--text); }
+
+  .ghost-btn {
+    appearance: none; border: 1px solid transparent; background: transparent; cursor: pointer;
+    height: 30px; padding: 0 9px; border-radius: var(--radius-sm);
+    display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+    color: var(--text-muted); font-size: var(--fs-sm); font-weight: 500;
+    transition: background-color 150ms ease, color 150ms ease;
+  }
+  .ghost-btn:hover { background: var(--surface-2); color: var(--text); }
+  .ghost-btn[aria-pressed="true"] { background: var(--surface-2); color: var(--text); }
+  .ghost-btn.icon-only { width: 30px; padding: 0; justify-content: center; }
+  .strip .spacer { flex: 1; min-width: 8px; }
+  .strip .divider { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; margin: 0 4px; }
+
+  /* ============ popup primitive — reused for +add tab AND +add log source ============ */
+  .menu {
+    position: absolute; z-index: 50; min-width: 220px; padding: 5px;
+    background: var(--glass-bg); border: 1px solid var(--glass-border);
+    border-radius: var(--radius-lg); box-shadow: var(--shadow), var(--glass-hi);
+    backdrop-filter: blur(22px) saturate(155%); -webkit-backdrop-filter: blur(22px) saturate(155%);
+  }
+  @media (prefers-reduced-transparency: reduce) { .menu { background: var(--surface); backdrop-filter: none; } }
+  .menu-label { padding: 6px 9px 5px; font-size: var(--fs-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-faint); }
+  .menu-item {
+    appearance: none; width: 100%; border: 0; background: transparent; cursor: pointer; text-align: left;
+    display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: var(--radius-sm);
+    color: var(--text-muted); font-size: var(--fs-md);
+  }
+  .menu-item:hover, .menu-item.hi { background: var(--surface-2); color: var(--text); }
+  .menu-item .k { margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-faint); }
+  .menu-item .desc { display: block; font-size: var(--fs-sm); color: var(--text-faint); font-weight: 400; }
+  .menu-item strong { font-weight: 600; font-size: var(--fs-md); }
+  .scrim { position: fixed; inset: 0; z-index: 40; }
+
+  .body-grid { flex: 1; display: flex; min-height: 0; }
+
+  .sidebar { width: 200px; min-width: 200px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+  .side-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 10px 10px 12px; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+  .side-list { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+  .side-item { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: var(--radius-sm); cursor: pointer; color: var(--text-muted); font-size: var(--fs-sm); border: 0; background: transparent; width: 100%; text-align: left; }
+  .side-item:hover { background: var(--surface-2); }
+  .side-item[aria-current="true"] { background: var(--surface-2); color: var(--text); font-weight: 600; }
+  .side-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .side-foot { border-top: 1px solid var(--border); padding: 6px; }
+
+  .panes { flex: 1; display: flex; min-width: 0; }
+  .pane { flex: 1 1 50%; min-width: 0; display: flex; flex-direction: column; }
+  .pane-body { flex: 1; overflow-y: auto; padding: 18px 20px; min-height: 0; }
+
+  .chat { width: 320px; min-width: 320px; border-left: 1px solid var(--border); display: flex; flex-direction: column; }
+  .chat-head { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); display: flex; justify-content: space-between; align-items: center; }
+  .chat-log { flex: 1; overflow-y: auto; padding: 12px; }
+  .chat-input { margin: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); padding: 8px 10px; color: var(--text-faint); font-size: var(--fs-sm); }
+
+  .primary { appearance: none; border: 0; cursor: pointer; height: 30px; padding: 0 14px; border-radius: var(--radius-sm); background: var(--accent); color: var(--accent-on); font-size: var(--fs-sm); font-weight: 700; display: inline-flex; align-items: center; gap: 6px; }
+  .primary:hover { background: var(--accent-strong); }
+
+  /* ============ Log tool — the new part ============ */
+  .log-shell { display: flex; height: 100%; margin: -18px -20px; }
+  .log-sidebar { width: 216px; min-width: 216px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+  .log-sidebar-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 10px 10px 12px; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+  .log-source-list { overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 1px; }
+  .log-source-item { display: flex; align-items: center; gap: 7px; padding: 7px 8px; border-radius: var(--radius-sm); cursor: pointer; color: var(--text-muted); font-size: var(--fs-sm); border: 0; background: transparent; width: 100%; text-align: left; }
+  .log-source-item:hover { background: var(--surface-2); }
+  .log-source-item[aria-current="true"] { background: var(--surface-2); color: var(--text); font-weight: 600; }
+  .log-source-item .kind-glyph { color: var(--text-faint); flex-shrink: 0; }
+  .log-source-item[aria-current="true"] .kind-glyph { color: var(--text); }
+  .log-source-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--fs-sm); }
+  .log-source-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .log-source-dot.live { background: var(--success); }
+  .log-source-dot.error { background: var(--danger); }
+  .log-source-dot.exited { background: var(--text-faint); }
+  .log-source-meta { padding: 0 10px 7px 33px; font-size: 10.5px; color: var(--danger); line-height: 1.4; }
+  .log-source-item[aria-current="true"] ~ .log-source-meta { }
+
+  .log-add-form { margin: 8px; padding: 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); display: flex; flex-direction: column; gap: 7px; }
+  .log-add-form .kind-title { font-size: var(--fs-xs); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-faint); }
+  .log-add-form .row2 { display: flex; gap: 6px; }
+  .log-add-form input { height: 28px; border: 1px solid var(--border); background: var(--bg); border-radius: 4px; padding: 0 8px; font-size: var(--fs-sm); color: var(--text); font-family: var(--font-mono); min-width: 0; }
+  .log-add-form input.label-input { font-family: var(--font-sans); }
+  .log-add-form .hint { font-size: 10.5px; color: var(--text-faint); line-height: 1.45; }
+  .log-add-form .hint code { font-family: var(--font-mono); background: var(--surface-2); padding: 1px 3px; border-radius: 3px; }
+  .log-add-form .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 2px; }
+
+  .log-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .log-toolbar { display: flex; align-items: center; gap: 8px; padding: 9px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .log-filter { min-width: 140px; flex: 1 1 160px; max-width: 280px; height: 28px; border: 1px solid var(--border); background: var(--bg); border-radius: var(--radius-sm); padding: 0 9px; font-size: var(--fs-sm); color: var(--text); }
+  .log-filter[disabled] { opacity: .4; }
+  .level-chips { display: flex; gap: 4px; }
+  .level-chip { appearance: none; border: 1px solid var(--border); background: transparent; color: var(--text-faint); font-size: 10.5px; font-weight: 700; letter-spacing: .03em; padding: 3px 9px; border-radius: 20px; cursor: pointer; }
+  .level-chip:hover { color: var(--text); }
+  .level-chip.active { background: var(--surface-2); color: var(--text-muted); border-color: var(--text-faint); }
+  .level-chip.warn.active { color: var(--warning); border-color: var(--warning); }
+  .level-chip.err.active { color: var(--danger); border-color: var(--danger); }
+  .mode-switch { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; margin-left: auto; }
+  .mode-switch button { appearance: none; border: 0; background: transparent; color: var(--text-muted); font-size: var(--fs-sm); font-weight: 600; padding: 5px 12px; cursor: pointer; }
+  .mode-switch button + button { border-left: 1px solid var(--border); }
+  .mode-switch button.active { background: var(--surface-2); color: var(--text); }
+  .live-indicator { display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); font-weight: 700; color: var(--text-faint); white-space: nowrap; }
+  .live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+  .log-stream { flex: 1; overflow-y: auto; padding: 8px 14px; font-family: var(--font-mono); font-size: var(--fs-sm); }
+  .log-line { display: flex; gap: 10px; padding: 3px 6px; border-radius: 4px; border-left: 2px solid transparent; }
+  .log-line:hover { background: var(--surface-2); }
+  .log-line.lvl-warn { border-left-color: var(--warning); }
+  .log-line.lvl-error { border-left-color: var(--danger); }
+  .log-time { color: var(--text-faint); flex-shrink: 0; }
+  .log-lvl { width: 44px; flex-shrink: 0; font-weight: 700; }
+  .log-lvl.info { color: var(--text-faint); } .log-lvl.warn { color: var(--warning); } .log-lvl.error { color: var(--danger); }
+  .log-msg { color: var(--text); white-space: pre-wrap; word-break: break-word; }
+  .log-empty { padding: 16px; color: var(--text-faint); font-size: var(--fs-sm); }
+
+  .search-panel { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+  .search-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .search-select { height: 30px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius-sm); padding: 0 9px; font-size: var(--fs-sm); color: var(--text); }
+  .search-range { display: inline-flex; gap: 4px; }
+  .search-range button { appearance: none; border: 1px solid var(--border); background: transparent; color: var(--text-muted); font-size: 11px; font-weight: 600; padding: 5px 9px; border-radius: 20px; cursor: pointer; }
+  .search-range button.active { background: var(--surface-2); color: var(--text); border-color: var(--text-faint); }
+  .search-meta { font-size: var(--fs-xs); color: var(--text-faint); line-height: 1.5; }
+  .search-results { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; font-family: var(--font-mono); font-size: var(--fs-sm); }
+  .search-row { display: flex; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--border); }
+  .search-row:last-child { border-bottom: 0; }
+  .search-row:hover { background: var(--surface-2); }
+  .search-source { width: 130px; flex-shrink: 0; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>
+</head>
+<body>
+<div id="root" class="app"></div>
+
+<script>
+/* ------------------------------------------------------------------ icons */
+const I = {
+  plus:  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  x:     '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  chat:  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M20 15a2 2 0 0 1-2 2H8l-4 3V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z"/></svg>',
+  check: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
+  api:   '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4.5 13H11l-1 9 8.5-11H12z"/></svg>',
+  db:    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v13c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-13"/><path d="M4.5 12c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3"/></svg>',
+  log:   '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h10M4 18h13"/></svg>',
+  email: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3.5 7l8.5 6 8.5-6"/></svg>',
+  file:  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M6 2h9l5 5v15H6z"/><path d="M15 2v5h5"/></svg>',
+  term:  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg>',
+  docker:'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="10" width="5" height="5"/><rect x="9" y="10" width="5" height="5"/><rect x="9" y="4" width="5" height="5"/><rect x="15" y="10" width="5" height="5"/><path d="M2 15c0 3 3.5 5 9.5 5 5 0 8-1.7 9.7-5"/></svg>',
+  search:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>',
+};
+
+const TOOLS = {
+  api:   { label: 'API',   icon: I.api,   desc: 'Send requests, watch effects' },
+  db:    { label: 'DB',    icon: I.db,    desc: 'Browse schema and rows' },
+  log:   { label: 'Log',   icon: I.log,   desc: 'Tail a log source' },
+  email: { label: 'Email', icon: I.email, desc: 'Captured outbound mail' },
+};
+
+/* ------------------------------------------------------------------ data */
+let uid = 0;
+const nid = () => 't' + (++uid);
+
+const SOURCES = [
+  { id: 'src_server',  kind: 'file',    label: 'server.log',           state: 'live' },
+  { id: 'src_worker',  kind: 'file',    label: 'worker.log',           state: 'live' },
+  { id: 'src_web',     kind: 'command', label: 'web (npm run dev)',    state: 'live' },
+  { id: 'src_redis',   kind: 'docker',  label: 'redis (docker)',       state: 'live' },
+  { id: 'src_access',  kind: 'file',    label: 'nginx/access.log',     state: 'error', error: 'cannot read /var/log/nginx/access.log: no such file or directory' },
+  { id: 'src_migrate', kind: 'command', label: 'db:migrate',           state: 'exited', exitCode: 0 },
+];
+
+const LINES = {
+  src_server: [
+    { ts: '14:02:11.482', level: 'info', msg: 'order created id=8841 customer=cus_4471 total=84.00' },
+    { ts: '14:02:11.491', level: 'info', msg: 'inventory decremented sku=wb-014 qty=2' },
+    { ts: '14:02:11.501', level: 'warn', msg: 'inventory low for sku=wb-014 (2 remaining)' },
+    { ts: '14:02:11.520', level: 'error', msg: 'smtp send failed: connection timeout after 3000ms, retrying (1/3)' },
+    { ts: '14:02:11.890', level: 'info', msg: 'email sent id=em_7712 to=customer@example.com' },
+    { ts: '14:02:11.918', level: 'info', msg: 'request completed method=POST path=/api/orders status=200 duration_ms=142' },
+  ],
+  src_worker: [
+    { ts: '14:01:58.220', level: 'info', msg: 'job started id=job_552 type=send_email' },
+    { ts: '14:02:11.884', level: 'info', msg: 'job completed id=job_552 duration_ms=13664' },
+    { ts: '14:02:12.340', level: 'warn', msg: 'job job_553 retrying — lock held by another worker' },
+  ],
+  src_web: [
+    { ts: '14:03:40.002', level: 'info', msg: '[vite] hmr update /src/App.tsx' },
+    { ts: '14:03:41.118', level: 'warn', msg: '[vite] page reload src/store/useAppStore.ts (state shape changed)' },
+    { ts: '14:03:52.004', level: 'error', msg: "Uncaught TypeError: Cannot read properties of undefined (reading 'sourceId')" },
+  ],
+  src_redis: [
+    { ts: '14:00:02.001', level: 'info', msg: '1:M 31 Jul 2026 14:00:02.001 * Ready to accept connections tcp' },
+    { ts: '14:05:10.442', level: 'warn', msg: '1:M 31 Jul 2026 14:05:10.442 # WARNING overcommit_memory is set to 0' },
+  ],
+};
+
+const SEARCH_RESULTS = [
+  { ts: '14:02:11.520', source: 'server.log', level: 'error', msg: 'smtp send failed: connection timeout after 3000ms, retrying (1/3)' },
+  { ts: '13:58:02.310', source: 'server.log', level: 'warn', msg: 'payments.gateway timeout after 40ms, retrying (1/2)' },
+  { ts: '13:41:19.004', source: 'web (npm run dev)', level: 'error', msg: 'fetch to payments.gateway timed out after 5000ms' },
+  { ts: '12:55:07.881', source: 'worker.log', level: 'warn', msg: 'job job_552 retrying — payments.gateway timeout' },
+];
+
+const SESSIONS = [ { id: 's1', name: 'Order flow debug' } ];
+
+/* Two Log tab INSTANCES, pre-set to different sources and different modes —
+   this is the point: per-tab state stays independent, so a chatty command
+   source in one tab can't push the quiet file source in the other out of
+   view, and each tab remembers its own Live/Search choice. */
+const TABS_BY_SESSION = {
+  s1: [
+    { id: nid(), kind: 'log', pane: 'left', state: { sourceId: 'src_server', mode: 'live' } },
+    { id: nid(), kind: 'log', pane: 'left', state: { sourceId: 'src_web', mode: 'search' } },
+  ],
+};
+
+const S = {
+  route: 'workspace',
+  theme: 'dark',
+  sessionId: 's1',
+  chatOpen: false,
+  active: { s1: { left: null, right: null } },
+  menu: null,          // { kind, tab?, rect }
+  logForm: {},          // tabId -> 'file' | 'command' | 'docker' | null
+  logLevels: {},         // tabId -> Set('info'|'warn'|'error')
+};
+S.active.s1.left = TABS_BY_SESSION.s1[0].id;
+
+const tabs      = () => TABS_BY_SESSION[S.sessionId];
+const paneTabs  = p => tabs().filter(t => t.pane === p);
+const splitOpen = () => paneTabs('right').length > 0;
+const activeTab = p => tabs().find(t => t.id === S.active[S.sessionId][p]) || paneTabs(p)[0] || null;
+
+function getLevels(tabId) {
+  if (!S.logLevels[tabId]) S.logLevels[tabId] = new Set(['info', 'warn', 'error']);
+  return S.logLevels[tabId];
+}
+
+/* ------------------------------------------------------------------ chrome */
+function strip() {
+  const cols = `218px 1fr ${S.chatOpen ? '320px' : 'auto'}`;
+  return `
+  <div class="strip" style="grid-template-columns:${cols}">
+    <div class="strip-col">
+      <div class="lights"><span class="light r"></span><span class="light y"></span><span class="light g"></span></div>
+    </div>
+    <div class="strip-col tabs-col">
+      ${tabGroup('left')}
+      ${splitOpen() ? tabGroup('right') : ''}
+    </div>
+    <div class="strip-col actions-col">
+      <button class="ghost-btn" data-act="chat" aria-pressed="${S.chatOpen}" title="AI chat">${I.chat}<span>Chat</span></button>
+    </div>
+  </div>`;
+}
+
+function tabGroup(pane) {
+  return `<div class="tabgroup">
+    <div class="tabs">${paneTabs(pane).map(t => tabEl(t, pane)).join('')}</div>
+    <button class="ghost-btn icon-only" data-menu="add" data-pane="${pane}" title="Add a tool">${I.plus}</button>
+  </div>`;
+}
+
+function tabEl(t, pane) {
+  const sel = activeTab(pane) && activeTab(pane).id === t.id;
+  let sub = '';
+  if (t.kind === 'db' && t.state.table) sub = `<span class="sub">${t.state.table}</span>`;
+  if (t.kind === 'log') {
+    const src = SOURCES.find(s => s.id === t.state.sourceId);
+    sub = `<span class="sub">${src ? src.label : ''}${t.state.mode === 'search' ? ' · search' : ''}</span>`;
+  }
+  return `<span class="tab" role="tab" aria-selected="${sel}" data-tab="${t.id}">
+    <span class="glyph">${TOOLS[t.kind].icon}</span>
+    <span>${TOOLS[t.kind].label}</span>${sub}
+    <button class="tab-x" data-close="${t.id}" aria-label="Close tab">${I.x}</button>
+  </span>`;
+}
+
+function sidebar() {
+  return `<aside class="sidebar">
+    <div class="side-head">Sessions</div>
+    <div class="side-list">
+      ${SESSIONS.map(s => `<button class="side-item" aria-current="${s.id === S.sessionId}" data-session="${s.id}"><span class="name">${s.name}</span></button>`).join('')}
+    </div>
+  </aside>`;
+}
+
+function chat() {
+  if (!S.chatOpen) return '';
+  return `<aside class="chat">
+    <div class="chat-head">Chat<button class="ghost-btn icon-only" data-act="chat" aria-label="Close chat">${I.x}</button></div>
+    <div class="chat-log"></div>
+    <div class="chat-input">Ask about this session…</div>
+  </aside>`;
+}
+
+/* ------------------------------------------------------------------ Log tool */
+function logTool(t) {
+  return `<div class="log-shell">
+    ${logSidebar(t)}
+    <div class="log-main">
+      ${logToolbar(t)}
+      ${(t.state.mode || 'live') === 'live' ? logStream(t) : logSearch(t)}
+    </div>
+  </div>`;
+}
+
+function kindGlyph(kind) { return kind === 'file' ? I.file : kind === 'docker' ? I.docker : I.term; }
+
+function logSidebar(t) {
+  return `<aside class="log-sidebar">
+    <div class="log-sidebar-head">Sources
+      <button class="ghost-btn icon-only" data-menu="addLogSource" data-owner-tab="${t.id}" title="Add source">${I.plus}</button>
+    </div>
+    <div class="log-source-list">
+      ${SOURCES.map(s => logSourceItem(t, s)).join('')}
+    </div>
+    ${S.logForm[t.id] ? logAddForm(t, S.logForm[t.id]) : ''}
+  </aside>`;
+}
+
+function logSourceItem(t, s) {
+  const active = t.state.sourceId === s.id;
+  const meta = active && s.state === 'error' ? `<div class="log-source-meta">${s.error}</div>`
+    : active && s.state === 'exited' ? `<div class="log-source-meta" style="color:var(--text-faint)">exited (code ${s.exitCode}) — not auto-restarted</div>`
+    : '';
+  return `<button class="log-source-item" aria-current="${active}" data-log-source="${t.id}:${s.id}">
+    <span class="kind-glyph">${kindGlyph(s.kind)}</span>
+    <span class="name">${s.label}</span>
+    <span class="log-source-dot ${s.state}"></span>
+  </button>${meta}`;
+}
+
+function logAddForm(t, kind) {
+  const fields = kind === 'file'
+    ? `<input class="mono" placeholder="/tmp/devbench/app.log">`
+    : kind === 'docker'
+      ? `<input class="mono" placeholder="container name, e.g. redis">`
+      : `<div class="row2"><input class="mono" placeholder="npm" style="max-width:76px"><input class="mono" placeholder="run dev" style="flex:1"></div>`;
+  const hint = kind === 'file'
+    ? 'DevBench tails this file directly.'
+    : kind === 'docker'
+      ? 'Runs <code>docker logs -f &lt;container&gt;</code> and captures its output — works for containers already running.'
+      : 'DevBench runs this command itself and captures stdout + stderr — no <code>tee</code> needed.';
+  return `<div class="log-add-form">
+    <div class="kind-title">${kind}</div>
+    ${fields}
+    <input class="label-input" placeholder="Label (optional)">
+    <div class="hint">${hint}</div>
+    <div class="actions">
+      <button class="ghost-btn" data-act="log-cancel-form" data-owner-tab="${t.id}">Cancel</button>
+      <button class="primary" data-act="log-submit-form" data-owner-tab="${t.id}">Add</button>
+    </div>
+  </div>`;
+}
+
+function logToolbar(t) {
+  const mode = t.state.mode || 'live';
+  const levels = getLevels(t.id);
+  return `<div class="log-toolbar">
+    <input class="log-filter" placeholder="Filter…" ${mode === 'search' ? 'disabled' : ''}>
+    ${mode === 'live' ? `<div class="level-chips">
+      ${['info', 'warn', 'error'].map(l => `<button class="level-chip ${l === 'warn' ? 'warn' : l === 'error' ? 'err' : ''} ${levels.has(l) ? 'active' : ''}" data-level="${l}" data-owner-tab="${t.id}">${l.toUpperCase()}</button>`).join('')}
+    </div>` : ''}
+    <div class="mode-switch">
+      <button class="${mode === 'live' ? 'active' : ''}" data-act="log-mode" data-mode="live" data-owner-tab="${t.id}">Live</button>
+      <button class="${mode === 'search' ? 'active' : ''}" data-act="log-mode" data-mode="search" data-owner-tab="${t.id}">Search</button>
+    </div>
+    ${mode === 'live' ? `<span class="live-indicator"><span class="live-dot"></span>Live</span>` : ''}
+  </div>`;
+}
+
+function logStream(t) {
+  const src = SOURCES.find(s => s.id === t.state.sourceId) || SOURCES[0];
+  const levels = getLevels(t.id);
+  const lines = (LINES[src.id] || []).filter(l => levels.has(l.level));
+  if (!lines.length) return `<div class="log-empty">No lines match the active level filter.</div>`;
+  return `<div class="log-stream">${lines.map(l => `<div class="log-line lvl-${l.level}">
+    <span class="log-time">${l.ts}</span><span class="log-lvl ${l.level}">${l.level.toUpperCase()}</span><span class="log-msg">${l.msg}</span>
+  </div>`).join('')}</div>`;
+}
+
+function logSearch(t) {
+  return `<div class="search-panel">
+    <div class="search-form">
+      <input class="log-filter" style="max-width:220px" value="gateway timeout" placeholder="Search text…">
+      <select class="search-select"><option>All sources</option><option>server.log</option><option>web (npm run dev)</option></select>
+      <select class="search-select"><option>All levels</option><option>WARN+</option><option>ERROR+</option></select>
+      <div class="search-range"><button>15m</button><button class="active">1h</button><button>24h</button><button>All</button></div>
+      <button class="primary">${I.search}Search</button>
+    </div>
+    <div class="search-meta">6 lines match — showing the 4 most recent. Search reaches everything DevBench has persisted, not just what's currently in the live buffer.</div>
+    <div class="search-results">
+      ${SEARCH_RESULTS.map(r => `<div class="search-row">
+        <span class="log-time">${r.ts}</span><span class="search-source">${r.source}</span><span class="log-lvl ${r.level}">${r.level.toUpperCase()}</span><span class="log-msg">${r.msg}</span>
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+/* ------------------------------------------------------------- other tools */
+function toolBody(t) {
+  if (!t) return `<div style="color:var(--text-faint)">No tools open.</div>`;
+  if (t.kind === 'log') return logTool(t);
+  return `<div style="color:var(--text-faint)">${TOOLS[t.kind].label} tool — unchanged by this mockup.</div>`;
+}
+
+/* ------------------------------------------------------------------ render */
+function render() {
+  document.documentElement.setAttribute('data-theme', S.theme);
+  document.querySelectorAll('.menu, .scrim').forEach(e => e.remove());
+  const root = document.getElementById('root');
+  root.innerHTML = `
+    ${strip()}
+    <div class="body-grid">
+      ${sidebar()}
+      <div class="panes">
+        <div class="pane"><div class="pane-body">${toolBody(activeTab('left'))}</div></div>
+        ${splitOpen() ? `<div class="pane"><div class="pane-body">${toolBody(activeTab('right'))}</div></div>` : ''}
+      </div>
+      ${chat()}
+    </div>`;
+  if (S.menu) renderMenu();
+}
+
+/* -------------------------------------------------------------- popup menu */
+const MENUS = {
+  add: () => ({ label: 'Add a tool', items: Object.entries(TOOLS).map(([k, v]) =>
+    ({ id: k, html: `${v.icon}<span><strong>${v.label}</strong><span class="desc">${v.desc}</span></span>` })) }),
+  addLogSource: () => ({ label: 'Add source', items: [
+    { id: 'file', html: `${I.file}<span><strong>File</strong><span class="desc">Tail a regular file</span></span>` },
+    { id: 'command', html: `${I.term}<span><strong>Command</strong><span class="desc">DevBench runs it, captures stdout/stderr</span></span>` },
+    { id: 'docker', html: `${I.docker}<span><strong>Docker</strong><span class="desc">docker logs -f a container</span></span>` },
+  ] }),
+};
+
+function renderMenu() {
+  const { kind, rect } = S.menu;
+  const cfg = MENUS[kind]();
+  const scrim = document.createElement('div');
+  scrim.className = 'scrim';
+  scrim.onclick = () => { S.menu = null; render(); };
+  const el = document.createElement('div');
+  el.className = 'menu';
+  el.innerHTML = `<div class="menu-label">${cfg.label}</div>` + cfg.items.map(i =>
+    `<button class="menu-item" data-pick="${i.id}">${i.html}</button>`).join('');
+  document.body.append(scrim, el);
+  const top = Math.min(rect.bottom + 6, window.innerHeight - el.offsetHeight - 10);
+  const left = Math.min(rect.left, window.innerWidth - el.offsetWidth - 10);
+  el.style.top = top + 'px'; el.style.left = left + 'px';
+  el.querySelectorAll('[data-pick]').forEach(b => b.onclick = () => pick(kind, b.dataset.pick));
+}
+
+function pick(kind, id) {
+  if (kind === 'add') {
+    const pane = S.menu.pane;
+    const t = { id: nid(), kind: id, pane, state: id === 'db' ? { table: 'orders' } : id === 'log' ? { sourceId: SOURCES[0].id, mode: 'live' } : {} };
+    tabs().push(t);
+    S.active[S.sessionId][pane] = t.id;
+  }
+  if (kind === 'addLogSource') {
+    S.logForm[S.menu.ownerTab] = id;
+  }
+  S.menu = null;
+  render();
+}
+
+/* --------------------------------------------------------------- listeners */
+document.addEventListener('click', e => {
+  const menuBtn = e.target.closest('[data-menu]');
+  if (menuBtn) {
+    S.menu = { kind: menuBtn.dataset.menu, pane: menuBtn.dataset.pane || 'left', ownerTab: menuBtn.dataset.ownerTab || null, rect: menuBtn.getBoundingClientRect() };
+    render(); return;
+  }
+  const close = e.target.closest('[data-close]');
+  if (close) {
+    const id = close.dataset.close;
+    const arr = tabs(); const i = arr.findIndex(t => t.id === id); const pane = arr[i].pane;
+    arr.splice(i, 1);
+    if (S.active[S.sessionId][pane] === id) S.active[S.sessionId][pane] = (paneTabs(pane)[0] || {}).id || null;
+    render(); return;
+  }
+  const tab = e.target.closest('[data-tab]');
+  if (tab) {
+    const t = tabs().find(x => x.id === tab.dataset.tab);
+    S.active[S.sessionId][t.pane] = t.id; render(); return;
+  }
+  const logSrc = e.target.closest('[data-log-source]');
+  if (logSrc) {
+    const [tid, sid] = logSrc.dataset.logSource.split(':');
+    tabs().find(t => t.id === tid).state.sourceId = sid;
+    render(); return;
+  }
+  const levelChip = e.target.closest('[data-level]');
+  if (levelChip) {
+    const tid = levelChip.dataset.ownerTab, lvl = levelChip.dataset.level;
+    const set = getLevels(tid);
+    if (set.has(lvl)) set.delete(lvl); else set.add(lvl);
+    render(); return;
+  }
+  const sess = e.target.closest('[data-session]');
+  if (sess) { S.sessionId = sess.dataset.session; render(); return; }
+
+  const act = e.target.closest('[data-act]');
+  if (!act) return;
+  const a = act.dataset.act;
+  if (a === 'chat') S.chatOpen = !S.chatOpen;
+  if (a === 'log-mode') tabs().find(t => t.id === act.dataset.ownerTab).state.mode = act.dataset.mode;
+  if (a === 'log-cancel-form') S.logForm[act.dataset.ownerTab] = null;
+  if (a === 'log-submit-form') S.logForm[act.dataset.ownerTab] = null; // mockup: simulates success, form collapses
+  render();
+});
+
+render();
+</script>
+</body>
+</html>
