@@ -7,6 +7,7 @@ import { ChatDock } from "./components/shell/ChatDock";
 import { SettingsScreen } from "./components/settings/SettingsScreen";
 import { SplitContent } from "./components/shell/SplitContent";
 import { invokeGetSettings, invokeListWatchedTables, type DbConnectInput } from "./lib/tauri";
+import { useTabController } from "./store/useTabController";
 
 export { TABS };
 
@@ -30,23 +31,17 @@ export default function App() {
   const setTheme = useAppStore((s) => s.setTheme);
   const tabs = useAppStore((s) => s.tabs);
   const activeTabId = useAppStore((s) => s.activeTabId);
-  const addTab = useAppStore((s) => s.addTab);
-  const closeTab = useAppStore((s) => s.closeTab);
-  const setActiveTabId = useAppStore((s) => s.setActiveTabId);
-  const splitActiveTab = useAppStore((s) => s.splitActiveTab);
-  const closeSplit = useAppStore((s) => s.closeSplit);
+  const tabController = useTabController();
 
   const [dbFocusTable, setDbFocusTable] = useState<string | null>(null);
   const [emailFocusId, setEmailFocusId] = useState<number | null>(null);
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
 
-  // Reimplemented against useTabController in Task 4; AppStrip's own props
-  // never change.
   function onAddTab(pane: Pane, kind: ToolKind) {
-    addTab(crypto.randomUUID(), kind, pane);
+    tabController.addTab(kind, pane);
   }
   function onToggleSplit(): boolean {
-    return splitActiveTab().moved;
+    return tabController.splitActiveTab();
   }
 
   // Restore the persisted theme at launch — otherwise it stays invisible
@@ -96,11 +91,11 @@ export default function App() {
         tabs={tabs}
         activeTabId={activeTabId}
         chatOpen={chatOpen}
-        onSetActiveTab={setActiveTabId}
+        onSetActiveTab={tabController.setActiveTabId}
         onAddTab={onAddTab}
-        onCloseTab={closeTab}
+        onCloseTab={tabController.closeTab}
         onToggleSplit={onToggleSplit}
-        onCloseSplitPane={closeSplit}
+        onCloseSplitPane={tabController.closeSplit}
         onToggleChat={() => setChatOpen(!chatOpen)}
       />
       {/* Three columns. The chat dock RESIZES this row rather than overlaying
