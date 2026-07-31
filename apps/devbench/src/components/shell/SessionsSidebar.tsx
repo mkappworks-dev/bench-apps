@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { NewSessionDialog } from "./NewSessionDialog";
 import { useAppStore } from "../../store/useAppStore";
 import {
   invokeArchiveSession,
   invokeCreateSession,
+  invokeGetSettings,
   invokeListSessions,
+  invokeSetSetting,
   type Session,
 } from "../../lib/tauri";
 
@@ -15,23 +17,65 @@ export function SessionsSidebar({ onOpenSettings }: { onOpenSettings: () => void
   const [query, setQuery] = useState("");
   const [showNew, setShowNew] = useState(false);
 
-  const refresh = useCallback(async () => {
+  // Reconciliation needs the list itself, not just the state setter, so
+  // `refresh` returns what it fetched.
+  const refresh = useCallback(async (): Promise<Session[]> => {
     try {
-      setSessions(await invokeListSessions());
+      const listed = await invokeListSessions();
+      setSessions(listed);
+      return listed;
     } catch {
       setSessions([]);
+      return [];
     }
   }, []);
 
+  // Persisting is best-effort: the in-memory selection is what the current
+  // view actually depends on, so a failed write must never block it.
+  const selectSession = useCallback(
+    (id: string | null) => {
+      setActiveSessionId(id);
+      void invokeSetSetting("active_session_id", id ?? "").catch(() => {});
+    },
+    [setActiveSessionId],
+  );
+
+  // A ref, not state: flipping it must not trigger a re-render, and it must
+  // be readable synchronously by the time the next refresh runs.
+  const reconciled = useRef(false);
+
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    void (async () => {
+      const listed = await refresh();
+
+      // Runs once, and only after the list resolves. Validating a stored id
+      // against a list that has not loaded would clear a perfectly good
+      // selection on every launch; re-running it after a create or archive
+      // would overwrite whatever the user just selected.
+      if (reconciled.current) return;
+      reconciled.current = true;
+
+      try {
+        const { active_session_id: storedId } = await invokeGetSettings();
+        if (!storedId) return;
+        if (listed.some((s) => s.id === storedId)) {
+          setActiveSessionId(storedId);
+        } else {
+          // Names an archived or deleted session. Drop it rather than
+          // leaving the app scoped to something absent from the sidebar.
+          void invokeSetSetting("active_session_id", "").catch(() => {});
+        }
+      } catch {
+        // Settings unreadable — stay unscoped rather than guessing.
+      }
+    })();
+  }, [refresh, setActiveSessionId]);
 
   async function handleCreate(name: string) {
     setShowNew(false);
     try {
       const created = await invokeCreateSession(name);
-      setActiveSessionId(created.id);
+      selectSession(created.id);
       await refresh();
     } catch {
       await refresh();
@@ -41,7 +85,7 @@ export function SessionsSidebar({ onOpenSettings }: { onOpenSettings: () => void
   async function handleArchive(id: string) {
     try {
       await invokeArchiveSession(id);
-      if (activeSessionId === id) setActiveSessionId(null);
+      if (activeSessionId === id) selectSession(null);
     } finally {
       await refresh();
     }
@@ -88,7 +132,7 @@ export function SessionsSidebar({ onOpenSettings }: { onOpenSettings: () => void
           visible.map((session) => (
             <div key={session.id} className="flex items-center gap-1">
               <button
-                onClick={() => setActiveSessionId(session.id)}
+                onClick={() => selectSession(session.id)}
                 aria-current={activeSessionId === session.id}
                 className={`flex flex-1 items-center justify-between gap-2 rounded-sm p-2 text-left text-xs transition-colors duration-150 ${
                   activeSessionId === session.id
