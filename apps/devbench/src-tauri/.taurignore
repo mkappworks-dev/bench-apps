@@ -1,0 +1,4 @@
+# Atomic-write temp files (e.g. editor/tooling passes that write
+# `<file>.tmp.<pid>.<hash>` next to a source file before renaming it)
+# retrigger the tauri dev file watcher and cause an endless rebuild loop.
+*.tmp.*
