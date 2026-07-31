@@ -135,9 +135,11 @@ The sidebar currently renders nothing when the list is empty. Since creating a s
 
 Two distinct messages: in a session, "No requests fired in this session yet."; unscoped, "No requests yet." This is PRODUCT.md principle 4 ("a failure to observe is never displayed as 'nothing happened'") applied to a UI absence rather than a correlation result.
 
+Adding that copy makes a third state newly reachable. The fetch's `catch` currently sets an empty list, so a *failed* read would now render "No requests yet." — asserting the user fired nothing when the truth is that we could not look. That is the exact false negative principle 4 forbids, and it is introduced by this change rather than pre-existing (today a failed fetch renders nothing at all, which is vague but claims nothing). Failure is therefore tracked separately from emptiness and renders "Couldn't load history."
+
 ## Error handling
 
-- A failed history fetch keeps today's behaviour: an empty list, rejection handled, no crash.
+- A failed history fetch is handled, does not crash, and is rendered as "Couldn't load history." — distinct from a genuinely empty list, per the empty-state section above.
 - Reconciliation failures (settings read fails, sessions list fails) degrade to "no active session" — the unscoped view — never to a broken selection pointing at a session that isn't there.
 - Persisting the active session is best-effort; a failed write must not block the selection itself, since the in-memory selection is what the current view depends on.
 
