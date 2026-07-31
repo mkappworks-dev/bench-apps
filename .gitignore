@@ -30,3 +30,7 @@ target/
 # Git worktrees created by EnterWorktree (isolated per-session workspaces,
 # each with its own nested .git - must never be swept into this repo)
 .claude/worktrees/
+
+# Superpowers SDD scratch workspace (ledgers, briefs, review packages —
+# per-session artifacts, not project history)
+.superpowers/
