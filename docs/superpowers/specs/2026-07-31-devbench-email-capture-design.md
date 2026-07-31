@@ -277,8 +277,11 @@ is nothing to attach it to.
   advances `captured_emails_state.evicted_through_id` to the newest evicted id,
   never a lower one.
 - **Session scoping**: `list_emails` with a `session_id` returns only that
-  session's rows, `IS NULL` returns only unattributed rows, matching
-  `history.rs`'s existing scoped-query tests structurally.
+  session's rows; with no `session_id` it returns every row regardless of
+  session — not just unattributed ones — matching `history.rs`'s existing
+  scoped-query tests structurally. `clear_emails` is tested against the same
+  two cases, confirming a scoped clear leaves other sessions' mail intact and
+  an unscoped clear empties everything currently displayed.
 - **Correlation linkage**: firing a correlated request and letting the window
   close attaches `request_id` to exactly the emails `collect_correlation_window`
   reports as captured — never to emails outside the window — and a request
