@@ -1,6 +1,7 @@
 use devbench::commands::correlation::run_correlated_request_impl;
 use devbench::commands::db::{connection_string, DbConnectInput};
 use devbench::commands::request::FireRequestInput;
+use devbench::email_state::EmailState;
 use devbench::log_state::LogState;
 use sqlx::postgres::PgPoolOptions;
 
@@ -157,6 +158,7 @@ async fn firing_a_request_correlates_both_db_writes_and_log_lines() {
     logs.add_source("backend.log".into(), log_path.clone()).unwrap();
     logs.poll_all(1_000);
 
+    let emails = EmailState::new();
     let registry = CorrelationRegistry::new();
 
     // The mocked backend does both things a real one would during the request:
@@ -205,6 +207,7 @@ async fn firing_a_request_correlates_both_db_writes_and_log_lines() {
         conn,
         vec!["smoke_log_orders".to_string()],
         &logs,
+        &emails,
         &registry,
         50_000,
     )
@@ -224,6 +227,7 @@ async fn firing_a_request_correlates_both_db_writes_and_log_lines() {
     let window = collect_correlation_window_impl(
         &registry,
         &logs,
+        &emails,
         result.correlation_id,
         50_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
     )

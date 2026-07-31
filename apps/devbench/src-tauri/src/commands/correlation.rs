@@ -203,6 +203,7 @@ async fn save_correlation_history(
 }
 
 use crate::correlation_state::{CorrelationRegistry, DEFAULT_CORRELATION_WINDOW_MS};
+use crate::email_state::{EmailState, EmailSummary};
 use crate::log_state::{LogLine, LogState};
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -213,6 +214,10 @@ pub struct CorrelationWindowResult {
     /// True when the ring buffer evicted lines belonging to this window before
     /// they were collected. The UI must render the count as "N+", never as N.
     pub log_lines_truncated: bool,
+    /// `None` = the SMTP catcher is not listening, so mail was NOT observed.
+    /// `Some(vec![])` = it was listening and nothing was sent.
+    pub emails: Option<Vec<EmailSummary>>,
+    pub emails_truncated: bool,
 }
 
 /// The real orchestration. `now_ms` is injected so tests can place the window
@@ -222,23 +227,31 @@ pub async fn run_correlated_request_impl_with_registry(
     connection: DbConnectInput,
     watched_tables: Vec<String>,
     logs: &LogState,
+    emails: &EmailState,
     registry: &CorrelationRegistry,
     now_ms: i64,
 ) -> Result<CorrelationResult, String> {
-    // Snapshot the log cursor BEFORE anything else: every line the backend
-    // writes from this instant on is attributable to this request.
+    // Both cursors are snapshotted before anything else: every line logged and
+    // every message sent from this instant on is attributable to this request.
     let from_log_id = logs.next_line_id().saturating_sub(1);
+    let from_email_id = emails
+        .store()
+        .lock()
+        .map(|s| s.next_id().saturating_sub(1))
+        .unwrap_or(0);
 
     let mut result =
         run_correlated_request_impl(request, connection, watched_tables, logs).await?;
 
-    result.correlation_id = registry.open(from_log_id, now_ms + DEFAULT_CORRELATION_WINDOW_MS);
+    result.correlation_id =
+        registry.open(from_log_id, from_email_id, now_ms + DEFAULT_CORRELATION_WINDOW_MS);
     Ok(result)
 }
 
 pub async fn collect_correlation_window_impl(
     registry: &CorrelationRegistry,
     logs: &LogState,
+    emails: &EmailState,
     correlation_id: String,
     now_ms: i64,
 ) -> Result<CorrelationWindowResult, String> {
@@ -255,18 +268,39 @@ pub async fn collect_correlation_window_impl(
     let log_lines_truncated = log_lines.is_some()
         && logs.read_since(window.from_log_id, None, 1).dropped > 0;
 
-    Ok(CorrelationWindowResult { log_lines, log_lines_truncated })
+    // A catcher that is not listening did not observe anything — reporting
+    // zero mail would be a false negative, which principle 4 forbids.
+    let (captured, emails_truncated) = if emails.status().listening {
+        match emails.store().lock() {
+            Ok(store) => (
+                Some(store.between(window.from_email_id, window.window_ends_at_ms)),
+                store.evicted_through_id() > window.from_email_id,
+            ),
+            Err(_) => (None, false),
+        }
+    } else {
+        (None, false)
+    };
+
+    Ok(CorrelationWindowResult {
+        log_lines,
+        log_lines_truncated,
+        emails: captured,
+        emails_truncated,
+    })
 }
 
 #[tauri::command]
 pub async fn collect_correlation_window(
     registry: State<'_, Arc<CorrelationRegistry>>,
     logs: State<'_, Arc<LogState>>,
+    emails: State<'_, Arc<EmailState>>,
     correlation_id: String,
 ) -> Result<CorrelationWindowResult, String> {
     collect_correlation_window_impl(
         &registry,
         &logs,
+        &emails,
         correlation_id,
         chrono::Utc::now().timestamp_millis(),
     )
@@ -277,6 +311,7 @@ pub async fn collect_correlation_window(
 pub async fn run_correlated_request(
     db: State<'_, LocalDb>,
     logs: State<'_, Arc<LogState>>,
+    emails: State<'_, Arc<EmailState>>,
     registry: State<'_, Arc<CorrelationRegistry>>,
     request: FireRequestInput,
     connection: DbConnectInput,
@@ -289,6 +324,7 @@ pub async fn run_correlated_request(
         connection,
         watched_tables,
         &logs,
+        &emails,
         &registry,
         chrono::Utc::now().timestamp_millis(),
     )
@@ -672,6 +708,7 @@ mod tests {
     async fn a_correlated_request_opens_a_window_that_can_be_collected() {
         let conn = test_connection();
         let logs = LogState::new();
+        let emails = EmailState::new();
         let registry = CorrelationRegistry::new();
 
         let dir = tempfile::tempdir().unwrap();
@@ -707,6 +744,7 @@ mod tests {
             conn,
             vec![],
             &logs,
+            &emails,
             &registry,
             10_000,
         )
@@ -723,6 +761,7 @@ mod tests {
         let window = collect_correlation_window_impl(
             &registry,
             &logs,
+            &emails,
             result.correlation_id.clone(),
             10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
         )
@@ -740,6 +779,7 @@ mod tests {
     async fn collecting_a_window_with_no_log_source_reports_not_observed_rather_than_zero() {
         let conn = test_connection();
         let logs = LogState::new();
+        let emails = EmailState::new();
         let registry = CorrelationRegistry::new();
 
         let mut server = mockito::Server::new_async().await;
@@ -750,6 +790,7 @@ mod tests {
             conn,
             vec![],
             &logs,
+            &emails,
             &registry,
             10_000,
         )
@@ -760,6 +801,7 @@ mod tests {
         let window = collect_correlation_window_impl(
             &registry,
             &logs,
+            &emails,
             result.correlation_id,
             10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
         )
@@ -772,20 +814,182 @@ mod tests {
     #[tokio::test]
     async fn collecting_an_unknown_correlation_id_is_an_error() {
         let logs = LogState::new();
+        let emails = EmailState::new();
         let registry = CorrelationRegistry::new();
         let result =
-            collect_correlation_window_impl(&registry, &logs, "not-a-real-id".into(), 1_000).await;
+            collect_correlation_window_impl(&registry, &logs, &emails, "not-a-real-id".into(), 1_000)
+                .await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn a_window_can_only_be_collected_once() {
         let logs = LogState::new();
+        let emails = EmailState::new();
         let registry = CorrelationRegistry::new();
-        let id = registry.open(0, 500);
+        let id = registry.open(0, 0, 500);
 
-        assert!(collect_correlation_window_impl(&registry, &logs, id.clone(), 1_000).await.is_ok());
-        assert!(collect_correlation_window_impl(&registry, &logs, id, 1_000).await.is_err());
+        assert!(collect_correlation_window_impl(&registry, &logs, &emails, id.clone(), 1_000).await.is_ok());
+        assert!(collect_correlation_window_impl(&registry, &logs, &emails, id, 1_000).await.is_err());
         assert_eq!(registry.len(), 0);
+    }
+
+    use crate::email_state::EmailState;
+
+    const TEST_EMAIL: &str = "Subject: Order confirmation #8841\r\n\r\nThanks for your order.\r\n";
+
+    fn listening_email_state() -> EmailState {
+        let state = EmailState::new();
+        state.set_status(crate::email_state::SmtpStatus {
+            listening: true,
+            port: crate::email_state::DEFAULT_SMTP_PORT,
+            error: None,
+        });
+        state
+    }
+
+    #[tokio::test]
+    async fn a_correlation_window_captures_mail_sent_during_the_request() {
+        let conn = test_connection();
+        let logs = LogState::new();
+        let emails = listening_email_state();
+        let registry = CorrelationRegistry::new();
+
+        let store_for_mock = emails.store();
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/orders")
+            .with_status(201)
+            // Pushing into the inbox from inside the mock's body callback puts
+            // the capture strictly between the request being sent and the
+            // response landing — the same shape as a real backend sending mail
+            // mid-request, without needing a live SMTP round trip here (that
+            // is covered end to end in Task 9).
+            .with_body_from_request(move |_req| {
+                store_for_mock
+                    .lock()
+                    .unwrap()
+                    .push("orders@shop.test", &["customer@example.com".into()], TEST_EMAIL, 10_100);
+                br#"{"id":8841}"#.to_vec()
+            })
+            .create_async()
+            .await;
+
+        let result = run_correlated_request_impl_with_registry(
+            FireRequestInput {
+                method: "POST".to_string(),
+                url: format!("{}/orders", server.url()),
+                body: None,
+            },
+            conn,
+            vec![],
+            &logs,
+            &emails,
+            &registry,
+            10_000,
+        )
+        .await
+        .unwrap();
+
+        mock.assert_async().await;
+
+        let window = collect_correlation_window_impl(
+            &registry,
+            &logs,
+            &emails,
+            result.correlation_id,
+            10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
+        )
+        .await
+        .unwrap();
+
+        let captured = window.emails.expect("the catcher is running, so emails must be Some");
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].subject, "Order confirmation #8841");
+        assert_eq!(captured[0].to, vec!["customer@example.com".to_string()]);
+        assert!(!window.emails_truncated);
+    }
+
+    #[tokio::test]
+    async fn mail_sent_before_the_request_is_not_attributed_to_it() {
+        let conn = test_connection();
+        let logs = LogState::new();
+        let emails = listening_email_state();
+        let registry = CorrelationRegistry::new();
+
+        emails
+            .store()
+            .lock()
+            .unwrap()
+            .push("old@shop.test", &["someone@example.com".into()], TEST_EMAIL, 5_000);
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
+
+        let result = run_correlated_request_impl_with_registry(
+            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
+            conn,
+            vec![],
+            &logs,
+            &emails,
+            &registry,
+            10_000,
+        )
+        .await
+        .unwrap();
+        mock.assert_async().await;
+
+        let window = collect_correlation_window_impl(
+            &registry,
+            &logs,
+            &emails,
+            result.correlation_id,
+            10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(window.emails, Some(vec![]), "pre-existing mail must not be attributed to this request");
+    }
+
+    #[tokio::test]
+    async fn a_stopped_catcher_reports_emails_as_not_observed_rather_than_zero() {
+        let conn = test_connection();
+        let logs = LogState::new();
+        let emails = EmailState::new();
+        emails.set_status(crate::email_state::SmtpStatus {
+            listening: false,
+            port: crate::email_state::DEFAULT_SMTP_PORT,
+            error: Some("SMTP port 1025 is unavailable".to_string()),
+        });
+        let registry = CorrelationRegistry::new();
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
+
+        let result = run_correlated_request_impl_with_registry(
+            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
+            conn,
+            vec![],
+            &logs,
+            &emails,
+            &registry,
+            10_000,
+        )
+        .await
+        .unwrap();
+        mock.assert_async().await;
+
+        let window = collect_correlation_window_impl(
+            &registry,
+            &logs,
+            &emails,
+            result.correlation_id,
+            10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(window.emails, None, "a catcher that is not listening means NOT OBSERVED, not zero mail");
     }
 }

@@ -17,9 +17,10 @@ const WINDOW_RETENTION_MS: i64 = 60_000;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpenWindow {
-    /// Buffer id recorded immediately BEFORE the request was fired. Everything
-    /// with a greater id happened at or after the request.
+    /// Log-buffer id recorded immediately BEFORE the request was fired.
     pub from_log_id: u64,
+    /// Inbox id recorded at the same instant, for the same reason.
+    pub from_email_id: u64,
     pub window_ends_at_ms: i64,
 }
 
@@ -33,11 +34,11 @@ impl CorrelationRegistry {
         Self::default()
     }
 
-    pub fn open(&self, from_log_id: u64, window_ends_at_ms: i64) -> String {
+    pub fn open(&self, from_log_id: u64, from_email_id: u64, window_ends_at_ms: i64) -> String {
         let id = Uuid::new_v4().to_string();
         if let Ok(mut windows) = self.windows.lock() {
             windows.retain(|_, w| w.window_ends_at_ms + WINDOW_RETENTION_MS > window_ends_at_ms);
-            windows.insert(id.clone(), OpenWindow { from_log_id, window_ends_at_ms });
+            windows.insert(id.clone(), OpenWindow { from_log_id, from_email_id, window_ends_at_ms });
         }
         id
     }
