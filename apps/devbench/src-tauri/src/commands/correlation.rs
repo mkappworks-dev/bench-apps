@@ -238,8 +238,28 @@ pub async fn run_correlated_request_impl_with_registry(
     let from_log_id = logs.next_line_id().saturating_sub(1);
     let from_email_id = emails.store().lock().map(|s| s.next_id().saturating_sub(1)).unwrap_or(0);
 
+    // The window's end is anchored to *response* time, not request-start
+    // time: `now_ms` is captured by the caller before `fire_request_impl`
+    // is even invoked, so naively computing `now_ms + window_ms` measures
+    // the window from "when this command was invoked," not from "when the
+    // response actually came back," as the spec and Settings > General's UI
+    // copy ("N seconds after the response") both promise. For any request
+    // slower than `window_ms`, that would silently shrink (or entirely
+    // consume) the window before a single log line or email had a chance to
+    // land, and a failure to observe must never be rendered as "nothing
+    // happened" (this app's core principle). `elapsed_ms`, measured with a
+    // monotonic clock (immune to wall-clock adjustments, unlike a
+    // `chrono::Utc::now()` diff), is exactly how long the awaited request
+    // took, so `now_ms + elapsed_ms` reconstructs the response's wall-clock
+    // time and `now_ms + elapsed_ms + window_ms` is "response time +
+    // window_ms" — matching the documented behavior — while adding only a
+    // negligible, deterministic offset in tests (mocked HTTP responses
+    // resolve in low single-digit milliseconds).
+    let request_started_at = std::time::Instant::now();
     let mut result = run_correlated_request_impl(request, connection, watched_tables, logs).await?;
-    result.correlation_id = registry.open(from_log_id, from_email_id, now_ms + window_ms);
+    let elapsed_ms = request_started_at.elapsed().as_millis() as i64;
+
+    result.correlation_id = registry.open(from_log_id, from_email_id, now_ms + elapsed_ms + window_ms);
     Ok(result)
 }
 
@@ -911,6 +931,98 @@ mod tests {
         assert_eq!(captured[0].subject, "Order confirmation #8841");
         assert_eq!(captured[0].to, vec!["customer@example.com".to_string()]);
         assert!(!window.emails_truncated);
+    }
+
+    // Regression test for the bug where the correlation window's end was
+    // computed from `now_ms + window_ms` — i.e. from the instant the Tauri
+    // command was *invoked*, not from the instant the response actually came
+    // back. A request slower than `window_ms` would silently shrink (or
+    // entirely consume) its own window before anything it caused had a
+    // chance to be observed. This test uses REAL wall-clock time (not
+    // synthetic integers) and a genuinely slow mocked backend (a real
+    // `std::thread::sleep`) to prove the window's end tracks response time,
+    // not request-start time.
+    //
+    // With the old code, the window would close at `started_at_ms + 100`
+    // (`window_ms`), but the email is captured only after a real ~200ms
+    // sleep, i.e. around `started_at_ms + 200` — well past that bound — so
+    // the old code excludes it and this test fails against it. With the fix,
+    // the window closes at `started_at_ms + elapsed_ms(~200) + 100`, which
+    // comfortably includes an email captured at `started_at_ms + 200`.
+    #[tokio::test]
+    async fn a_slow_request_does_not_shrink_its_own_correlation_window() {
+        let conn = test_connection();
+        let logs = LogState::new();
+        let emails = listening_email_state();
+        let registry = CorrelationRegistry::new();
+
+        const WINDOW_MS: i64 = 100;
+        const SIMULATED_BACKEND_DELAY_MS: u64 = 200;
+
+        let store_for_mock = emails.store();
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/orders")
+            .with_status(201)
+            // A real sleep here simulates a backend slow enough to outlast
+            // `WINDOW_MS` on its own, then pushes the "side effect" email
+            // once the delay elapses — capturing real wall-clock time at the
+            // moment of the push, exactly like a real SMTP catcher would.
+            .with_body_from_request(move |_req| {
+                std::thread::sleep(std::time::Duration::from_millis(SIMULATED_BACKEND_DELAY_MS));
+                let captured_at_ms = chrono::Utc::now().timestamp_millis();
+                store_for_mock.lock().unwrap().push(
+                    "orders@shop.test",
+                    &["customer@example.com".into()],
+                    TEST_EMAIL,
+                    captured_at_ms,
+                );
+                br#"{"id":8841}"#.to_vec()
+            })
+            .create_async()
+            .await;
+
+        let started_at_ms = chrono::Utc::now().timestamp_millis();
+        let result = run_correlated_request_impl_with_registry(
+            FireRequestInput {
+                method: "POST".to_string(),
+                url: format!("{}/orders", server.url()),
+                body: None,
+            },
+            conn,
+            vec![],
+            &logs,
+            &emails,
+            &registry,
+            started_at_ms,
+            WINDOW_MS,
+        )
+        .await
+        .unwrap();
+
+        mock.assert_async().await;
+
+        // Collect comfortably past the CORRECT window end so the internal
+        // sleep in `collect_correlation_window_impl` is skipped entirely.
+        let collect_at_ms = chrono::Utc::now().timestamp_millis() + 1_000;
+        let window = collect_correlation_window_impl(
+            &registry,
+            &logs,
+            &emails,
+            result.correlation_id,
+            collect_at_ms,
+        )
+        .await
+        .unwrap();
+
+        let captured = window.emails.expect("the catcher is running, so emails must be Some");
+        assert_eq!(
+            captured.len(),
+            1,
+            "a request that takes ~{SIMULATED_BACKEND_DELAY_MS}ms must not shrink its own \
+             {WINDOW_MS}ms window relative to when the response actually came back"
+        );
+        assert_eq!(captured[0].subject, "Order confirmation #8841");
     }
 
     #[tokio::test]
