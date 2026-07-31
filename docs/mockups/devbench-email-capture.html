@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DevBench — email capture</title>
+<style>
+  /* ---- DevBench email capture — UI mockup ----
+     Shell (tokens, strip, sessions sidebar, panes) copied verbatim from
+     docs/mockups/devbench-v2-shell.html so this reads as the same app, not
+     a one-off widget preview. The only new rendering logic is emailTool():
+     everything else is chrome to show the feature in its real context.
+     Two sessions demonstrate session-scoped inboxes; s1 also demonstrates
+     the durable request -> email link (the "Sent by ..." chip, which jumps
+     to a stub History list in an API tab in the same session).
+  */
+  :root {
+    --bg: #08090c; --surface: #121419; --surface-2: #191c22; --border: #24262e;
+    --text: #ecedf2; --text-muted: #999fac; --text-faint: #666d7a;
+    --accent: #f2f3f5; --accent-strong: #ffffff; --accent-on: #0a0b0e;
+    --page-glow: rgba(255, 255, 255, 0.07);
+    --success: #3fce85; --success-bg: #12271c;
+    --warning: #e3a438; --warning-bg: #2b2210;
+    --danger: #e5695f; --danger-bg: #2b1514;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.5);
+    --glass-bg: rgba(18,20,25,.72); --glass-border: rgba(255,255,255,.08);
+    --glass-hi: inset 0 1px 0 rgba(255,255,255,.06);
+    --radius-sm: 6px; --radius-lg: 12px;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+    --fs-xs: 10.5px; --fs-sm: 12px; --fs-md: 13.5px; --fs-h: 16px;
+  }
+  :root[data-theme="light"] {
+    --bg:#f5f7fa; --surface:#ffffff; --surface-2:#eef1f6; --border:#dde3ec;
+    --text:#10151f; --text-muted:#5b6472; --text-faint:#8a92a1;
+    --accent:#10151f; --accent-strong:#000000; --accent-on:#ffffff;
+    --page-glow: rgba(16,21,31,.025);
+    --success:#167a45; --success-bg:#e3f5eb; --warning:#a3660a; --warning-bg:#faf0dc;
+    --danger:#b93a3a; --danger-bg:#fbe9e9;
+    --shadow:0 1px 2px rgba(16,21,31,.05), 0 10px 28px rgba(16,21,31,.09);
+    --glass-bg: rgba(255,255,255,.78); --glass-border: rgba(16,21,31,.07);
+    --glass-hi: inset 0 1px 0 rgba(255,255,255,.6);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; font-family: var(--font-sans); font-size: var(--fs-md); line-height: 1.5;
+    background: radial-gradient(1000px 520px at 8% -12%, var(--page-glow), transparent 60%), var(--bg);
+    color: var(--text); -webkit-font-smoothing: antialiased;
+    font-variant-numeric: tabular-nums;
+  }
+  button, input, textarea { font-family: inherit; font-size: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  svg { display: block; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; border: 3px solid transparent; background-clip: padding-box; }
+
+  .app { display: flex; flex-direction: column; height: 100vh; min-height: 560px; }
+
+  .strip { display: grid; height: 44px; min-height: 44px; border-bottom: 1px solid var(--border); -webkit-app-region: drag; position: relative; grid-template-columns: 218px 1fr auto; }
+  .strip button, .strip .tab { -webkit-app-region: no-drag; }
+  .strip-col { display: flex; align-items: center; min-width: 0; }
+  .tabgroup { flex: 1 1 auto; display: flex; align-items: center; gap: 2px; min-width: 0; padding: 0 8px; }
+  .actions-col { justify-content: flex-end; gap: 2px; padding: 0 10px; }
+  .lights { display: flex; gap: 8px; align-items: center; padding: 0 0 0 14px; }
+  .light { width: 12px; height: 12px; border-radius: 50%; }
+  .light.r { background: #ff5f57; } .light.y { background: #febc2e; } .light.g { background: #28c840; }
+
+  .tabs { display: flex; align-items: center; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab {
+    appearance: none; border: 1px solid transparent; background: transparent; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0;
+    height: 30px; padding: 0 8px 0 9px; border-radius: var(--radius-sm);
+    color: var(--text-muted); font-size: var(--fs-sm); font-weight: 500; white-space: nowrap;
+    transition: background-color 150ms ease, color 150ms ease;
+  }
+  .tab:hover { background: var(--surface-2); color: var(--text); }
+  .tab[aria-selected="true"] { background: var(--surface-2); color: var(--text); font-weight: 600; }
+  .tab .glyph { color: var(--text-faint); flex-shrink: 0; }
+  .tab[aria-selected="true"] .glyph { color: var(--text); }
+
+  .ghost-btn {
+    appearance: none; border: 1px solid transparent; background: transparent; cursor: pointer;
+    height: 30px; padding: 0 9px; border-radius: var(--radius-sm);
+    display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+    color: var(--text-muted); font-size: var(--fs-sm); font-weight: 500;
+    transition: background-color 150ms ease, color 150ms ease;
+  }
+  .ghost-btn:hover { background: var(--surface-2); color: var(--text); }
+  .ghost-btn[aria-pressed="true"] { background: var(--surface-2); color: var(--text); }
+  .ghost-btn.icon-only { width: 30px; padding: 0; justify-content: center; }
+  .strip .divider { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; margin: 0 4px; }
+
+  .body-grid { flex: 1; display: flex; min-height: 0; }
+
+  .sidebar { width: 218px; min-width: 218px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+  .side-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 10px 10px 12px; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+  .side-list { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+  .side-item { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: var(--radius-sm); cursor: pointer; color: var(--text-muted); font-size: var(--fs-sm); border: 0; background: transparent; width: 100%; text-align: left; }
+  .side-item:hover { background: var(--surface-2); }
+  .side-item[aria-current="true"] { background: var(--surface-2); color: var(--text); font-weight: 600; }
+  .side-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .side-item .badge { font-size: var(--fs-xs); letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; }
+
+  .panes { flex: 1; display: flex; min-width: 0; }
+  .pane { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; position: relative; }
+  .pane-body { flex: 1; overflow: hidden; min-height: 0; position: relative; }
+
+  .card { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); overflow: hidden; }
+  .card-head { padding: 9px 12px; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); display: flex; align-items: center; gap: 8px; }
+  .pill { font-size: var(--fs-xs); font-weight: 700; padding: 2px 7px; border-radius: 20px; font-family: var(--font-mono); }
+  .pill.ok { background: var(--success-bg); color: var(--success); }
+  .pill.warn { background: var(--warning-bg); color: var(--warning); }
+  .pill.err { background: var(--danger-bg); color: var(--danger); }
+  .tree-item { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border-radius: var(--radius-sm); cursor: pointer; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-muted); border: 0; background: transparent; width: 100%; text-align: left; }
+  .tree-item:hover { background: var(--surface-2); }
+  .tree-item[aria-current="true"] { background: var(--surface-2); color: var(--text); }
+
+  /* ---------------------------------------------------------- Email tool */
+  .email-tool { position: absolute; inset: 0; display: flex; flex-direction: column; }
+  .email-body { flex: 1; display: flex; min-height: 0; }
+
+  .inbox { width: 280px; min-width: 280px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+  .inbox-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+  .inbox-filter { padding: 8px; border-bottom: 1px solid var(--border); }
+  .inbox-filter input {
+    width: 100%; height: 30px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--bg); color: var(--text); padding: 0 9px; font-size: var(--fs-sm);
+  }
+  .inbox-filter input::placeholder { color: var(--text-faint); }
+  .inbox-list { flex: 1; overflow-y: auto; }
+  .inbox-row {
+    display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left;
+    border: 0; border-bottom: 1px solid var(--border); background: transparent; cursor: pointer;
+    padding: 9px 12px; color: var(--text);
+  }
+  .inbox-row:hover { background: var(--surface-2); }
+  .inbox-row[aria-current="true"] { background: var(--surface-2); }
+  .inbox-row .top-line { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .inbox-row .subject { font-size: var(--fs-md); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .inbox-row .time { font-size: var(--fs-xs); color: var(--text-faint); flex-shrink: 0; font-family: var(--font-mono); }
+  .inbox-row .from { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .inbox-empty { padding: 16px; font-size: var(--fs-sm); color: var(--text-faint); line-height: 1.6; }
+  .inbox-foot { padding: 8px 12px; border-top: 1px solid var(--border); font-size: var(--fs-xs); color: var(--text-faint); }
+  .inbox-foot b { color: var(--text-muted); }
+
+  .viewer { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .viewer-head { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+  .viewer-head .subject { font-size: var(--fs-h); font-weight: 700; letter-spacing: -.01em; }
+  .viewer-head .addrs { margin-top: 4px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-faint); }
+  .sent-by {
+    margin-top: 9px; display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 10px; border-radius: 20px; border: 1px solid var(--border); background: var(--surface-2);
+    font-size: var(--fs-sm); color: var(--text-muted); cursor: pointer;
+  }
+  .sent-by:hover { color: var(--text); border-color: var(--text-faint); }
+  .sent-by b { color: var(--text); font-family: var(--font-mono); font-weight: 600; }
+  .sent-by .arrow { color: var(--text-faint); }
+  .view-tabs { display: flex; gap: 4px; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+  .view-tab {
+    appearance: none; border: 1px solid transparent; background: transparent; cursor: pointer;
+    padding: 5px 10px; border-radius: var(--radius-sm); font-size: var(--fs-sm); font-weight: 500; color: var(--text-muted);
+  }
+  .view-tab:hover { background: var(--surface-2); color: var(--text); }
+  .view-tab[aria-selected="true"] { background: var(--surface-2); color: var(--text); font-weight: 600; }
+  .viewer-content { flex: 1; overflow: auto; }
+  .html-frame { margin: 16px; padding: 18px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: #fff; color: #111; font-family: var(--font-sans); }
+  .html-frame p { margin: 0 0 8px; }
+  pre.body-pre { margin: 0; padding: 16px; font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.65; color: var(--text-muted); white-space: pre-wrap; }
+  .viewer-empty { display: grid; place-items: center; height: 100%; color: var(--text-faint); font-size: var(--fs-sm); }
+
+  .smtp-strip { padding: 8px 14px; border-top: 1px solid var(--border); font-size: var(--fs-sm); color: var(--text-faint); }
+  .smtp-strip b { color: var(--text); }
+
+  /* Minimal History stub used only to demonstrate the "Sent by" jump */
+  .history-list { padding: 14px 16px; }
+  .history-row { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid transparent; margin-bottom: 4px; }
+  .history-row.hi { background: var(--surface-2); border-color: var(--text-faint); }
+  .history-row .m { font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: 700; color: var(--text); }
+  .history-row .u { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-muted); }
+  .history-note { font-size: var(--fs-xs); color: var(--text-faint); margin-top: 6px; }
+</style>
+</head>
+<body>
+<div id="root" class="app"></div>
+
+<script>
+const I = {
+  api:   '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4.5 13H11l-1 9 8.5-11H12z"/></svg>',
+  email: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3.5 7l8.5 6 8.5-6"/></svg>',
+  back:  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
+};
+
+const SESSIONS = [
+  { id: 's1', name: 'checkout 500s', kind: 'api' },
+  { id: 's2', name: 'welcome email bounces', kind: 'email' },
+];
+
+/* Two tabs in s1 (API + Email) demonstrate the "Sent by ... -> jump to
+   History" link landing in the SAME session's API tab. s2 has only an
+   Email tab: a session that never touched the API tool still gets its own
+   captured-mail view, scoped independently of s1. */
+const TABS_BY_SESSION = {
+  s1: [ { id: 't1', kind: 'api' }, { id: 't2', kind: 'email' } ],
+  s2: [ { id: 't3', kind: 'email' } ],
+};
+
+const EMAILS = {
+  s1: [
+    { id: 41, subject: 'Order confirmation #8841', from: 'orders@shop.test', to: ['customer@example.com'], time: '14:02',
+      request: { method: 'POST', url: '/api/checkout' },
+      html: '<p>Thanks for your order, Jamie.</p><p>Your confirmation number is <b>#8841</b>.</p>',
+      text: 'Thanks for your order, Jamie.\n\nYour confirmation number is #8841.',
+      raw: 'Subject: Order confirmation #8841\r\nFrom: orders@shop.test\r\nTo: customer@example.com\r\n\r\nThanks for your order, Jamie.' },
+    { id: 40, subject: 'Payment receipt #4402', from: 'billing@shop.test', to: ['customer@example.com'], time: '13:47',
+      request: null,
+      html: '<p>Your payment of $42.00 was received.</p>',
+      text: 'Your payment of $42.00 was received.',
+      raw: 'Subject: Payment receipt #4402\r\nFrom: billing@shop.test\r\nTo: customer@example.com\r\n\r\nYour payment of $42.00 was received.' },
+  ],
+  s2: [
+    { id: 12, subject: 'Welcome to Acme', from: 'welcome@shop.test', to: ['grace@example.com'], time: '09:03',
+      request: null,
+      html: '<p>Hi Grace — your account is ready.</p>',
+      text: 'Hi Grace — your account is ready.',
+      raw: 'Subject: Welcome to Acme\r\nFrom: welcome@shop.test\r\nTo: grace@example.com\r\n\r\nHi Grace — your account is ready.' },
+    { id: 11, subject: 'Reset your password', from: 'auth@shop.test', to: ['grace@example.com'], time: '08:55',
+      request: null,
+      html: '<p>Click the link below to reset your password.</p>',
+      text: 'Click the link below to reset your password.',
+      raw: 'Subject: Reset your password\r\nFrom: auth@shop.test\r\nTo: grace@example.com\r\n\r\nClick the link below to reset your password.' },
+  ],
+};
+
+const S = {
+  sessionId: 's1',
+  activeTab: { s1: 't2', s2: 't3' },   // Email tab active by default in both
+  selected: { s1: 41, s2: 12 },
+  viewMode: 'html',
+  filter: '',
+  historyHighlight: null,              // set when "Sent by ..." is clicked
+};
+
+const tabs = () => TABS_BY_SESSION[S.sessionId];
+const activeTab = () => tabs().find(t => t.id === S.activeTab[S.sessionId]);
+const emails = () => EMAILS[S.sessionId];
+const selectedEmail = () => emails().find(e => e.id === S.selected[S.sessionId]);
+
+function strip() {
+  return `
+  <div class="strip">
+    <div class="strip-col">
+      <div class="lights"><span class="light r"></span><span class="light y"></span><span class="light g"></span></div>
+    </div>
+    <div class="strip-col tabgroup">
+      <div class="tabs">${tabs().map(tabEl).join('')}</div>
+    </div>
+    <div class="strip-col actions-col">
+      <span style="font-size:var(--fs-xs);color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em">Email capture mockup</span>
+    </div>
+  </div>`;
+}
+
+function tabEl(t) {
+  const sel = activeTab().id === t.id;
+  const label = t.kind === 'api' ? 'API' : 'Email';
+  const icon = t.kind === 'api' ? I.api : I.email;
+  return `<span class="tab" role="tab" aria-selected="${sel}" data-tab="${t.id}">
+    <span class="glyph">${icon}</span><span>${label}</span>
+  </span>`;
+}
+
+function sidebar() {
+  return `<aside class="sidebar">
+    <div class="side-head">Sessions</div>
+    <div class="side-list">
+      ${SESSIONS.map(s => `<button class="side-item" aria-current="${s.id === S.sessionId}" data-session="${s.id}">
+        <span class="name">${s.name}</span><span class="badge">${s.kind}</span></button>`).join('')}
+    </div>
+  </aside>`;
+}
+
+function filteredEmails() {
+  const q = S.filter.trim().toLowerCase();
+  if (!q) return emails();
+  return emails().filter(e =>
+    e.subject.toLowerCase().includes(q) ||
+    e.from.toLowerCase().includes(q) ||
+    e.to.some(t => t.toLowerCase().includes(q)));
+}
+
+function emailTool() {
+  const list = filteredEmails();
+  const sel = selectedEmail();
+  return `<div class="email-tool">
+    <div class="email-body">
+      <div class="inbox">
+        <div class="inbox-head">
+          Inbox
+          <button class="ghost-btn" style="height:22px;padding:0 7px;font-size:var(--fs-xs)">Clear inbox</button>
+        </div>
+        <div class="inbox-filter">
+          <input placeholder="Filter by subject or address…" value="${S.filter}" oninput="onFilter(this.value)">
+        </div>
+        <div class="inbox-list">
+          ${list.length === 0
+            ? `<div class="inbox-empty">${S.filter ? 'No messages match your filter.' : 'No mail caught yet. Point your backend’s SMTP host at localhost and the port shown below.'}</div>`
+            : list.map(e => `
+              <button class="inbox-row" aria-current="${sel && sel.id === e.id}" data-email="${e.id}">
+                <div class="top-line"><span class="subject">${e.subject}</span><span class="time">${e.time}</span></div>
+                <span class="from">${e.from}</span>
+              </button>`).join('')}
+        </div>
+        <div class="inbox-foot">Showing latest <b>5,000</b> — <b>212</b> earlier evicted</div>
+      </div>
+      <div class="viewer">
+        ${sel ? `
+          <div class="viewer-head">
+            <div class="subject">${sel.subject}</div>
+            <div class="addrs">from ${sel.from} · to ${sel.to.join(', ')}</div>
+            ${sel.request ? `
+              <button class="sent-by" data-jump-request>
+                Sent by <b>${sel.request.method} ${sel.request.url}</b> <span class="arrow">→ view in History</span>
+              </button>` : ''}
+          </div>
+          <div class="view-tabs">
+            ${['html','plain','raw','headers'].map(m => `
+              <button class="view-tab" aria-selected="${S.viewMode === m}" data-mode="${m}">${m[0].toUpperCase()+m.slice(1)}</button>`).join('')}
+          </div>
+          <div class="viewer-content">${viewerBody(sel)}</div>
+        ` : `<div class="viewer-empty">Select a message to read it.</div>`}
+      </div>
+    </div>
+    <div class="smtp-strip">Listening on <b>localhost:1025</b> — point your backend's SMTP config here.</div>
+  </div>`;
+}
+
+function viewerBody(e) {
+  if (S.viewMode === 'html') return `<div class="html-frame">${e.html}</div>`;
+  if (S.viewMode === 'plain') return `<pre class="body-pre">${e.text}</pre>`;
+  if (S.viewMode === 'raw') return `<pre class="body-pre">${e.raw}</pre>`;
+  return `<pre class="body-pre">${e.raw.split('\n\n')[0]}</pre>`;
+}
+
+/* Minimal History stand-in — just enough to show the jump landing. */
+function apiTool() {
+  const target = tabs().find(t => t.kind === 'email');
+  const linked = EMAILS[S.sessionId].filter(e => e.request);
+  return `<div class="history-list">
+    <div class="card">
+      <div class="card-head">History</div>
+      ${linked.map(e => `
+        <div class="history-row ${S.historyHighlight === e.id ? 'hi' : ''}">
+          <span class="m">${e.request.method} <span class="u">${e.request.url}</span></span>
+        </div>`).join('')}
+    </div>
+    <div class="history-note">${S.historyHighlight
+      ? 'Jumped here from the email’s "Sent by" link — this row is the request that sent it.'
+      : 'Click "Sent by ..." on a captured email to jump here.'}</div>
+  </div>`;
+}
+
+function toolBody() {
+  const t = activeTab();
+  return t.kind === 'api' ? apiTool() : emailTool();
+}
+
+function render() {
+  const root = document.getElementById('root');
+  root.innerHTML = `
+    ${strip()}
+    <div class="body-grid">
+      ${sidebar()}
+      <div class="panes"><div class="pane"><div class="pane-body">${toolBody()}</div></div></div>
+    </div>`;
+}
+
+window.onFilter = (v) => { S.filter = v; render(); document.querySelector('.inbox-filter input').focus(); document.querySelector('.inbox-filter input').selectionStart = document.querySelector('.inbox-filter input').selectionEnd = v.length; };
+
+document.addEventListener('click', e => {
+  const session = e.target.closest('[data-session]');
+  if (session) { S.sessionId = session.dataset.session; S.historyHighlight = null; render(); return; }
+
+  const tab = e.target.closest('[data-tab]');
+  if (tab) { S.activeTab[S.sessionId] = tab.dataset.tab; render(); return; }
+
+  const row = e.target.closest('[data-email]');
+  if (row) { S.selected[S.sessionId] = Number(row.dataset.email); render(); return; }
+
+  const mode = e.target.closest('[data-mode]');
+  if (mode) { S.viewMode = mode.dataset.mode; render(); return; }
+
+  const jump = e.target.closest('[data-jump-request]');
+  if (jump) {
+    const apiTab = tabs().find(t => t.kind === 'api');
+    if (apiTab) {
+      S.historyHighlight = selectedEmail().id;
+      S.activeTab[S.sessionId] = apiTab.id;
+      render();
+    }
+    return;
+  }
+});
+
+render();
+</script>
+</body>
+</html>
