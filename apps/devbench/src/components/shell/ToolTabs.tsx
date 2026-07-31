@@ -2,13 +2,7 @@ import { Tabs } from "../ui/Tabs";
 import { TABS } from "./tools";
 import type { TabId } from "../../store/useAppStore";
 
-/**
- * The tool tab bar. Styling is ours, ghosty per DESIGN.md — transparent until
- * hover, hairline border, no blur, `--radius-sm`.
- *
- * Base UI now comes via `../ui/Tabs`; see that file for why the dependency is
- * confined to one directory.
- */
+// Base UI via ../ui/Tabs; see that file for the confinement strategy.
 export function ToolTabs({
   value,
   onValueChange,
