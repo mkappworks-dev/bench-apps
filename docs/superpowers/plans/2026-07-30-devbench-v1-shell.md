@@ -978,6 +978,12 @@ export function ToolTabs({
           <Tabs.Tab
             key={tab.id}
             value={tab.id}
+            // Base UI 1.0.0-rc.0 renamed `[data-selected]` to `[data-active]`
+            // on `<Tabs.Tab>` (see its CHANGELOG). Setting `data-selected`
+            // explicitly from `value` is what makes the Tailwind variant below
+            // actually match — without it, the selected-tab highlight is dead
+            // CSS that never activates.
+            data-selected={tab.id === value ? "" : undefined}
             className="rounded-sm px-3 py-2 text-sm font-medium text-text-muted transition-colors duration-150 hover:bg-surface-2 data-[selected]:bg-surface-2 data-[selected]:text-text"
           >
             {tab.label}
@@ -2219,6 +2225,10 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
               <Tabs.Tab
                 key={p.id}
                 value={p.id}
+                // Base UI 1.0.0-rc.0 renamed `[data-selected]` to `[data-active]`
+                // on `<Tabs.Tab>` — see ToolTabs.tsx's identical fix (Task 4/6).
+                // Without this, the selected-pane highlight is dead CSS.
+                data-selected={p.id === pane ? "" : undefined}
                 className="rounded-sm p-2 text-left text-sm text-text-muted transition-colors duration-150 hover:bg-surface-2 data-[selected]:bg-surface-2 data-[selected]:text-text"
               >
                 {p.label}
