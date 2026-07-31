@@ -196,6 +196,8 @@ async fn save_correlation_history(
         status_code: response.status_code,
         response_body: response.body.clone(),
         duration_ms: response.duration_ms,
+        // Threaded through properly in Task 2.
+        session_id: None,
     };
     if let Err(e) = save_history_entry_impl(pool, entry).await {
         eprintln!("failed to save request history entry after a successful correlated request: {e}");
@@ -631,7 +633,7 @@ mod tests {
         )
         .await;
 
-        let entries = crate::commands::history::list_history_impl(&db.pool).await.unwrap();
+        let entries = crate::commands::history::list_history_impl(&db.pool, None).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].method, "POST");
         assert_eq!(entries[0].url, "/orders");
@@ -665,7 +667,7 @@ mod tests {
 
         mock.assert_async().await;
 
-        let entries = crate::commands::history::list_history_impl(&db.pool).await.unwrap();
+        let entries = crate::commands::history::list_history_impl(&db.pool, None).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].method, "GET");
         assert_eq!(entries[0].url, url);
