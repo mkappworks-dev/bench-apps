@@ -222,6 +222,86 @@ mod tests {
         assert!(list_history_impl(&db.pool, Some(&other.id)).await.unwrap().is_empty());
     }
 
+    // Every other test here starts from a fresh tempdir, so migration 0003 has
+    // only ever been exercised against an EMPTY `request_history`. The upgrade
+    // path that actually ships is the opposite one: an existing install with
+    // rows already in the table. This builds a genuinely pre-0003 database —
+    // the same file `LocalDb::connect` will open, migrated only as far as 0002
+    // — writes a row into it, and then opens it the way the app does, so the
+    // ALTER runs over real data.
+    #[tokio::test]
+    async fn a_row_written_before_the_migration_survives_it_as_unattributed() {
+        use sqlx::migrate::Migration;
+        use sqlx::sqlite::SqlitePoolOptions;
+        use std::borrow::Cow;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("devbench.db");
+        let url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let legacy_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+
+        // The real migrator with 0003 withheld — not hand-written DDL, so the
+        // starting point is byte-for-byte the schema v1 users are actually on.
+        let mut pre_session = sqlx::migrate!("./migrations");
+        let earlier: Vec<Migration> = pre_session
+            .migrations
+            .iter()
+            .filter(|m| m.version < 3)
+            .cloned()
+            .collect();
+        assert_eq!(earlier.len(), 2, "expected 0001 and 0002 to precede 0003");
+        pre_session.migrations = Cow::Owned(earlier);
+        pre_session.run(&legacy_pool).await.unwrap();
+
+        // Without this the test could silently degrade into a post-migration
+        // one, asserting nothing about the upgrade at all.
+        let columns: Vec<String> = sqlx::query("PRAGMA table_info(request_history)")
+            .fetch_all(&legacy_pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.get::<String, _>("name"))
+            .collect();
+        assert!(
+            !columns.iter().any(|c| c == "session_id"),
+            "this database is not pre-0003: {columns:?}"
+        );
+
+        sqlx::query(
+            "INSERT INTO request_history (id, method, url, status_code, response_body, duration_ms, fired_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind("legacy-1")
+        .bind("GET")
+        .bind("/legacy")
+        .bind(200_i64)
+        .bind("{}")
+        .bind(7_i64)
+        .bind("2026-01-01T00:00:00Z")
+        .execute(&legacy_pool)
+        .await
+        .unwrap();
+        legacy_pool.close().await;
+
+        // Exactly what launching the app against an existing install does.
+        let db = LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+
+        let all = list_history_impl(&db.pool, None).await.unwrap();
+        assert_eq!(all.len(), 1, "the migration must not drop existing history");
+        assert_eq!(all[0].url, "/legacy");
+        assert_eq!(all[0].session_id, None, "a pre-existing row lands unattributed");
+
+        // Unattributed means it belongs to no named session — not that it
+        // belongs to whichever one the user selects next.
+        let session = create_session_impl(&db.pool, "Order flow", None).await.unwrap();
+        assert!(list_history_impl(&db.pool, Some(&session.id)).await.unwrap().is_empty());
+    }
+
     // Archiving is reversible and must not touch history at all. The rows
     // stay attributed to the session throughout, so restoring it needs no
     // recovery step — nothing was ever hidden at the data layer.

@@ -109,10 +109,16 @@ export function ApiTab({
     try {
       const window = await invokeCollectCorrelationWindow(correlation.correlation_id);
       // Re-checked after the await, not just before it: this continuation lands
-      // a full correlation window later, and by then `prev` may be a different
-      // request's result in a different session. Splicing these log lines and
-      // emails into it would attribute one investigation's side effects to
-      // another request entirely.
+      // a full correlation window later, by which time the user may have
+      // switched investigation. It compares SESSIONS, so all it prevents is
+      // splicing one session's log lines and emails into another session's
+      // result. It does NOT prevent cross-request splicing WITHIN a session:
+      // two sends in the same session both pass this guard, so send 1's window
+      // resolving after send 2 has painted merges send 1's lines into send 2's
+      // rollup.
+      // TODO: close the same-session case by carrying `correlation_id` in
+      // `DisplayResult` and comparing that here as well — the session check
+      // alone cannot distinguish two requests fired in the same session.
       if (!belongsToCurrentSession(sendSessionId)) return;
       setResult((prev) =>
         prev

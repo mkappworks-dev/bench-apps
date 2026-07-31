@@ -71,10 +71,18 @@ export function SessionsSidebar({ onOpenSettings }: { onOpenSettings: () => void
       // failure.
       if (listed === null) return;
 
-      // Runs once, and only after the list resolves. Validating a stored id
-      // against a list that has not loaded would clear a perfectly good
-      // selection on every launch; re-running it after a create or archive
-      // would overwrite whatever the user just selected.
+      // Runs once per MOUNT — not once per launch — and only after the list
+      // resolves. Validating a stored id against a list that has not loaded
+      // would clear a perfectly good selection on every launch; re-running it
+      // after a create or archive would overwrite whatever the user just
+      // selected.
+      //
+      // Per mount, not per launch, because `App.tsx` returns a different tree
+      // for `route === "settings"`, which unmounts this component and destroys
+      // both refs — so coming back from Settings reconciles again. That is
+      // benign today (the stored id is written on every selection, so the
+      // second pass re-applies the same value), but the guard below is a
+      // per-mount latch, not a once-per-process one.
       if (reconciled.current) return;
       reconciled.current = true;
 

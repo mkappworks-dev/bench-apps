@@ -68,6 +68,43 @@ describe("HistorySidebar", () => {
     expect(list).toHaveBeenLastCalledWith("sess-b");
   });
 
+  // Refetching on its own only replaces the rows once the NEW read lands. In
+  // the gap the previous session's requests stay on screen — and stay
+  // clickable — under the new session's heading, and selecting one repopulates
+  // the response pane with a foreign session's request. That is the same
+  // misattribution ApiTab clears its result for on a session switch.
+  it("drops the previous session's rows while the new session's read is in flight", async () => {
+    const pending = deferred<HistoryEntry[]>();
+    vi.spyOn(tauriLib, "invokeListHistory")
+      .mockResolvedValueOnce([entry({ url: "/in-a", session_id: "sess-a" })])
+      .mockReturnValueOnce(pending.promise);
+
+    const { rerender } = render(<HistorySidebar onSelect={() => {}} sessionId="sess-a" />);
+    await waitFor(() => expect(screen.getByText("/in-a")).toBeInTheDocument());
+
+    rerender(<HistorySidebar onSelect={() => {}} sessionId="sess-b" />);
+
+    // Nothing resolved yet, so this is the in-flight gap, not the settled state.
+    expect(screen.queryByText("/in-a")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  // A stale failure must not label a fresh read either: clearing `failed` at
+  // the top of the effect is only safe because the `.catch` sets it again.
+  it("still reports a failure that happens after a successful read", async () => {
+    const list = vi
+      .spyOn(tauriLib, "invokeListHistory")
+      .mockResolvedValueOnce([entry({ url: "/in-a", session_id: "sess-a" })]);
+
+    const { rerender } = render(<HistorySidebar onSelect={() => {}} sessionId="sess-a" />);
+    await waitFor(() => expect(screen.getByText("/in-a")).toBeInTheDocument());
+
+    list.mockRejectedValueOnce(new Error("db is gone"));
+    rerender(<HistorySidebar onSelect={() => {}} sessionId="sess-b" />);
+
+    await waitFor(() => expect(screen.getByText("Couldn't load history.")).toBeInTheDocument());
+  });
+
   // Creating a session auto-selects it, so an empty scoped list is the very
   // first thing a new session shows. Rendering nothing at all there is
   // indistinguishable from a broken fetch.

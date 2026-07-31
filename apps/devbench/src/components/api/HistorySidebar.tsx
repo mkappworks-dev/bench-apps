@@ -25,6 +25,19 @@ export function HistorySidebar({
     // this session's heading — the exact failure scoping exists to prevent.
     let cancelled = false;
 
+    // Clear before the read, not just after it. Refetching leaves the previous
+    // session's rows on screen for the whole in-flight read — visible AND
+    // clickable under the new session's heading, and clicking one repopulates
+    // the response pane with a foreign session's request, which is the exact
+    // misattribution ApiTab's clear-on-switch effect exists to prevent. An
+    // empty/loading sidebar is honest; a stale one is not.
+    //
+    // Resetting `failed` here does not paper over a failed read: the `.catch`
+    // below sets it again, so a failure still ends on "Couldn't load history."
+    // It only stops a PREVIOUS failure from labelling a fresh read.
+    setEntries([]);
+    setFailed(false);
+
     // A failed read is tracked separately from an empty one. Collapsing both
     // into "no entries" would render a fetch failure as "No requests yet." —
     // telling the user they fired nothing when the truth is we could not
