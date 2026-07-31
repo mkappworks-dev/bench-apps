@@ -53,6 +53,8 @@ describe("AppStrip", () => {
 
   it("mirrors the body grid columns and collapses the chat column when closed", () => {
     const { container, rerender } = render(<AppStrip {...BASE} />);
+    // Read the raw style attribute, not .style.gridTemplateColumns: jsdom's CSSOM
+    // doesn't reliably round-trip shorthand grid properties containing var().
     expect(container.querySelector("header")!.getAttribute("style")).toContain(
       "grid-template-columns: var(--w-sidebar) 1fr var(--w-chat)",
     );
@@ -67,5 +69,12 @@ describe("AppStrip", () => {
     render(<AppStrip {...BASE} splitOpen onCloseSplit={onCloseSplit} />);
     fireEvent.click(screen.getByRole("button", { name: /close split/i }));
     expect(onCloseSplit).toHaveBeenCalled();
+  });
+
+  it("toggles the split view", () => {
+    const onToggleSplit = vi.fn();
+    render(<AppStrip {...BASE} onToggleSplit={onToggleSplit} />);
+    fireEvent.click(screen.getByRole("button", { name: /toggle split view/i }));
+    expect(onToggleSplit).toHaveBeenCalled();
   });
 });

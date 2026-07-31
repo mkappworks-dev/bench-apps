@@ -26,8 +26,9 @@ export function AppStrip({
 }) {
   return (
     <header
-      // data-tauri-drag-region makes the window movable once the native title bar is an overlay.
-      data-tauri-drag-region
+      // "deep" makes the whole subtree draggable (not just this element itself),
+      // while still treating interactive descendants (buttons, tabs) as non-draggable.
+      data-tauri-drag-region="deep"
       // Grid columns use inline style, not Tailwind class, to allow var() in template.
       style={{ gridTemplateColumns: `var(--w-sidebar) 1fr ${chatOpen ? "var(--w-chat)" : "auto"}` }}
       className="grid h-11 shrink-0 border-b border-border"

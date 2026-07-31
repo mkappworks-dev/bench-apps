@@ -40,8 +40,8 @@ export function NewSessionDialog({
         if (e.target === e.currentTarget) onCancel();
       }}
     >
-      {/* The ONLY glass surface in the app: transient overlay, so blur is
-          earned here and nowhere else (DESIGN.md). The
+      {/* Glass, per DESIGN.md: a transient overlay, so blur is earned here
+          (and by Menu's popup, the other transient surface). The
           `prefers-reduced-transparency` fallback is part of the rule, not an
           extra — a translucent panel with no fallback is a broken surface for
           anyone who has asked the OS to stop doing that. */}
