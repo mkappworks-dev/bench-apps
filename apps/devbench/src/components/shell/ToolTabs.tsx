@@ -42,6 +42,7 @@ export function ToolTabs({
           <Tabs.Tab
             key={tab.id}
             value={tab.id}
+            data-selected={tab.id === value ? "" : undefined}
             className="rounded-sm px-3 py-2 text-sm font-medium text-text-muted transition-colors duration-150 hover:bg-surface-2 data-[selected]:bg-surface-2 data-[selected]:text-text"
           >
             {tab.label}

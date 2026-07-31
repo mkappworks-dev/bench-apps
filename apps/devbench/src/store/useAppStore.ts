@@ -22,6 +22,12 @@ interface AppState {
   setRoute: (route: AppRoute) => void;
   activeSessionId: string | null;
   setActiveSessionId: (id: string | null) => void;
+  /** Whether the content area is split into two panes. Per-session UI state. */
+  splitOpen: boolean;
+  setSplitOpen: (open: boolean) => void;
+  /** The tool shown in the second pane. `activeTab` remains the first pane. */
+  secondaryTab: TabId;
+  setSecondaryTab: (tab: TabId) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -46,4 +52,8 @@ export const useAppStore = create<AppState>((set) => ({
   setRoute: (route) => set({ route }),
   activeSessionId: null,
   setActiveSessionId: (id) => set({ activeSessionId: id }),
+  splitOpen: false,
+  setSplitOpen: (open) => set({ splitOpen: open }),
+  secondaryTab: "db",
+  setSecondaryTab: (tab) => set({ secondaryTab: tab }),
 }));
