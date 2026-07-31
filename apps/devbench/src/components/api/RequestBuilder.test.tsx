@@ -14,8 +14,10 @@ describe("RequestBuilder", () => {
   it("fires a correlated request against the watched tables and reports the result", async () => {
     const onResult = vi.fn();
     vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
+      correlation_id: "corr-1",
       response: { status_code: 201, body: '{"id":8841}', duration_ms: 142 },
       table_diffs: [{ table: "orders", inserted: 1, updated: 0, deleted: 0 }],
+      db_error: null,
     });
 
     render(
@@ -28,8 +30,10 @@ describe("RequestBuilder", () => {
 
     await waitFor(() =>
       expect(onResult).toHaveBeenCalledWith({
+        correlation_id: "corr-1",
         response: { status_code: 201, body: '{"id":8841}', duration_ms: 142 },
         table_diffs: [{ table: "orders", inserted: 1, updated: 0, deleted: 0 }],
+        db_error: null,
       }),
     );
     expect(tauriLib.invokeRunCorrelatedRequest).toHaveBeenCalledWith({
@@ -66,8 +70,10 @@ describe("RequestBuilder", () => {
     expect(onResult).not.toHaveBeenCalled();
 
     resolveRequest({
+      correlation_id: "corr-2",
       response: { status_code: 200, body: "{}", duration_ms: 5 },
       table_diffs: [],
+      db_error: null,
     });
     await waitFor(() => expect(onResult).toHaveBeenCalledTimes(1));
   });

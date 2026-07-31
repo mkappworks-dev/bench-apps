@@ -29,3 +29,10 @@ body {
   color: var(--color-text);
   font-family: var(--font-sans);
 }
+
+@media (prefers-reduced-transparency: reduce) {
+  .backdrop-blur-\[24px\] {
+    backdrop-filter: none;
+    background: var(--surface) !important;
+  }
+}

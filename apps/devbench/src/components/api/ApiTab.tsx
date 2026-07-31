@@ -2,9 +2,15 @@ import { useState } from "react";
 import { RequestBuilder } from "./RequestBuilder";
 import { ResponseViewer } from "./ResponseViewer";
 import { HistorySidebar } from "./HistorySidebar";
-import { Rollup } from "../rollup/Rollup";
+import { Rollup, type RollupData } from "../rollup/Rollup";
 import { useAppStore } from "../../store/useAppStore";
-import type { CorrelationResult, DbConnectInput, FireRequestOutput, HistoryEntry, TableDiff } from "../../lib/tauri";
+import {
+  invokeCollectCorrelationWindow,
+  type CorrelationResult,
+  type DbConnectInput,
+  type FireRequestOutput,
+  type HistoryEntry,
+} from "../../lib/tauri";
 
 const DEV_CONNECTION: DbConnectInput = {
   host: "localhost",
@@ -14,18 +20,18 @@ const DEV_CONNECTION: DbConnectInput = {
   password: "postgres",
 };
 
-/**
- * What's shown in the response viewer / rollup. `tableDiffs` is deliberately
- * `TableDiff[] | null` rather than always `[]`: `null` means diff data isn't
- * available at all (a history-selected entry), `[]` means diffs were actually
- * computed and nothing changed — the two are not the same claim.
- */
 interface DisplayResult {
   response: FireRequestOutput;
-  tableDiffs: TableDiff[] | null;
+  rollup: RollupData;
 }
 
-export function ApiTab({ onOpenTableInDb }: { onOpenTableInDb: (table: string) => void }) {
+export function ApiTab({
+  onOpenTableInDb,
+  onOpenEmail,
+}: {
+  onOpenTableInDb: (table: string) => void;
+  onOpenEmail: (emailId: number | null) => void;
+}) {
   const watchedTables = useAppStore((s) => s.watchedTables);
   const setActiveTab = useAppStore((s) => s.setActiveTab);
   const [result, setResult] = useState<DisplayResult | null>(null);
@@ -39,13 +45,51 @@ export function ApiTab({ onOpenTableInDb }: { onOpenTableInDb: (table: string) =
     setError(null);
   }
 
-  function handleResult(correlation: CorrelationResult) {
+  // Phase 1 landed: paint the response and the DB diffs immediately, then let
+  // the correlation window finish in the background and fill in the Log chip.
+  async function handleResult(correlation: CorrelationResult) {
     setSending(false);
-    setResult({ response: correlation.response, tableDiffs: correlation.table_diffs });
-    // The backend writes a history entry as part of a successful correlated
-    // request; bump the refresh key so the sidebar (which only fetches on
-    // mount otherwise) picks up the new entry now, not on next remount.
+    setResult({
+      response: correlation.response,
+      rollup: {
+        tableDiffs: correlation.table_diffs,
+        watchedTableCount: watchedTables.size,
+        logLines: null,
+        logLinesTruncated: false,
+        emails: null,
+        emailsTruncated: false,
+        dbError: correlation.db_error,
+        windowOpen: true,
+      },
+    });
     setHistoryRefreshKey((k) => k + 1);
+
+    try {
+      const window = await invokeCollectCorrelationWindow(correlation.correlation_id);
+      setResult((prev) =>
+        prev
+          ? {
+              ...prev,
+              rollup: {
+                ...prev.rollup,
+                logLines: window.log_lines,
+                logLinesTruncated: window.log_lines_truncated,
+                emails: window.emails,
+                emailsTruncated: window.emails_truncated,
+                windowOpen: false,
+              },
+            }
+          : prev,
+      );
+    } catch {
+      // The window could not be collected (app restarted, id expired). Closing
+      // it as "not observed" is honest; claiming zero lines would not be.
+      setResult((prev) =>
+        prev
+          ? { ...prev, rollup: { ...prev.rollup, logLines: null, emails: null, windowOpen: false } }
+          : prev,
+      );
+    }
   }
 
   function handleError(message: string) {
@@ -58,13 +102,27 @@ export function ApiTab({ onOpenTableInDb }: { onOpenTableInDb: (table: string) =
     setError(null);
     setResult({
       response: { status_code: entry.status_code, body: entry.response_body, duration_ms: entry.duration_ms },
-      tableDiffs: null,
+      rollup: {
+        tableDiffs: null,
+        watchedTableCount: watchedTables.size,
+        logLines: null,
+        logLinesTruncated: false,
+        emails: null,
+        emailsTruncated: false,
+        dbError: null,
+        windowOpen: false,
+      },
     });
   }
 
-  function handleTableClick(table: string) {
+  function handleOpenDb(table: string) {
     setActiveTab("db");
     onOpenTableInDb(table);
+  }
+
+  function handleOpenEmail(emailId: number | null) {
+    setActiveTab("email");
+    onOpenEmail(emailId);
   }
 
   return (
@@ -89,10 +147,11 @@ export function ApiTab({ onOpenTableInDb }: { onOpenTableInDb: (table: string) =
             </div>
             <div className="rounded-lg border border-border bg-surface">
               <Rollup
-                diffs={result?.tableDiffs ?? null}
+                data={result?.rollup ?? null}
                 loading={sending}
-                watchedTableCount={watchedTables.size}
-                onTableClick={handleTableClick}
+                onOpenDb={handleOpenDb}
+                onOpenLog={() => setActiveTab("log")}
+                onOpenEmail={handleOpenEmail}
               />
             </div>
           </div>

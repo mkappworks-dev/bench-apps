@@ -1,4 +1,12 @@
+pub mod chat;
 pub mod correlation;
 pub mod db;
+pub mod email;
 pub mod history;
+pub mod logs;
+pub mod mcp;
+pub mod provider;
 pub mod request;
+pub mod sessions;
+pub mod settings;
+pub mod watched;
