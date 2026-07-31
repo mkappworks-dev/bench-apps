@@ -135,6 +135,8 @@ fn main() {
             commands::connections::delete_connection,
             commands::connections::set_connection_password,
             commands::connections::clear_connection_password,
+            commands::connections::test_connection,
+            commands::connections::test_saved_connection,
             commands::settings::get_settings,
             commands::settings::set_setting,
             commands::provider::get_provider_status,

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
+use crate::connection_registry::postgres_connection_string;
+use sqlx::postgres::PgPoolOptions;
 
 use crate::secrets::SecretStore;
 
@@ -255,6 +257,64 @@ pub async fn clear_connection_password(
     clear_connection_password_impl(secrets.as_ref(), &id).await
 }
 
+pub async fn test_connection_impl(input: &ConnectionInput) -> Result<(), String> {
+    let connection_string = postgres_connection_string(
+        &input.host,
+        input.port,
+        &input.database,
+        &input.username,
+        input.password.as_deref(),
+        &input.sslmode,
+    );
+    // A throwaway, uncached connect — this is a one-off validation, not
+    // something worth caching in ConnectionRegistry.
+    PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&connection_string)
+        .await
+        .map_err(|e| format!("connection failed: {e}"))?;
+    Ok(())
+}
+
+pub async fn test_saved_connection_impl(
+    pool: &SqlitePool,
+    secrets: &dyn SecretStore,
+    id: &str,
+) -> Result<(), String> {
+    let row = sqlx::query("SELECT host, port, database, username, sslmode FROM connections WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("failed to look up connection {id}: {e}"))?
+        .ok_or_else(|| format!("no connection with id {id}"))?;
+
+    let input = ConnectionInput {
+        name: String::new(),
+        engine: "postgres".to_string(),
+        host: row.get("host"),
+        port: row.get::<i64, _>("port") as u16,
+        database: row.get("database"),
+        username: row.get("username"),
+        sslmode: row.get("sslmode"),
+        password: secrets.get(&secret_account(id))?,
+    };
+    test_connection_impl(&input).await
+}
+
+#[tauri::command]
+pub async fn test_connection(input: ConnectionInput) -> Result<(), String> {
+    test_connection_impl(&input).await
+}
+
+#[tauri::command]
+pub async fn test_saved_connection(
+    db: tauri::State<'_, crate::local_db::LocalDb>,
+    secrets: tauri::State<'_, std::sync::Arc<dyn SecretStore>>,
+    id: String,
+) -> Result<(), String> {
+    test_saved_connection_impl(&db.pool, secrets.as_ref(), &id).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,5 +455,50 @@ mod tests {
         seed_default_connection_password_if_missing(&db.pool, &secrets).await.unwrap();
 
         assert_eq!(secrets.get(&secret_account("default")).unwrap().as_deref(), Some("postgres"));
+    }
+
+    fn real_local_postgres_input() -> ConnectionInput {
+        ConnectionInput {
+            name: "Test".to_string(),
+            engine: "postgres".to_string(),
+            host: std::env::var("PGHOST").unwrap_or_else(|_| "localhost".into()),
+            port: 5432,
+            database: std::env::var("PGDATABASE").unwrap_or_else(|_| "devbench_test".into()),
+            username: std::env::var("PGUSER").unwrap_or_else(|_| "postgres".into()),
+            sslmode: "disable".to_string(),
+            password: Some(std::env::var("PGPASSWORD").unwrap_or_else(|_| "postgres".into())),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connection_succeeds_against_a_real_local_postgres() {
+        let result = test_connection_impl(&real_local_postgres_input()).await;
+        assert!(result.is_ok(), "requires a real local Postgres — see CONTRIBUTING for setup: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn test_connection_reports_a_clear_error_for_a_wrong_password() {
+        let mut input = real_local_postgres_input();
+        input.password = Some("definitely-wrong".to_string());
+        let result = test_connection_impl(&input).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_saved_connection_resolves_the_stored_row_and_password() {
+        let (_dir, db) = db().await;
+        let secrets = InMemorySecretStore::default();
+        let created = create_connection_impl(&db.pool, &secrets, real_local_postgres_input()).await.unwrap();
+
+        let result = test_saved_connection_impl(&db.pool, &secrets, &created.id).await;
+        assert!(result.is_ok(), "requires a real local Postgres — see CONTRIBUTING for setup: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn test_saved_connection_fails_clearly_for_an_unknown_id() {
+        let (_dir, db) = db().await;
+        let secrets = InMemorySecretStore::default();
+        let result = test_saved_connection_impl(&db.pool, &secrets, "does-not-exist").await;
+        assert!(result.is_err());
     }
 }
