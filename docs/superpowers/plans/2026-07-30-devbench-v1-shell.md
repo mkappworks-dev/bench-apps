@@ -2344,8 +2344,13 @@ pub async fn run_correlated_request(
 
 Every existing call site in the Plan 2 and Plan 3 test modules, plus `tests/smoke_test.rs`, gains a final `DEFAULT_CORRELATION_WINDOW_MS` argument.
 
-Add one test proving the setting is honoured, in `correlation.rs`'s test module:
+Add one test proving the setting is honoured, in `correlation.rs`'s test module. The differentiator has to be more than an empty-result assertion at a time past both candidate window ends — otherwise the test passes identically whether `window_ms` is threaded through or silently replaced by `DEFAULT_CORRELATION_WINDOW_MS` (found during integration: collecting at `now_ms=40_001` with nothing ever captured proves nothing, since `remaining_ms` is negative either way and an empty `between()` result doesn't depend on which upper bound was in effect). Push a message at a timestamp only one of the two candidate window ends would include:
 ```rust
+    // A hardcoded 5s default opened at now_ms=10_000 would end at 15_000; the
+    // real window_ms=30_000 passed below ends at 40_000. Pushing a message at
+    // captured_at_ms=25_000 — strictly after the wrong bound, strictly before
+    // the right one — means the assertion below only holds if window_ms was
+    // genuinely threaded through, not silently replaced by the constant.
     #[tokio::test]
     async fn the_window_length_comes_from_the_caller_not_a_hardcoded_constant() {
         let conn = test_connection();
@@ -2353,8 +2358,22 @@ Add one test proving the setting is honoured, in `correlation.rs`'s test module:
         let emails = listening_email_state();
         let registry = CorrelationRegistry::new();
 
+        let store_for_mock = emails.store();
         let mut server = mockito::Server::new_async().await;
-        let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
+        let mock = server
+            .mock("GET", "/ping")
+            .with_status(200)
+            .with_body_from_request(move |_req| {
+                store_for_mock.lock().unwrap().push(
+                    "orders@shop.test",
+                    &["customer@example.com".into()],
+                    TEST_EMAIL,
+                    25_000,
+                );
+                b"pong".to_vec()
+            })
+            .create_async()
+            .await;
 
         let result = run_correlated_request_impl_with_registry(
             FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
@@ -2370,12 +2389,21 @@ Add one test proving the setting is honoured, in `correlation.rs`'s test module:
         .unwrap();
         mock.assert_async().await;
 
-        // Collecting at default-window + 1 must still block, because this
-        // window runs to 40_000. Asking at 40_001 returns immediately.
+        // Collecting at 40_001 is past the REAL window's end (40_000), so no
+        // sleep occurs regardless of which window length was used — the
+        // differentiator is entirely in whether the 25_000-timestamped
+        // message survives EmailStore::between's upper bound.
         let window = collect_correlation_window_impl(&registry, &logs, &emails, result.correlation_id, 40_001)
             .await
             .unwrap();
-        assert_eq!(window.emails, Some(vec![]));
+
+        // If window_ms had silently fallen back to the 5s default, the
+        // window would have closed at 15_000 and this message (captured at
+        // 25_000) would be excluded, failing this assertion.
+        let captured = window.emails.expect("the catcher is running, so emails must be Some");
+        assert_eq!(captured.len(), 1, "a real 30s window must include mail captured at 25_000");
+        assert_eq!(captured[0].subject, "Order confirmation #8841");
+        assert_eq!(captured[0].to, vec!["customer@example.com".to_string()]);
     }
 ```
 
