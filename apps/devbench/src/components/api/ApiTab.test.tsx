@@ -61,6 +61,7 @@ describe("ApiTab", () => {
       response: { status_code: 201, body: '{"id":1}', duration_ms: 10 },
       table_diffs: [{ table: "orders", inserted: 1, updated: 0, deleted: 0 }],
       db_error: null,
+      history_id: null,
     });
     // Left pending: the DB chip is filled in from Phase 1 data, before the
     // correlation window closes, so this test never needs to resolve it.
@@ -160,7 +161,7 @@ describe("ApiTab", () => {
       .spyOn(tauriLib, "invokeCollectCorrelationWindow")
       .mockResolvedValue({ log_lines: [], log_lines_truncated: false, emails: [], emails_truncated: false });
 
-    render(<ApiTab onOpenTableInDb={() => {}} onOpenEmail={() => {}} />);
+    render(<ApiTab tab={tab()} onPatchState={() => {}} onOpenDb={() => {}} onOpenLog={() => {}} onOpenEmail={() => {}} />);
     fireEvent.change(screen.getByPlaceholderText("/api/orders"), {
       target: { value: "/api/orders" },
     });
