@@ -34,3 +34,6 @@ target/
 # Superpowers SDD scratch workspace (ledgers, briefs, review packages —
 # per-session artifacts, not project history)
 .superpowers/
+
+# Playwright MCP scratch output (screenshots/snapshots from ad-hoc verification)
+.playwright-mcp/
