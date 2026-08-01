@@ -90,6 +90,6 @@ describe("EmailInbox", () => {
 
   it("does not show an eviction note when nothing has been evicted", () => {
     render(<EmailInbox emails={emails} evictedThroughId={0} selectedId={null} onSelect={() => {}} onClear={() => {}} />);
-    expect(screen.queryByText(/earlier evicted/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/older messages were evicted/i)).not.toBeInTheDocument();
   });
 });
