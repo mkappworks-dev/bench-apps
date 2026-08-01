@@ -75,6 +75,9 @@ pub async fn list_history_impl(
     pool: &sqlx::SqlitePool,
     session_id: Option<&str>,
 ) -> Result<Vec<HistoryEntry>, String> {
+    // Two distinct queries, not one `(?1 IS NULL OR session_id = ?1)` predicate
+    // — that reads as clever but risks matching unattributed rows into a named
+    // session, which must never happen.
     const COLUMNS: &str =
         "SELECT id, method, url, status_code, response_body, duration_ms, fired_at, session_id, \
          request_headers, request_body, response_headers \
