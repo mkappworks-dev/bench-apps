@@ -16,11 +16,8 @@ fn test_connection() -> DbConnectInput {
     }
 }
 
-// Task 4 (v2 plan) threaded a `db: &sqlx::SqlitePool` parameter through
-// `run_correlated_request_impl_with_registry` and `collect_correlation_window_impl`
-// so correlation reads captured emails from SQLite instead of `EmailState`'s
-// removed in-memory store. This file predates that plan and isn't listed in
-// it, so it needs the same local SQLite pool the plan's own tests use.
+// Correlation now reads captured mail from SQLite, so this file needs a
+// local pool too.
 async fn local_db() -> (tempfile::TempDir, LocalDb) {
     let dir = tempfile::tempdir().unwrap();
     let db = LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
@@ -379,7 +376,7 @@ async fn firing_a_request_correlates_db_writes_log_lines_and_sent_mail() {
     // catcher timestamps captured mail with `chrono::Utc::now()` (a real
     // epoch-millis value, ~1.7+ trillion) rather than a synthetic small
     // integer, so the window bound must be drawn from the same real clock or
-    // `EmailStore::between`'s upper-bound check would reject every real
+    // `between_captured_emails`'s upper-bound check would reject every real
     // capture.
     let started_at_ms = chrono::Utc::now().timestamp_millis();
 

@@ -229,7 +229,7 @@ pub async fn run_correlated_request_impl_with_registry(
     connection: DbConnectInput,
     watched_tables: Vec<String>,
     logs: &LogState,
-    emails: &EmailState,
+    _emails: &EmailState,
     db: &sqlx::SqlitePool,
     registry: &CorrelationRegistry,
     now_ms: i64,
@@ -838,6 +838,8 @@ mod tests {
         mock.assert_async().await;
         assert!(!result.correlation_id.is_empty());
 
+        // The tailer has not run since the write; drive it explicitly with a
+        // capture time inside the window.
         logs.poll_all(10_100);
 
         let window = collect_correlation_window_impl(
@@ -950,16 +952,24 @@ mod tests {
         let mock = server
             .mock("POST", "/orders")
             .with_status(201)
+            // Inserting from inside the mock's body callback puts the capture
+            // strictly between the request being sent and the response
+            // landing — the same shape as a real backend sending mail
+            // mid-request, without needing a live SMTP round trip here.
+            //
             // `with_body_from_request`'s closure runs synchronously on
             // mockito's own already-entered dedicated current-thread Tokio
-            // runtime (see the detailed explanation on
+            // runtime — `tauri::async_runtime::block_on` cannot be nested in
+            // there, and panics with "Cannot start a runtime from within a
+            // runtime" (verified). Spawning a plain OS thread with its own
+            // throwaway runtime and `.join()`-ing it, the same bridging shape
             // `run_correlated_request_reports_only_tables_that_actually_changed`
-            // above) — `tauri::async_runtime::block_on` cannot be nested in
-            // there any more than `tokio::task::block_in_place` can; it panics
-            // with "Cannot start a runtime from within a runtime" (verified).
-            // Spawning a plain OS thread with its own throwaway runtime and
-            // `.join()`-ing it, exactly like that Postgres test does, is what
-            // actually works here.
+            // above uses, is what actually works here — though unlike that
+            // test, this reuses `edb`'s existing pool (cloned) instead of
+            // opening a fresh one; that's fine because sqlx's SQLite driver
+            // parks each connection on its own worker thread, but it's not
+            // the same "never drive a resource from a runtime other than the
+            // one that created it" discipline that test follows.
             .with_body_from_request(move |_req| {
                 let pool = pool_for_mock.clone();
                 std::thread::spawn(move || {
@@ -1052,6 +1062,11 @@ mod tests {
         let mock = server
             .mock("POST", "/orders")
             .with_status(201)
+            // A real sleep here simulates a backend slow enough to outlast
+            // `WINDOW_MS` on its own, then inserts the "side effect" email
+            // once the delay elapses — capturing real wall-clock time at the
+            // moment of the insert, exactly like a real SMTP catcher would.
+            //
             // Same mockito-runtime-nesting hazard as the test above — see the
             // comment there. The OS-thread + throwaway-runtime bridge is used
             // again here instead of `tauri::async_runtime::block_on`.
@@ -1100,6 +1115,8 @@ mod tests {
 
         mock.assert_async().await;
 
+        // Collect comfortably past the CORRECT window end so the internal
+        // sleep in `collect_correlation_window_impl` is skipped entirely.
         let collect_at_ms = chrono::Utc::now().timestamp_millis() + 1_000;
         let window = collect_correlation_window_impl(
             &registry,
@@ -1224,10 +1241,11 @@ mod tests {
     // silently ignores it and hardcodes `DEFAULT_CORRELATION_WINDOW_MS`
     // (5_000) instead: 40_001 is past BOTH windows' ends (40_000 and 15_000),
     // so `remaining_ms` is negative either way and no blocking occurs; and
-    // with no email ever pushed, `EmailStore::between`'s upper bound never
-    // gets a chance to matter, so an empty result says nothing about which
-    // window length was actually used. Rewritten below to push a message at a
-    // timestamp that only one of the two candidate window ends would include.
+    // with no email ever pushed, `between_captured_emails`'s upper bound
+    // never gets a chance to matter, so an empty result says nothing about
+    // which window length was actually used. Rewritten below to push a
+    // message at a timestamp that only one of the two candidate window ends
+    // would include.
     #[tokio::test]
     async fn the_window_length_comes_from_the_caller_not_a_hardcoded_constant() {
         let conn = test_connection();
@@ -1241,6 +1259,13 @@ mod tests {
         let mock = server
             .mock("GET", "/ping")
             .with_status(200)
+            // Captured at 25_000: strictly AFTER where a hardcoded 5s default
+            // window opened at 10_000 would end (10_000 + 5_000 = 15_000),
+            // but strictly BEFORE where the real 30s window this test passes
+            // ends (10_000 + 30_000 = 40_000). Only a `window_ms` that was
+            // genuinely threaded through as 30_000 — not silently replaced by
+            // the 5s default — includes this message in the collected window.
+            //
             // Same mockito-runtime-nesting hazard as the earlier tests in this
             // file — see the comment on
             // `a_correlation_window_captures_mail_sent_during_the_request`.
@@ -1279,16 +1304,23 @@ mod tests {
             &edb.pool,
             &registry,
             10_000,
-            30_000,
+            30_000, // a 30s window, not the 5s default
         )
         .await
         .unwrap();
         mock.assert_async().await;
 
+        // Collecting at 40_001 is past the REAL window's end (40_000), so no
+        // sleep occurs here regardless of which window length was used —
+        // the differentiator is entirely in whether the 25_000-timestamped
+        // message above survives `between_captured_emails`'s upper bound.
         let window = collect_correlation_window_impl(&registry, &logs, &emails, &edb.pool, result.correlation_id, 40_001)
             .await
             .unwrap();
 
+        // If `window_ms` had silently fallen back to the 5s default, the
+        // window would have closed at 15_000 and this message (captured at
+        // 25_000) would be excluded, failing this assertion.
         let captured = window.emails.expect("the catcher is running, so emails must be Some");
         assert_eq!(captured.len(), 1, "a real 30s window must include mail captured at 25_000");
         assert_eq!(captured[0].subject, "Order confirmation #8841");
