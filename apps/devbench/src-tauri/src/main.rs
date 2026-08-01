@@ -68,12 +68,16 @@ fn main() {
                 Ok((db, port))
             });
 
+            let logs = Arc::new(LogState::new());
+            app.manage(Arc::clone(&logs));
+
             // On success this is what the SMTP catcher binds below; on
             // failure there's no pool to persist captured mail into, so the
             // catcher never starts and the frontend shows a blocking error
             // screen instead (via `StartupStatus`, always managed either way).
             let smtp_target = match init_result {
                 Ok((db, smtp_port)) => {
+                    tauri::async_runtime::block_on(devbench::commands::logs::restore_persisted_sources(&db.pool, &logs));
                     let smtp_pool = db.pool.clone();
                     handle.manage(db);
                     handle.manage(StartupStatus { db_error: None });
@@ -88,12 +92,9 @@ fn main() {
                 }
             };
 
-            let logs = Arc::new(LogState::new());
-            app.manage(Arc::clone(&logs));
-
-            // One background task polls every source. It outlives every
-            // request; correlation windows read from the buffer it fills,
-            // which is why no lines are lost between the two correlation calls.
+            // One background task polls every FILE source. Command sources
+            // capture via their own reader tasks, started when they're
+            // spawned (restore, above, or add_log_source later).
             tauri::async_runtime::spawn(async move {
                 let mut ticker =
                     tokio::time::interval(std::time::Duration::from_millis(LOG_POLL_INTERVAL_MS));
