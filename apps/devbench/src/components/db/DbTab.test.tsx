@@ -225,6 +225,51 @@ describe("DbTab", () => {
     );
   });
 
+  // Regression guard for a bug caught in review: the previous table's grid
+  // (with its own hasNextPage and sort columns) stayed mounted and clickable
+  // for the entire window between selecting a new table and that table's
+  // first fetch resolving. A Next click landed during that window before
+  // requested an offset against a table whose page 0 had never been fetched.
+  // This interacts *during* the loading window rather than after
+  // `waitFor`-settling it, which is the only way to catch this class of bug.
+  it("makes the grid's Next control unavailable while switching to a table that hasn't loaded yet", async () => {
+    const deferredPaymentsFetch: { resolve: ((value: TableRows) => void) | null } = { resolve: null };
+    const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation((_conn, t) => {
+      if (t === "orders") {
+        return Promise.resolve({
+          columns: ["id"],
+          rows: Array.from({ length: 101 }, (_, i) => [String(i)]),
+          pk_column: "id",
+        });
+      }
+      return new Promise<TableRows>((resolve) => {
+        deferredPaymentsFetch.resolve = resolve;
+      });
+    });
+    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([
+      { schema: "public", name: "orders" },
+      { schema: "public", name: "payments" },
+    ]);
+
+    render(<DbTabHarness initialTable="orders" />);
+    await waitFor(() => expect(listRows).toHaveBeenCalledWith("c1", "orders", expect.anything()));
+    expect(await screen.findByRole("button", { name: "Next" })).not.toBeDisabled();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Browse payments" }));
+
+    // Still inside payments' loading window: orders' grid — and its Next
+    // button, which described orders' pages, not payments' — must be gone,
+    // not merely disabled-but-present-and-stale.
+    expect(screen.queryByRole("button", { name: "Next" })).not.toBeInTheDocument();
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+    expect(listRows).not.toHaveBeenCalledWith("c1", "payments", expect.objectContaining({ offset: 100 }));
+
+    expect(deferredPaymentsFetch.resolve).not.toBeNull();
+    deferredPaymentsFetch.resolve?.({ columns: ["id"], rows: [["1"]], pk_column: "id" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Next" })).toBeDisabled());
+    expect(listRows).toHaveBeenLastCalledWith("c1", "payments", expect.objectContaining({ orderByColumn: null, offset: 0 }));
+  });
+
   // Regression guard for the race a naive implementation hits: firing a sort
   // click while a previous one is still in flight must not let the slower,
   // now-superseded response overwrite the newer one once it finally resolves.

@@ -63,18 +63,22 @@ export function DbTab({
 
   // A new table may not even have the old one's sort column, and its rows
   // start over at offset 0 — same reasoning one level up for a connection
-  // switch underneath an already-open table.
+  // switch underneath an already-open table. Clearing `tableRows` here too
+  // (not just resetting sort/page/hasNextPage) drops the *previous* table's
+  // grid from the DOM for the duration of the switch — leaving it mounted
+  // would keep its stale hasNextPage/sort-column controls clickable against
+  // a table whose page 0 hasn't been fetched yet under the new selection.
   useEffect(() => {
     setSortColumn(null);
     setSortDescending(false);
     setPage(0);
+    setHasNextPage(false);
+    setTableRows(null);
+    setError(null);
     if (table && activeConnectionId) {
       void fetchRows(table, activeConnectionId, null, false, 0);
     } else {
       requestIdRef.current++;
-      setTableRows(null);
-      setHasNextPage(false);
-      setError(null);
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
