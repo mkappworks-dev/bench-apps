@@ -3,15 +3,17 @@ import { Tabs } from "../ui/Tabs";
 import { GeneralPane } from "./GeneralPane";
 import { AppearancePane } from "./AppearancePane";
 import { ProviderPane } from "./ProviderPane";
+import { ConnectionsPane } from "./ConnectionsPane";
 import { McpPane } from "./McpPane";
 import { ArchivePane } from "./ArchivePane";
 
-type PaneId = "general" | "appearance" | "provider" | "mcp" | "archive";
+type PaneId = "general" | "appearance" | "provider" | "connections" | "mcp" | "archive";
 
 const PANES: { id: PaneId; label: string }[] = [
   { id: "general", label: "General" },
   { id: "appearance", label: "Appearance" },
   { id: "provider", label: "Provider" },
+  { id: "connections", label: "Connections" },
   { id: "mcp", label: "MCP" },
   { id: "archive", label: "Archive" },
 ];
@@ -67,6 +69,9 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
           </Tabs.Panel>
           <Tabs.Panel value="provider" className="p-6">
             <ProviderPane />
+          </Tabs.Panel>
+          <Tabs.Panel value="connections" className="p-6">
+            <ConnectionsPane />
           </Tabs.Panel>
           <Tabs.Panel value="mcp" className="p-6">
             <McpPane />

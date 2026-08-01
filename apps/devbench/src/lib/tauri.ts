@@ -338,3 +338,59 @@ export function invokeSetTabState(id: string, state: string): Promise<void> {
 export function invokeMoveTab(id: string, pane: string, ordinal: number): Promise<void> {
   return invoke("move_tab", { id, pane, ordinal });
 }
+
+export interface ConnectionSummary {
+  id: string;
+  name: string;
+  engine: string;
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  sslmode: string;
+  /** The password itself is never sent to the frontend — only whether one is stored. */
+  has_password: boolean;
+}
+
+export interface ConnectionInput {
+  name: string;
+  engine: string;
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  sslmode: string;
+  password?: string | null;
+}
+
+export function invokeListConnections(): Promise<ConnectionSummary[]> {
+  return invoke("list_connections");
+}
+
+export function invokeCreateConnection(input: ConnectionInput): Promise<ConnectionSummary> {
+  return invoke("create_connection", { input });
+}
+
+export function invokeUpdateConnection(id: string, input: ConnectionInput): Promise<ConnectionSummary> {
+  return invoke("update_connection", { id, input });
+}
+
+export function invokeDeleteConnection(id: string): Promise<void> {
+  return invoke("delete_connection", { id });
+}
+
+export function invokeSetConnectionPassword(id: string, password: string): Promise<void> {
+  return invoke("set_connection_password", { id, password });
+}
+
+export function invokeClearConnectionPassword(id: string): Promise<void> {
+  return invoke("clear_connection_password", { id });
+}
+
+export function invokeTestConnection(input: ConnectionInput): Promise<void> {
+  return invoke("test_connection", { input });
+}
+
+export function invokeTestSavedConnection(id: string): Promise<void> {
+  return invoke("test_saved_connection", { id });
+}

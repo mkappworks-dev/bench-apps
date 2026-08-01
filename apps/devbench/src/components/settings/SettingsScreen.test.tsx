@@ -21,13 +21,14 @@ describe("SettingsScreen", () => {
     vi.spyOn(tauriLib, "invokeListMcpServers").mockResolvedValue([]);
   });
 
-  it("offers the five settings sections from the spec", async () => {
+  it("offers the six settings sections from the spec", async () => {
     render(<SettingsScreen onBack={() => {}} />);
     await waitFor(() => screen.getByRole("heading", { name: "General" }));
     expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual([
       "General",
       "Appearance",
       "Provider",
+      "Connections",
       "MCP",
       "Archive",
     ]);
