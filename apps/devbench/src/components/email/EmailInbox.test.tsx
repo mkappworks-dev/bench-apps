@@ -24,33 +24,68 @@ const emails: EmailSummary[] = [
 
 describe("EmailInbox", () => {
   it("lists subjects and senders", () => {
-    render(<EmailInbox emails={emails} selectedId={null} onSelect={() => {}} onClear={() => {}} />);
+    render(<EmailInbox emails={emails} evictedThroughId={0} selectedId={null} onSelect={() => {}} onClear={() => {}} />);
     expect(screen.getByText("Order confirmation #8841")).toBeInTheDocument();
     expect(screen.getByText("orders@shop.test")).toBeInTheDocument();
   });
 
   it("marks the selected message", () => {
-    render(<EmailInbox emails={emails} selectedId={2} onSelect={() => {}} onClear={() => {}} />);
+    render(<EmailInbox emails={emails} evictedThroughId={0} selectedId={2} onSelect={() => {}} onClear={() => {}} />);
     expect(screen.getByRole("button", { name: /Order confirmation/ })).toHaveAttribute("aria-current", "true");
     expect(screen.getByRole("button", { name: /Welcome to the beta/ })).toHaveAttribute("aria-current", "false");
   });
 
   it("selects a message when clicked", () => {
     const onSelect = vi.fn();
-    render(<EmailInbox emails={emails} selectedId={null} onSelect={onSelect} onClear={() => {}} />);
+    render(<EmailInbox emails={emails} evictedThroughId={0} selectedId={null} onSelect={onSelect} onClear={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /Welcome to the beta/ }));
     expect(onSelect).toHaveBeenCalledWith(1);
   });
 
   it("shows an empty state that explains the SMTP setup", () => {
-    render(<EmailInbox emails={[]} selectedId={null} onSelect={() => {}} onClear={() => {}} />);
+    render(<EmailInbox emails={[]} evictedThroughId={0} selectedId={null} onSelect={() => {}} onClear={() => {}} />);
     expect(screen.getByText(/point your backend's SMTP/i)).toBeInTheDocument();
   });
 
   it("clears the inbox", () => {
     const onClear = vi.fn();
-    render(<EmailInbox emails={emails} selectedId={null} onSelect={() => {}} onClear={onClear} />);
+    render(<EmailInbox emails={emails} evictedThroughId={0} selectedId={null} onSelect={() => {}} onClear={onClear} />);
     fireEvent.click(screen.getByRole("button", { name: "Clear inbox" }));
     expect(onClear).toHaveBeenCalled();
+  });
+
+  it("filters the list by subject", () => {
+    render(<EmailInbox emails={emails} evictedThroughId={0} selectedId={null} onSelect={() => {}} onClear={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText(/Filter by subject or address/i), { target: { value: "beta" } });
+    expect(screen.getByText("Welcome to the beta")).toBeInTheDocument();
+    expect(screen.queryByText("Order confirmation #8841")).not.toBeInTheDocument();
+  });
+
+  it("filters the list by sender address", () => {
+    render(<EmailInbox emails={emails} evictedThroughId={0} selectedId={null} onSelect={() => {}} onClear={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText(/Filter by subject or address/i), {
+      target: { value: "orders@shop.test" },
+    });
+    expect(screen.getByText("Order confirmation #8841")).toBeInTheDocument();
+    expect(screen.queryByText("Welcome to the beta")).not.toBeInTheDocument();
+  });
+
+  it("says so when no message matches the filter", () => {
+    render(<EmailInbox emails={emails} evictedThroughId={0} selectedId={null} onSelect={() => {}} onClear={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText(/Filter by subject or address/i), {
+      target: { value: "nonexistent" },
+    });
+    expect(screen.getByText("No messages match your filter.")).toBeInTheDocument();
+  });
+
+  it("shows how many earlier messages were evicted", () => {
+    render(<EmailInbox emails={emails} evictedThroughId={212} selectedId={null} onSelect={() => {}} onClear={() => {}} />);
+    expect(screen.getByText(/212/)).toBeInTheDocument();
+    expect(screen.getByText(/earlier evicted/)).toBeInTheDocument();
+  });
+
+  it("does not show an eviction note when nothing has been evicted", () => {
+    render(<EmailInbox emails={emails} evictedThroughId={0} selectedId={null} onSelect={() => {}} onClear={() => {}} />);
+    expect(screen.queryByText(/earlier evicted/)).not.toBeInTheDocument();
   });
 });

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { EmailSummary } from "../../lib/tauri";
 
 function shortTime(ms: number): string {
@@ -5,17 +6,32 @@ function shortTime(ms: number): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
+function matchesFilter(email: EmailSummary, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    email.subject.toLowerCase().includes(q) ||
+    email.from.toLowerCase().includes(q) ||
+    email.to.some((addr) => addr.toLowerCase().includes(q))
+  );
+}
+
 export function EmailInbox({
   emails,
+  evictedThroughId,
   selectedId,
   onSelect,
   onClear,
 }: {
   emails: EmailSummary[];
+  evictedThroughId: number;
   selectedId: number | null;
   onSelect: (id: number) => void;
   onClear: () => void;
 }) {
+  const [filter, setFilter] = useState("");
+  const filtered = emails.filter((email) => matchesFilter(email, filter));
+
   return (
     <aside className="flex w-70 min-w-70 flex-col border-r border-border">
       <div className="flex items-center justify-between border-b border-border p-2.5 text-xs font-bold text-text-muted">
@@ -26,14 +42,26 @@ export function EmailInbox({
           </button>
         ) : null}
       </div>
+      {emails.length > 0 ? (
+        <div className="border-b border-border p-2">
+          <input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter by subject or address…"
+            className="w-full rounded-sm border border-border bg-bg px-2.5 py-1.5 text-xs text-text placeholder:text-text-faint"
+          />
+        </div>
+      ) : null}
       {emails.length === 0 ? (
         <div className="p-4 text-xs text-text-faint">
           No mail caught yet. Point your backend's SMTP host at{" "}
           <code className="font-mono">localhost</code> and the port shown below.
         </div>
+      ) : filtered.length === 0 ? (
+        <div className="p-4 text-xs text-text-faint">No messages match your filter.</div>
       ) : (
         <div className="flex flex-col overflow-y-auto">
-          {emails.map((email) => (
+          {filtered.map((email) => (
             <button
               key={email.id}
               onClick={() => onSelect(email.id)}
@@ -53,6 +81,12 @@ export function EmailInbox({
           ))}
         </div>
       )}
+      {evictedThroughId > 0 ? (
+        <div className="border-t border-border px-3 py-1.5 text-[11px] text-text-faint">
+          Showing latest <b className="text-text-muted">5,000</b> —{" "}
+          <b className="text-text-muted">{evictedThroughId}</b> earlier evicted
+        </div>
+      ) : null}
     </aside>
   );
 }

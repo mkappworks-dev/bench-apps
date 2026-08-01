@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { EmailInbox } from "./EmailInbox";
 import { EmailViewer } from "./EmailViewer";
+import { useAppStore } from "../../store/useAppStore";
 import {
   invokeClearEmails,
   invokeGetEmail,
@@ -13,9 +14,13 @@ import {
 
 /** How often the inbox is refreshed. Mail is far rarer than log lines. */
 const POLL_INTERVAL_MS = 1_000;
+/** Matches the backend's global retention cap (`MAX_CAPTURED_EMAILS`). */
+const LIST_LIMIT = 5_000;
 
 export function EmailTab({ focusEmailId = null }: { focusEmailId?: number | null }) {
+  const activeSessionId = useAppStore((s) => s.activeSessionId);
   const [emails, setEmails] = useState<EmailSummary[]>([]);
+  const [evictedThroughId, setEvictedThroughId] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selected, setSelected] = useState<CapturedEmail | null>(null);
   const [status, setStatus] = useState<SmtpStatus | null>(null);
@@ -23,11 +28,13 @@ export function EmailTab({ focusEmailId = null }: { focusEmailId?: number | null
 
   const refresh = useCallback(async () => {
     try {
-      setEmails(await invokeListEmails(200));
+      const result = await invokeListEmails(activeSessionId, LIST_LIMIT);
+      setEmails(result.emails);
+      setEvictedThroughId(result.evicted_through_id);
     } catch {
       // A transient IPC failure is not worth tearing the pane down.
     }
-  }, []);
+  }, [activeSessionId]);
 
   useEffect(() => {
     invokeSmtpStatus().then(setStatus).catch(() => setStatus(null));
@@ -69,7 +76,7 @@ export function EmailTab({ focusEmailId = null }: { focusEmailId?: number | null
 
   async function handleClear() {
     try {
-      await invokeClearEmails();
+      await invokeClearEmails(activeSessionId);
       setSelectedId(null);
       await refresh();
     } catch (err) {
@@ -82,6 +89,7 @@ export function EmailTab({ focusEmailId = null }: { focusEmailId?: number | null
       <div className="flex flex-1 overflow-hidden">
         <EmailInbox
           emails={emails}
+          evictedThroughId={evictedThroughId}
           selectedId={selectedId}
           onSelect={setSelectedId}
           onClear={handleClear}
