@@ -30,6 +30,13 @@ describe("authPreview", () => {
     expect(preview).toContain("Adds header  Authorization: Basic ");
     expect(preview).not.toContain("hunter2");
   });
+
+  it("never reveals any of a short secret", () => {
+    expect(authPreview({ ...DEFAULT_AUTH, type: "bearer", token: "ab12cd" })).toBe("Adds header  Authorization: Bearer ••••");
+    expect(authPreview({ ...DEFAULT_AUTH, type: "apikey", keyName: "X-Api-Key", keyValue: "sk1" })).toBe(
+      "Adds header  X-Api-Key: ••••",
+    );
+  });
 });
 
 describe("resolveAuthHeader", () => {

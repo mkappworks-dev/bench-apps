@@ -23,7 +23,9 @@ export const DEFAULT_AUTH: AuthState = {
 
 function maskSecret(value: string): string {
   if (!value) return "(empty)";
-  return value.length <= 6 ? value : `${value.slice(0, 3)}••••${value.slice(-2)}`;
+  // Short secrets get no revealed prefix/suffix at all — 3-of-5 characters is
+  // enough to shoulder-surf a real key back.
+  return value.length <= 6 ? "••••" : `${value.slice(0, 3)}••••${value.slice(-2)}`;
 }
 
 export function authPreview(auth: AuthState): string {
