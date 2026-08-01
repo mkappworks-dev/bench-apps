@@ -96,7 +96,7 @@ export function ApiTab({
     setHistoryRefreshKey((k) => k + 1);
 
     try {
-      const window = await invokeCollectCorrelationWindow(correlation.correlation_id);
+      const window = await invokeCollectCorrelationWindow(correlation.correlation_id, correlation.history_id);
       // Re-checked after the await: a whole window has passed, so the user may
       // have moved on.
       if (!belongsToCurrentSession(sendSessionId)) return;

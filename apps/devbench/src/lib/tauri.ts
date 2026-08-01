@@ -46,6 +46,8 @@ export interface CorrelationResult {
   /** `null` means the database could not be verified — never render this as "0 writes". */
   table_diffs: TableDiff[] | null;
   db_error: string | null;
+  /** The saved request_history row's id, once known — null only if that save itself failed. */
+  history_id: string | null;
 }
 
 export interface DbConnectInput {
@@ -118,6 +120,8 @@ export interface CapturedEmail extends EmailSummary {
   raw: string;
   /** Set once a correlated request's window observes this email. */
   request_id: string | null;
+  request_method: string | null;
+  request_url: string | null;
 }
 
 export interface ListEmailsResult {
@@ -171,8 +175,11 @@ export function invokeReadLogLines(args: {
   });
 }
 
-export function invokeCollectCorrelationWindow(correlationId: string): Promise<CorrelationWindowResult> {
-  return invoke("collect_correlation_window", { correlationId });
+export function invokeCollectCorrelationWindow(
+  correlationId: string,
+  historyId: string | null,
+): Promise<CorrelationWindowResult> {
+  return invoke("collect_correlation_window", { correlationId, historyId });
 }
 
 export interface TableInfo {
