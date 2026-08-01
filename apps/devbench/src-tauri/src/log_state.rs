@@ -86,10 +86,12 @@ pub fn parse_log_line(raw: &str) -> ParsedLine {
     ParsedLine { timestamp, level, message }
 }
 
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::Mutex;
 use uuid::Uuid;
 
@@ -204,6 +206,7 @@ impl LogBuffer {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SourceKind {
     File { path: PathBuf },
+    Command { program: String, args: Vec<String>, cwd: Option<PathBuf> },
 }
 
 /// Tails one regular file. Holds the byte offset it has consumed and the
@@ -395,6 +398,12 @@ struct SourceEntry {
 /// tool operates at.
 pub struct LogState {
     inner: Mutex<Inner>,
+    /// Running command sources' child processes, keyed by source id — kept
+    /// here (not inside `Inner`) because sharing a `Child` between the async
+    /// task waiting on its exit and a synchronous `remove_source` call needs
+    /// a `tokio::sync::Mutex`, not the `std::sync::Mutex` `Inner` uses for
+    /// its short, non-async critical sections.
+    commands: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<tokio::process::Child>>>>,
     source_buffer_capacity: usize,
 }
 
@@ -414,12 +423,43 @@ impl LogState {
     pub fn with_capacity(source_buffer_capacity: usize) -> Self {
         Self {
             inner: Mutex::new(Inner { sources: Vec::new(), next_id: 1 }),
+            commands: std::sync::Mutex::new(HashMap::new()),
             source_buffer_capacity,
         }
     }
 
+    /// Pushes one already-captured line: allocates the next global id and
+    /// inserts it into `source_id`'s buffer. File sources go through
+    /// `poll_all`/`SourceTailer` instead — this is for command sources,
+    /// whose reader tasks call it directly as lines arrive.
+    pub fn push_line(&self, source_id: &str, raw: &str, captured_at_ms: i64) {
+        let mut inner = match self.inner.lock() {
+            Ok(i) => i,
+            Err(_) => return,
+        };
+        let id = inner.next_id;
+        inner.next_id += 1;
+        let prepared = prepare_line(raw);
+        if let Some(entry) = inner.sources.iter_mut().find(|e| e.status.id == source_id) {
+            entry.buffer.insert(id, source_id, captured_at_ms, prepared.timestamp, prepared.level, prepared.message, prepared.raw);
+        }
+    }
+
+    /// Marks a command source as having exited on its own. Never
+    /// auto-restarted — surfaced honestly, same as the file tailer's
+    /// rotation warning, rather than silently respawned.
+    pub fn mark_exited(&self, source_id: &str, exit_code: Option<i32>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            if let Some(entry) = inner.sources.iter_mut().find(|e| e.status.id == source_id) {
+                entry.status.state = "exited".to_string();
+                entry.status.exit_code = exit_code;
+            }
+        }
+        self.commands.lock().unwrap().remove(source_id);
+    }
+
     pub fn add_source(&self, label: String, kind: SourceKind) -> Result<LogSourceStatus, String> {
-        let display_path = match &kind {
+        let (display_path, kind_label) = match &kind {
             SourceKind::File { path } => {
                 let metadata = std::fs::metadata(path)
                     .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
@@ -431,20 +471,25 @@ impl LogState {
                         path.display()
                     ));
                 }
-                path.display().to_string()
+                (path.display().to_string(), "file")
+            }
+            SourceKind::Command { program, args, .. } => {
+                let invocation = std::iter::once(program.clone()).chain(args.iter().cloned()).collect::<Vec<_>>().join(" ");
+                (invocation, "command")
             }
         };
         let status = LogSourceStatus {
             id: Uuid::new_v4().to_string(),
             label,
             path: display_path,
-            kind: "file".to_string(),
+            kind: kind_label.to_string(),
             state: "live".to_string(),
             error: None,
             exit_code: None,
         };
         let ingestor = match &kind {
             SourceKind::File { path } => Ingestor::File(SourceTailer::new(status.id.clone(), path.clone())),
+            SourceKind::Command { .. } => Ingestor::Command,
         };
         let entry = SourceEntry {
             status: status.clone(),
@@ -464,6 +509,18 @@ impl LogState {
         inner.sources.retain(|s| s.status.id != id);
         if inner.sources.len() == before {
             return Err(format!("no log source with id {id}"));
+        }
+        drop(inner);
+
+        if let Some(child) = self.commands.lock().unwrap().remove(id) {
+            // A non-blocking try_lock: if the reader task currently holds the
+            // lock it's because the process is already exiting on its own —
+            // `mark_exited` will run momentarily and this kill is redundant,
+            // not required for correctness (`kill_on_drop` below is the
+            // actual backstop for that race, and for the app-quit case).
+            if let Ok(mut guard) = child.try_lock() {
+                let _ = guard.start_kill();
+            }
         }
         Ok(())
     }
@@ -559,11 +616,97 @@ impl LogState {
             }
         }
     }
+
+    /// Kills every currently-running command source. Called once from the
+    /// app's graceful-shutdown hook (Task 5) — `kill_on_drop` on each
+    /// `Command` stays set as defense-in-depth, but this is the guarantee
+    /// the shutdown path actually relies on, since it doesn't depend on
+    /// exactly when a detached task's last `Arc<Child>` reference drops.
+    pub async fn kill_all_commands(&self) {
+        let handles: Vec<_> = self.commands.lock().unwrap().values().cloned().collect();
+        for child in handles {
+            let mut guard = child.lock().await;
+            let _ = guard.start_kill();
+        }
+    }
 }
 
 impl Default for LogState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Spawns `program` with `args` (and `cwd` if given), captures its stdout
+/// and stderr directly — no shell, no `2>&1` redirection, so no
+/// shell-quoting/injection surface — and registers it as a log source.
+/// `.kill_on_drop(true)` plus `LogState::remove_source`'s explicit kill are
+/// two independent backstops for the same guarantee: the process never
+/// outlives its source.
+pub async fn spawn_command_source(
+    logs: Arc<LogState>,
+    label: String,
+    program: String,
+    args: Vec<String>,
+    cwd: Option<PathBuf>,
+) -> Result<LogSourceStatus, String> {
+    let mut cmd = tokio::process::Command::new(&program);
+    cmd.args(&args);
+    if let Some(dir) = &cwd {
+        cmd.current_dir(dir);
+    }
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
+
+    let mut child = cmd.spawn().map_err(|e| format!("failed to run `{program}`: {e}"))?;
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let stderr = child.stderr.take().expect("stderr is piped");
+
+    let status = logs.add_source(label, SourceKind::Command { program, args, cwd })?;
+
+    let child = Arc::new(tokio::sync::Mutex::new(child));
+    logs.commands.lock().unwrap().insert(status.id.clone(), Arc::clone(&child));
+
+    let out_logs = Arc::clone(&logs);
+    let out_id = status.id.clone();
+    tokio::spawn(async move { drain_pipe(&out_logs, &out_id, stdout).await });
+
+    let err_logs = Arc::clone(&logs);
+    let err_id = status.id.clone();
+    tokio::spawn(async move { drain_pipe(&err_logs, &err_id, stderr).await });
+
+    let wait_logs = Arc::clone(&logs);
+    let wait_id = status.id.clone();
+    tokio::spawn(async move {
+        // try_wait() in a poll loop, not `wait().await` while holding the
+        // guard: `wait()` would hold the lock for the process's entire
+        // remaining lifetime, starving `remove_source`'s try_lock and
+        // `kill_all_commands`'s lock().await of any chance to ever acquire
+        // it and actually kill a still-running process.
+        let code = loop {
+            let mut guard = child.lock().await;
+            match guard.try_wait() {
+                Ok(Some(exit_status)) => break exit_status.code(),
+                Ok(None) => {
+                    drop(guard);
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                Err(_) => break None,
+            }
+        };
+        wait_logs.mark_exited(&wait_id, code);
+    });
+
+    Ok(status)
+}
+
+async fn drain_pipe<R: tokio::io::AsyncRead + Unpin>(logs: &LogState, source_id: &str, pipe: R) {
+    use tokio::io::AsyncBufReadExt;
+    let mut lines = tokio::io::BufReader::new(pipe).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        logs.push_line(source_id, &line, now_ms);
     }
 }
 
@@ -901,6 +1044,86 @@ mod tests {
         assert_eq!(merged.lines.len(), 2);
         let ids: Vec<u64> = merged.lines.iter().map(|l| l.id).collect();
         assert!(ids[0] < ids[1], "merged view must stay in id order across sources");
+    }
+
+    #[tokio::test]
+    async fn a_command_source_captures_both_stdout_and_stderr() {
+        let state = Arc::new(LogState::new());
+        let status = spawn_command_source(
+            Arc::clone(&state),
+            "printer".into(),
+            "sh".into(),
+            vec!["-c".into(), "echo from-stdout; echo from-stderr 1>&2".into()],
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Give the child a moment to run and its reader tasks a moment to drain it.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let page = state.read_since(0, Some(&status.id), 100);
+        let messages: Vec<&str> = page.lines.iter().map(|l| l.message.as_str()).collect();
+        assert!(messages.contains(&"from-stdout"), "{messages:?}");
+        assert!(messages.contains(&"from-stderr"), "{messages:?}");
+    }
+
+    #[tokio::test]
+    async fn a_command_source_that_exits_on_its_own_is_marked_exited_not_error() {
+        let state = Arc::new(LogState::new());
+        let status = spawn_command_source(Arc::clone(&state), "one-shot".into(), "sh".into(), vec!["-c".into(), "exit 3".into()], None)
+            .await
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let sources = state.list_sources();
+        let found = sources.iter().find(|s| s.id == status.id).unwrap();
+        assert_eq!(found.state, "exited");
+        assert_eq!(found.exit_code, Some(3));
+    }
+
+    #[tokio::test]
+    async fn removing_a_command_source_kills_its_process() {
+        let state = Arc::new(LogState::new());
+        // `sleep 30` would still be running long after this test's own
+        // timeout if remove_source failed to kill it.
+        let status = spawn_command_source(Arc::clone(&state), "long-runner".into(), "sleep".into(), vec!["30".into()], None)
+            .await
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        state.remove_source(&status.id).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // The wait task's mark_exited call removes the command handle once
+        // the killed process's exit is observed — an empty registry is this
+        // test's proof the process actually died rather than being merely
+        // forgotten about.
+        assert!(state.commands.lock().unwrap().is_empty(), "the killed child's handle should be cleaned up once its exit is observed");
+    }
+
+    #[tokio::test]
+    async fn kill_all_commands_terminates_every_running_command_source() {
+        let marker_dir = tempfile::tempdir().unwrap();
+        let marker = marker_dir.path().join("still-alive");
+        let state = Arc::new(LogState::new());
+        spawn_command_source(
+            Arc::clone(&state),
+            "slow".into(),
+            "sh".into(),
+            vec!["-c".into(), format!("sleep 5; touch {}", marker.display())],
+            None,
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        state.kill_all_commands().await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        assert!(!marker.exists(), "kill_all_commands should have killed the sleep before it could touch the marker file");
+        assert!(state.commands.lock().unwrap().is_empty());
     }
 
     #[test]
