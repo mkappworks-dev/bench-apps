@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach, beforeAll } from "vitest";
 import { DataGrid } from "./DataGrid";
 
@@ -65,13 +65,15 @@ describe("DataGrid", () => {
   it("copies a row as tab-separated values", async () => {
     render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
     fireEvent.click(screen.getByRole("button", { name: "Copy row as tab-separated values" }));
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("1\tpending");
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("1\tpending"));
   });
 
   it("copies a row as JSON", async () => {
     render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
     fireEvent.click(screen.getByRole("button", { name: "Copy row as JSON" }));
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(JSON.stringify({ id: "1", status: "pending" }));
+    await waitFor(() =>
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(JSON.stringify({ id: "1", status: "pending" })),
+    );
   });
 
   it("lets a consumer override cell rendering (the seam Task 12 uses for inline editing)", () => {
@@ -100,5 +102,20 @@ describe("DataGrid", () => {
   it("shows a distinct message instead of a blank body when there are no rows", () => {
     render(<DataGrid columns={["id"]} rows={[]} />);
     expect(screen.getByText(/no rows/i)).toBeInTheDocument();
+  });
+
+  it("reflects sort state via aria-sort on the active column header only", () => {
+    render(<DataGrid columns={["id", "status"]} rows={[]} sortColumn="status" sortDescending />);
+    const statusHeader = screen.getByRole("button", { name: "Sort by status" }).closest('[role="columnheader"]');
+    const idHeader = screen.getByRole("button", { name: "Sort by id" }).closest('[role="columnheader"]');
+    expect(statusHeader).toHaveAttribute("aria-sort", "descending");
+    expect(idHeader).not.toHaveAttribute("aria-sort");
+  });
+
+  it("shows visible feedback when a clipboard copy fails, instead of failing silently", async () => {
+    vi.spyOn(navigator.clipboard, "writeText").mockRejectedValue(new Error("Clipboard permission denied"));
+    render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Copy row as tab-separated values" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/clipboard permission denied/i);
   });
 });
