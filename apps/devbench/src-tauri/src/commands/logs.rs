@@ -107,4 +107,48 @@ mod tests {
         let state = LogState::new();
         assert!(state.remove_source("nope").is_err());
     }
+
+    #[tokio::test]
+    async fn migration_0004_creates_usable_log_sources_and_log_lines_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO log_sources (id, label, kind, path, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind("src1")
+        .bind("server.log")
+        .bind("file")
+        .bind("/tmp/app.log")
+        .bind("2026-07-31T00:00:00Z")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO log_lines (id, source_id, captured_at_ms, timestamp, level, message, raw) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(1i64)
+        .bind("src1")
+        .bind(1_000i64)
+        .bind(Option::<String>::None)
+        .bind("INFO")
+        .bind("started")
+        .bind("started")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let source_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM log_sources")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        let line_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM log_lines WHERE source_id = 'src1'")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(source_count, 1);
+        assert_eq!(line_count, 1);
+    }
 }
