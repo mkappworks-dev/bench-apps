@@ -31,6 +31,7 @@ fn main() {
                     .unwrap_or(DEFAULT_SMTP_PORT);
                 (db, port)
             });
+            let smtp_pool = db.pool.clone();
             handle.manage(db);
 
             let logs = Arc::new(LogState::new());
@@ -60,7 +61,6 @@ fn main() {
             // the port in Settings" shortcut the spec asks for.
             match smtp_catcher::bind(smtp_port) {
                 Ok(listener) => {
-                    let store = emails.store();
                     emails.set_status(SmtpStatus {
                         listening: true,
                         port: smtp_port,
@@ -70,7 +70,7 @@ fn main() {
                     // A dedicated OS thread, not a tokio task: mailin-embedded
                     // is blocking and runs its own scoped threadpool.
                     std::thread::spawn(move || {
-                        if let Err(e) = smtp_catcher::serve(listener, store) {
+                        if let Err(e) = smtp_catcher::serve(listener, smtp_pool) {
                             emails_for_thread.set_status(SmtpStatus {
                                 listening: false,
                                 port: smtp_port,
