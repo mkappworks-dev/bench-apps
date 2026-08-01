@@ -49,7 +49,7 @@ pub struct TableRows {
     pub pk_column: Option<String>,
 }
 
-fn cell_to_string(row: &sqlx::postgres::PgRow, index: usize) -> Option<String> {
+pub(crate) fn cell_to_string(row: &sqlx::postgres::PgRow, index: usize) -> Option<String> {
     use sqlx::Row as _;
     if let Ok(v) = row.try_get::<Option<String>, _>(index) { return v; }
     if let Ok(v) = row.try_get::<Option<i64>, _>(index) { return v.map(|n| n.to_string()); }

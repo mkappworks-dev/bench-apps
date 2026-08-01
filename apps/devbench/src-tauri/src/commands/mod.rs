@@ -7,6 +7,7 @@ pub mod history;
 pub mod logs;
 pub mod mcp;
 pub mod provider;
+pub mod query;
 pub mod request;
 pub mod sessions;
 pub mod settings;
