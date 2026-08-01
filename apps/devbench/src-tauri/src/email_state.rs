@@ -581,11 +581,10 @@ mod tests {
         assert_eq!(list_captured_emails(&db.pool, Some(&b.id), 10).await.unwrap().emails.len(), 1);
     }
 
-    // Regression test: the old in-memory `EmailStore::clear()` deliberately
-    // advanced its high-water mark so an in-flight correlation window would
-    // still report truncation; the SQL rewrite's plain DELETE dropped that,
-    // which would make "Clear inbox" mid-window look identical to "this
-    // request sent no mail" — a false negative, not just a lost feature.
+    // Regression test: clearing must advance the high-water mark, not just
+    // delete rows — otherwise an in-flight window whose `from_email_id`
+    // predates the clear reports `emails: Some([])` instead of truncation, a
+    // false negative.
     #[tokio::test]
     async fn clearing_advances_the_eviction_mark_so_an_open_window_can_detect_it() {
         let (_dir, db) = db().await;

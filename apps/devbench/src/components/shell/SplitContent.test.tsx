@@ -131,9 +131,9 @@ describe("SplitContent", () => {
     expect(screen.getByText("payments")).toBeInTheDocument();
   });
 
-  // Task 13: mirrors the design invariant already relied on for Email's deep
-  // link — two mounted API tabs must never both jump to the same History
-  // entry, only the one instance the deep link actually targeted.
+  // Mirrors the design invariant already relied on for Email's deep link —
+  // two mounted API tabs must never both jump to the same History entry, only
+  // the one instance the deep link actually targeted.
   it("targets the history focus to the specific api tab instance, not every api tab", async () => {
     useAppStore.setState({
       tabs: [

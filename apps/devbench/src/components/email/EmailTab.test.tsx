@@ -106,8 +106,8 @@ describe("EmailTab", () => {
     await waitFor(() => expect(screen.getByText(/select a message/i)).toBeInTheDocument());
   });
 
-  // Task 13: the "Sent by" chip's click must reach the caller (App.tsx owns
-  // the actual tab-focusing), not get swallowed on the way through EmailTab.
+  // The "Sent by" chip's click must reach the caller (App.tsx owns the actual
+  // tab-focusing), not get swallowed on the way through EmailTab.
   it("forwards a click on the Sent-by chip to onOpenHistory with the linked request id", async () => {
     vi.spyOn(tauriLib, "invokeListEmails").mockResolvedValue(emailList(1, "A's message"));
     vi.spyOn(tauriLib, "invokeGetEmail").mockResolvedValue(linkedEmail);

@@ -158,7 +158,7 @@ pub async fn run_correlated_request_impl(
         None => Err(Some("connection failed".to_string())),
     };
 
-    let _ = logs; // used from Task 6 onward
+    let _ = logs;
 
     let response = fire_request_impl(request).await?;
 
@@ -249,23 +249,13 @@ pub async fn run_correlated_request_impl_with_registry(
     let from_log_id = logs.next_line_id().saturating_sub(1);
     let from_email_id = crate::email_state::current_max_email_id(db).await.unwrap_or(0);
 
-    // The window's end is anchored to *response* time, not request-start
-    // time: `now_ms` is captured by the caller before `fire_request_impl`
-    // is even invoked, so naively computing `now_ms + window_ms` measures
-    // the window from "when this command was invoked," not from "when the
-    // response actually came back," as the spec and Settings > General's UI
-    // copy ("N seconds after the response") both promise. For any request
-    // slower than `window_ms`, that would silently shrink (or entirely
-    // consume) the window before a single log line or email had a chance to
-    // land, and a failure to observe must never be rendered as "nothing
-    // happened" (this app's core principle). `elapsed_ms`, measured with a
-    // monotonic clock (immune to wall-clock adjustments, unlike a
-    // `chrono::Utc::now()` diff), is exactly how long the awaited request
-    // took, so `now_ms + elapsed_ms` reconstructs the response's wall-clock
-    // time and `now_ms + elapsed_ms + window_ms` is "response time +
-    // window_ms" — matching the documented behavior — while adding only a
-    // negligible, deterministic offset in tests (mocked HTTP responses
-    // resolve in low single-digit milliseconds).
+    // The window's end is anchored to *response* time, not request-start time:
+    // `now_ms` is captured before `fire_request_impl` runs, so naively using
+    // `now_ms + window_ms` would shrink or consume the window for any request
+    // slower than `window_ms`, before anything it caused had a chance to be
+    // observed. `elapsed_ms` (a monotonic duration, immune to wall-clock
+    // adjustments) gives the request's real cost, so `now_ms + elapsed_ms +
+    // window_ms` correctly measures `window_ms` from the response instead.
     let request_started_at = std::time::Instant::now();
     let mut result = run_correlated_request_impl(request, connection, watched_tables, logs).await?;
     let elapsed_ms = request_started_at.elapsed().as_millis() as i64;
@@ -515,15 +505,13 @@ mod tests {
         sqlx::query("DROP TABLE composite_test").execute(&pool).await.unwrap();
     }
 
-    // NOTE: this deliberately does NOT insert the "side effect" row before calling
-    // `run_correlated_request_impl` (as a naive transcription of this scenario might).
-    // `run_correlated_request_impl` takes its "before" snapshot as the first thing it
-    // does internally; a pre-seeded row would already be present in *both* the before
-    // and after snapshots taken inside the function, so the diff would come out empty
-    // and this test would pass or fail for the wrong reason (or not exercise the
-    // orchestration at all). Instead, the INSERT is performed synchronously from
-    // *inside* the mocked HTTP response callback, so it genuinely lands between the
-    // impl's internal before-snapshot and after-snapshot — see comment below.
+    // Deliberately does NOT insert the "side effect" row before calling
+    // `run_correlated_request_impl`: it takes its "before" snapshot as the first
+    // thing it does internally, so a pre-seeded row would already be in both
+    // snapshots and the diff would come out empty regardless of whether the
+    // orchestration works. The insert instead happens inside the mocked HTTP
+    // response callback below, landing strictly between the internal before- and
+    // after-snapshot.
     #[tokio::test]
     async fn run_correlated_request_reports_only_tables_that_actually_changed() {
         let conn = test_connection();
@@ -544,27 +532,22 @@ mod tests {
         let mock = server
             .mock("POST", "/orders")
             .with_status(201)
-            // The mocked endpoint doesn't actually touch Postgres, so the "backend
-            // side effect" is simulated here — but critically, it runs *while
-            // mockito is producing the response body*, not before the request is
-            // fired. `with_body_from_request` invokes this closure synchronously
-            // at the moment mockito serves the response, which is strictly after
-            // `run_correlated_request_impl`'s internal before-snapshot (already
-            // taken before `fire_request_impl` is called) and strictly before its
-            // after-snapshot (only taken once `fire_request_impl`'s `.await`
-            // resolves, i.e. once this closure has returned a full body). That is
-            // what actually proves the snapshot -> request -> snapshot sandwich
-            // works, rather than merely observing pre-seeded data was still there.
+            // `with_body_from_request` runs this closure synchronously while
+            // mockito is producing the response body — strictly after
+            // `run_correlated_request_impl`'s internal before-snapshot and
+            // strictly before its after-snapshot (only taken once
+            // `fire_request_impl`'s `.await` resolves). That's what proves the
+            // snapshot -> request -> snapshot sandwich actually works, not just
+            // that pre-seeded data survived.
             //
-            // mockito 1.x runs every connection on its own dedicated
-            // current-thread Tokio runtime, on a separate OS thread — so
-            // `tokio::task::block_in_place` panics from inside this closure
-            // ("can call blocking only when running on the multi-threaded
-            // runtime"), since it's mockito's runtime that's current here, not
-            // this test's. A plain OS thread with its own throwaway runtime,
-            // `.join()`-ed, works instead: a real, deterministic write with no
-            // sleep or timing race. (Canonical explanation for this hazard —
-            // other tests below just reference this comment.)
+            // mockito 1.x runs each connection on its own dedicated
+            // current-thread Tokio runtime on a separate OS thread, so
+            // `tokio::task::block_in_place`/`block_on` panics from inside this
+            // closure — it's mockito's runtime that's current here, not this
+            // test's. A plain OS thread with its own throwaway runtime,
+            // `.join()`-ed, does a real, deterministic write with no sleep or
+            // timing race. (Canonical explanation for this hazard — other tests
+            // below just reference this comment.)
             .with_body_from_request(move |_request| {
                 let conn_str = insert_conn_str.clone();
                 std::thread::spawn(move || {
@@ -615,8 +598,6 @@ mod tests {
         sqlx::query("DROP TABLE untouched_e2e").execute(&pool).await.unwrap();
     }
 
-    // --- Fix 2: snapshot_table SQL hardening ---
-
     #[tokio::test]
     async fn snapshot_table_rejects_a_malicious_table_name() {
         let conn = test_connection();
@@ -641,13 +622,12 @@ mod tests {
         assert!(result.is_err(), "should reject malicious pk column name before executing SQL");
     }
 
-    // Before this fix, snapshot_table's raw (unquoted) format! interpolation meant
-    // an unquoted `MixedCaseTable` identifier would be folded to lowercase by
-    // Postgres and resolve to `mixedcasetable` — which does NOT match a table that
-    // was actually created quoted as "MixedCaseTable". That's not just an
-    // injection risk, it's a guaranteed functional break on any legitimately
-    // mixed-case (or reserved-word, or hyphenated) table name. This test proves
-    // the double-quoting fix actually resolves the real, case-sensitive table.
+    // Without double-quoting, an unquoted `MixedCaseTable` gets folded to
+    // lowercase by Postgres and resolves to `mixedcasetable`, which does NOT
+    // match a table actually created quoted as "MixedCaseTable" — a guaranteed
+    // functional break on any mixed-case, reserved-word, or hyphenated table
+    // name, not just an injection risk. This test proves the double-quoting
+    // resolves the real, case-sensitive table.
     #[tokio::test]
     async fn snapshot_table_works_with_a_mixed_case_table_name_needing_quoting() {
         let conn = test_connection();
@@ -669,8 +649,6 @@ mod tests {
 
         sqlx::query("DROP TABLE \"MixedCaseTable\"").execute(&pool).await.unwrap();
     }
-
-    // --- Fix 1: request history write-through ---
 
     #[tokio::test]
     async fn save_correlation_history_writes_a_row_list_history_can_read() {
@@ -696,12 +674,11 @@ mod tests {
     }
 
     // Mirrors exactly what the `run_correlated_request` tauri command body does
-    // (minus unwrapping the `State<LocalDb>` itself, which requires a running
-    // Tauri app and isn't constructible in a plain unit test): run a correlated
-    // request end to end, then persist history from its result, then confirm
-    // list_history can read it back. This is the regression test for the bug
-    // where request history was never written at all — Tasks 6/7 were dead code
-    // at runtime because nothing ever called save_history_entry.
+    // (minus unwrapping `State<LocalDb>`, which needs a running Tauri app): run
+    // a correlated request end to end, persist history from its result, then
+    // confirm list_history can read it back. Regression test for the bug where
+    // request history was never actually written — nothing ever called
+    // save_history_entry.
     #[tokio::test]
     async fn full_correlated_request_flow_persists_a_history_entry() {
         let dir = tempfile::tempdir().unwrap();
@@ -1061,22 +1038,13 @@ mod tests {
         assert!(!window.emails_truncated);
     }
 
-    // Regression test for the bug where the correlation window's end was
-    // computed from `now_ms + window_ms` — i.e. from the instant the Tauri
-    // command was *invoked*, not from the instant the response actually came
-    // back. A request slower than `window_ms` would silently shrink (or
-    // entirely consume) its own window before anything it caused had a
-    // chance to be observed. This test uses REAL wall-clock time (not
-    // synthetic integers) and a genuinely slow mocked backend (a real
-    // `std::thread::sleep`) to prove the window's end tracks response time,
-    // not request-start time.
-    //
-    // With the old code, the window would close at `started_at_ms + 100`
-    // (`window_ms`), but the email is captured only after a real ~200ms
-    // sleep, i.e. around `started_at_ms + 200` — well past that bound — so
-    // the old code excludes it and this test fails against it. With the fix,
-    // the window closes at `started_at_ms + elapsed_ms(~200) + 100`, which
-    // comfortably includes an email captured at `started_at_ms + 200`.
+    // Regression test: the window's end must track response time, not
+    // request-start time. Uses real wall-clock time and a genuinely slow
+    // mocked backend (`std::thread::sleep`) rather than synthetic integers, so
+    // a naive `now_ms + window_ms` (closing at `started_at_ms + 100`) would
+    // exclude an email captured only after this ~200ms sleep, while the
+    // response-anchored version — closing at `started_at_ms + elapsed_ms +
+    // 100` — comfortably includes it.
     #[tokio::test]
     async fn a_slow_request_does_not_shrink_its_own_correlation_window() {
         let conn = test_connection();
@@ -1268,18 +1236,12 @@ mod tests {
         assert_eq!(window.emails, None, "a catcher that is not listening means NOT OBSERVED, not zero mail");
     }
 
-    // NOTE: this test was originally written (per the plan) to open a window
-    // with `window_ms = 30_000` and then assert `window.emails == Some(vec![])`
-    // when collecting at `now_ms = 40_001`. That passes identically whether
-    // `window_ms` is genuinely threaded through or the implementation
-    // silently ignores it and hardcodes `DEFAULT_CORRELATION_WINDOW_MS`
-    // (5_000) instead: 40_001 is past BOTH windows' ends (40_000 and 15_000),
-    // so `remaining_ms` is negative either way and no blocking occurs; and
-    // with no email ever pushed, `between_captured_emails`'s upper bound
-    // never gets a chance to matter, so an empty result says nothing about
-    // which window length was actually used. Rewritten below to push a
-    // message at a timestamp that only one of the two candidate window ends
-    // would include.
+    // Asserting an empty result here would pass vacuously whether `window_ms`
+    // is genuinely threaded through or silently replaced by the 5s default:
+    // with no email ever inserted, `between_captured_emails`'s upper bound
+    // never gets a chance to matter. Pushing a message at a timestamp only one
+    // of the two candidate window ends would include is what actually
+    // distinguishes them.
     #[tokio::test]
     async fn the_window_length_comes_from_the_caller_not_a_hardcoded_constant() {
         let conn = test_connection();
@@ -1556,15 +1518,15 @@ mod tests {
         assert_eq!(old_email.request_id, None, "mail sent before the request must never be linked to it");
     }
 
-    // Dedicated coverage for item 1's `AND request_id IS NULL` guard: the
-    // mixed-set test above proves the UPDATE runs, but never gives it a
-    // chance to overwrite an existing link, since the "outside" email is
-    // never in its id list. This reproduces the actual bug shape instead:
-    // `ApiTab.handleResult` clears `sending` before awaiting the collect
-    // call, so a second Send can open a new window before the first one's
-    // has closed — both windows snapshot the same `from_email_id`, both
-    // observe the same email, and without the guard the later `collect` to
-    // run wins, silently stealing an already-correct attribution.
+    // Dedicated coverage for the `AND request_id IS NULL` guard: the mixed-set
+    // test above proves the UPDATE runs, but never gives it a chance to
+    // overwrite an existing link, since the "outside" email is never in its id
+    // list. This reproduces the actual bug shape: `ApiTab.handleResult` clears
+    // `sending` before awaiting the collect call, so a second Send can open a
+    // new window before the first one's has closed — both windows snapshot the
+    // same `from_email_id`, both observe the same email, and without the guard
+    // the later `collect` to run wins, silently stealing an already-correct
+    // attribution.
     #[tokio::test]
     async fn a_captured_email_once_linked_is_never_relinked_by_a_later_overlapping_window() {
         let logs = LogState::new();

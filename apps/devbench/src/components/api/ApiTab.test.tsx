@@ -145,9 +145,9 @@ describe("ApiTab", () => {
     expect(screen.queryByText("What happened")).not.toBeInTheDocument();
   });
 
-  // The link Task 9/10 built (stamping request_id onto observed emails) is
-  // dead unless the history id from the send actually reaches the window
-  // call — a wiring gap that types alone would not catch.
+  // The link between a captured email and the request that sent it is dead
+  // unless the history id from the send actually reaches the window call — a
+  // wiring gap that types alone would not catch.
   it("threads the send's history_id into the window collection call", async () => {
     vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
@@ -270,9 +270,9 @@ describe("ApiTab", () => {
     expect(screen.getByText("1 line")).toBeInTheDocument();
   });
 
-  // Task 13: Email's "Sent by" chip deep-links here via focusHistoryId. This
-  // is the same prop-forwarding bug class as the DB-chip regression test
-  // above, just for an incoming prop instead of an outgoing callback.
+  // Email's "Sent by" chip deep-links here via focusHistoryId — the same
+  // prop-forwarding bug class as the DB-chip regression test above, just for
+  // an incoming prop instead of an outgoing callback.
   it("forwards focusHistoryId to HistorySidebar and selects the matching entry", async () => {
     vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([
       {

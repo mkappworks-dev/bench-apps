@@ -24,19 +24,14 @@ async fn local_db() -> (tempfile::TempDir, LocalDb) {
     (dir, db)
 }
 
-// NOTE: this deliberately does NOT insert the "side effect" row before calling
-// `run_correlated_request_impl` (as a naive transcription of the plan's brief
-// would). `run_correlated_request_impl` takes its "before" snapshot as the
-// first thing it does internally; a pre-seeded row would already be present
-// in *both* the before and after snapshots taken inside the function, so the
-// diff would come out empty and this test would pass or fail for the wrong
-// reason (or not exercise the orchestration at all) — this is the exact
-// pitfall Task 10's `run_correlated_request_reports_only_tables_that_actually_changed`
-// test hit and solved; see `src/commands/correlation.rs` for the original
-// writeup. This test reuses that same fix: the INSERT is performed
-// synchronously from *inside* the mocked HTTP response callback, so it
-// genuinely lands between the impl's internal before-snapshot and
-// after-snapshot — see comment below.
+// Deliberately does NOT insert the "side effect" row before calling
+// `run_correlated_request_impl`: it takes its "before" snapshot as the first
+// thing it does internally, so a pre-seeded row would already be in both
+// snapshots and the diff would come out empty regardless of whether the
+// orchestration works. See `src/commands/correlation.rs`'s
+// `run_correlated_request_reports_only_tables_that_actually_changed` for the
+// canonical explanation of the mock-callback timing this relies on. The
+// insert instead happens inside the mocked HTTP response callback below.
 #[tokio::test]
 async fn firing_a_request_against_a_seeded_postgres_produces_the_expected_rollup() {
     let conn = test_connection();
@@ -59,32 +54,14 @@ async fn firing_a_request_against_a_seeded_postgres_produces_the_expected_rollup
     let mock = server
         .mock("POST", "/orders")
         .with_status(201)
-        // The mocked endpoint doesn't actually touch Postgres, so the "backend
-        // side effect" is simulated here — but critically, it runs *while
-        // mockito is producing the response body*, not before the request is
-        // fired. `with_body_from_request` invokes this closure synchronously
-        // at the moment mockito serves the response, which is strictly after
-        // `run_correlated_request_impl`'s internal before-snapshot (already
-        // taken before `fire_request_impl` is called) and strictly before its
-        // after-snapshot (only taken once `fire_request_impl`'s `.await`
-        // resolves, i.e. once this closure has returned a full body). That is
-        // what actually proves the snapshot -> request -> snapshot sandwich
-        // works, rather than merely observing pre-seeded data was still there.
-        //
-        // mockito 1.x serves every connection from its own dedicated
-        // current-thread Tokio runtime running on a separate OS thread, so
-        // `tokio::task::block_in_place` cannot be used from this closure (it
-        // panics unless the *caller's* runtime is multi-threaded, and here
-        // it's mockito's own internal runtime that's current, regardless of
-        // this test's runtime flavor). Spawning a plain OS thread with its
-        // own throwaway single-threaded Tokio runtime (and its own fresh
-        // connection pool, to avoid driving any resource from a runtime
-        // other than the one that created it) and `.join()`-ing it is what
-        // actually works here: it performs a real, deterministic async
-        // database write with no sleep or timing race. See
-        // `src/commands/correlation.rs`'s
+        // The mocked endpoint doesn't actually touch Postgres; the insert is
+        // simulated by running it synchronously from inside this callback, so
+        // it lands strictly between `run_correlated_request_impl`'s internal
+        // before- and after-snapshot. See `src/commands/correlation.rs`'s
+        // canonical comment on
         // `run_correlated_request_reports_only_tables_that_actually_changed`
-        // test for the original derivation of this pattern.
+        // for why this needs a throwaway OS thread + runtime rather than
+        // `block_on`/`block_in_place`.
         .with_body_from_request(move |_request| {
             let conn_str = insert_conn_str.clone();
             std::thread::spawn(move || {
@@ -459,9 +436,8 @@ async fn wait_for_captured_count(pool: &sqlx::SqlitePool, want: usize) {
     panic!("timed out waiting for {want} captured email(s)");
 }
 
-// The rewrite's whole point was moving capture off the in-memory ring buffer
-// and onto disk; only a fresh `LocalDb::connect` against the same directory
-// proves that, as opposed to just re-reading the same live pool.
+// Proves captured mail persists on disk, not just in the live pool's cache —
+// only a fresh `LocalDb::connect` against the same directory can show that.
 #[tokio::test]
 async fn captured_mail_survives_dropping_and_reconnecting_the_local_db() {
     let dir = tempfile::tempdir().unwrap();

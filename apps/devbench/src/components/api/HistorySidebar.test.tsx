@@ -151,7 +151,7 @@ describe("HistorySidebar", () => {
     expect(screen.queryByText("No requests fired in this session yet.")).not.toBeInTheDocument();
   });
 
-  // Task 13: Email's "Sent by" chip deep-links here via `focusId`.
+  // Email's "Sent by" chip deep-links here via `focusId`.
   it("selects the focused entry once it has loaded, mirroring a manual click", async () => {
     const onSelect = vi.fn();
     vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([entry({ id: "hist-1", url: "/api/checkout" })]);
