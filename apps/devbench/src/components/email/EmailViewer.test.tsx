@@ -1,5 +1,5 @@
 import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EmailViewer } from "./EmailViewer";
 import type { CapturedEmail } from "../../lib/tauri";
 
@@ -65,5 +65,41 @@ describe("EmailViewer", () => {
   it("says so when a message has no HTML part rather than showing a blank frame", () => {
     render(<EmailViewer email={{ ...email, html_body: null }} />);
     expect(screen.getByText(/no html part/i)).toBeInTheDocument();
+  });
+});
+
+describe("EmailViewer — Sent by link", () => {
+  const linkedEmail: CapturedEmail = {
+    id: 1,
+    captured_at_ms: 1_800_000_000_000,
+    from: "orders@shop.test",
+    to: ["customer@example.com"],
+    subject: "Order confirmation #8841",
+    size_bytes: 512,
+    html_body: "<p>Thanks!</p>",
+    text_body: "Thanks!",
+    raw: "Subject: Order confirmation #8841\r\n\r\nThanks!",
+    request_id: "hist-1",
+    request_method: "POST",
+    request_url: "/api/checkout",
+  };
+
+  it("shows the Sent by chip when the email is linked to a request", () => {
+    render(<EmailViewer email={linkedEmail} />);
+    expect(screen.getByText(/Sent by/)).toBeInTheDocument();
+    expect(screen.getByText("POST /api/checkout")).toBeInTheDocument();
+  });
+
+  it("calls onOpenHistory with the request id when the chip is clicked", () => {
+    const onOpenHistory = vi.fn();
+    render(<EmailViewer email={linkedEmail} onOpenHistory={onOpenHistory} />);
+    fireEvent.click(screen.getByText(/Sent by/));
+    expect(onOpenHistory).toHaveBeenCalledWith("hist-1");
+  });
+
+  it("shows no Sent by chip when the email has no linked request", () => {
+    const unlinked: CapturedEmail = { ...linkedEmail, request_id: null, request_method: null, request_url: null };
+    render(<EmailViewer email={unlinked} />);
+    expect(screen.queryByText(/Sent by/)).not.toBeInTheDocument();
   });
 });
