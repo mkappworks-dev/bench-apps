@@ -19,7 +19,7 @@ const PANES: { id: PaneId; label: string }[] = [
 ];
 
 /**
- * A full navigated screen, not an overlay: a 5-section surface does not fit a
+ * A full navigated screen, not an overlay: a 6-section surface does not fit a
  * compact modal, and app-wide config is not scoped to any session the way the
  * four tools are (v1 spec, Components). Because it is persistent rather than
  * transient, it is ghosty — no blur. That is the same DESIGN.md rule the New

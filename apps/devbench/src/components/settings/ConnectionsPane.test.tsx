@@ -80,13 +80,110 @@ describe("ConnectionsPane", () => {
     expect(screen.queryByRole("button", { name: "Clear stored password" })).not.toBeInTheDocument();
   });
 
-  it("deletes a connection", async () => {
+  it("keeps pending field edits after clearing a stored password, instead of silently discarding them", async () => {
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([connection()]);
+    vi.spyOn(tauriLib, "invokeClearConnectionPassword").mockResolvedValue(undefined);
+    render(<ConnectionsPane />);
+    await waitFor(() => screen.getByText("Local Dev"));
+    fireEvent.click(screen.getByRole("button", { name: "Edit Local Dev" }));
+
+    const hostInput = await screen.findByLabelText("Host");
+    fireEvent.change(hostInput, { target: { value: "edited-before-clearing.internal" } });
+    fireEvent.click(screen.getByRole("button", { name: "Clear stored password" }));
+
+    await waitFor(() => expect(tauriLib.invokeClearConnectionPassword).toHaveBeenCalledWith("c1"));
+    // The modal must still be open with the unrelated edit intact.
+    expect(screen.getByText("Edit connection — Local Dev")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("edited-before-clearing.internal")).toBeInTheDocument();
+    // The Clear button is replaced by confirmation, and reflects the new state.
+    expect(screen.queryByRole("button", { name: "Clear stored password" })).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Enter a password")).toBeInTheDocument();
+  });
+
+  it("lets Escape close the modal immediately on open, with no prior click inside it", async () => {
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+    render(<ConnectionsPane />);
+    await waitFor(() => screen.getByText("+ Add connection"));
+    fireEvent.click(screen.getByText("+ Add connection"));
+    const nameInput = await screen.findByLabelText("Name");
+    // Opening must claim focus itself (as NewSessionDialog does) — otherwise a
+    // keydown fired with no prior click never reaches the dialog's handler,
+    // since it bubbles from whatever element focus is actually sitting on.
+    expect(document.activeElement).toBe(nameInput);
+    fireEvent.keyDown(nameInput, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByText("Add a connection")).not.toBeInTheDocument());
+  });
+
+  it("deletes a connection and reflects its removal from the list", async () => {
+    const list = vi.spyOn(tauriLib, "invokeListConnections");
+    list.mockResolvedValueOnce([connection()]).mockResolvedValueOnce([]);
     const del = vi.spyOn(tauriLib, "invokeDeleteConnection").mockResolvedValue(undefined);
     render(<ConnectionsPane />);
     await waitFor(() => screen.getByText("Local Dev"));
     fireEvent.click(screen.getByRole("button", { name: "Delete Local Dev" }));
     await waitFor(() => expect(del).toHaveBeenCalledWith("c1"));
+    await waitFor(() => expect(screen.queryByText("Local Dev")).not.toBeInTheDocument());
+  });
+
+  it("surfaces a delete failure instead of swallowing it, and leaves the row in place", async () => {
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([connection()]);
+    vi.spyOn(tauriLib, "invokeDeleteConnection").mockRejectedValue(new Error("connection is in use"));
+    render(<ConnectionsPane />);
+    await waitFor(() => screen.getByText("Local Dev"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete Local Dev" }));
+    expect(await screen.findByText(/connection is in use/)).toBeInTheDocument();
+    expect(screen.getByText("Local Dev")).toBeInTheDocument();
+  });
+
+  it("shows a distinct load-failure message rather than the empty-list copy", async () => {
+    vi.spyOn(tauriLib, "invokeListConnections").mockRejectedValue(new Error("database is locked"));
+    render(<ConnectionsPane />);
+    expect(await screen.findByText(/database is locked/)).toBeInTheDocument();
+    expect(
+      screen.queryByText("No connections configured. Add one to browse and query a database."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("tests a saved connection against its stored secret when the password field is untouched", async () => {
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([connection()]);
+    const testSaved = vi.spyOn(tauriLib, "invokeTestSavedConnection").mockResolvedValue(undefined);
+    const testFresh = vi.spyOn(tauriLib, "invokeTestConnection");
+    render(<ConnectionsPane />);
+    await waitFor(() => screen.getByText("Local Dev"));
+    fireEvent.click(screen.getByRole("button", { name: "Edit Local Dev" }));
+    await screen.findByText("Edit connection — Local Dev");
+    fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
+    await waitFor(() => expect(testSaved).toHaveBeenCalledWith("c1"));
+    expect(testFresh).not.toHaveBeenCalled();
+    expect(await screen.findByText("Connected successfully.")).toBeInTheDocument();
+  });
+
+  it("tests with the retyped password when editing and a new password was entered", async () => {
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([connection()]);
+    const testFresh = vi.spyOn(tauriLib, "invokeTestConnection").mockResolvedValue(undefined);
+    const testSaved = vi.spyOn(tauriLib, "invokeTestSavedConnection");
+    render(<ConnectionsPane />);
+    await waitFor(() => screen.getByText("Local Dev"));
+    fireEvent.click(screen.getByRole("button", { name: "Edit Local Dev" }));
+    const passwordInput = await screen.findByPlaceholderText("•••••••• (stored)");
+    fireEvent.change(passwordInput, { target: { value: "new-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
+    await waitFor(() =>
+      expect(testFresh).toHaveBeenCalledWith(expect.objectContaining({ password: "new-secret" })),
+    );
+    expect(testSaved).not.toHaveBeenCalled();
+  });
+
+  it("tests a fresh, unsaved connection directly and reports a failure honestly", async () => {
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+    const testFresh = vi.spyOn(tauriLib, "invokeTestConnection").mockRejectedValue(new Error("refused"));
+    render(<ConnectionsPane />);
+    await waitFor(() => screen.getByText("+ Add connection"));
+    fireEvent.click(screen.getByText("+ Add connection"));
+    await screen.findByText("Add a connection");
+    fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
+    await waitFor(() => expect(testFresh).toHaveBeenCalled());
+    expect(await screen.findByText("Could not connect.")).toBeInTheDocument();
   });
 
   it("creates a connection from the add modal without ever calling set_connection_password for a fresh create", async () => {

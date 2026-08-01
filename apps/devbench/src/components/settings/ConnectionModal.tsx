@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   invokeCreateConnection,
   invokeUpdateConnection,
   invokeSetConnectionPassword,
   invokeClearConnectionPassword,
   invokeTestConnection,
+  invokeTestSavedConnection,
   type ConnectionInput,
   type ConnectionSummary,
 } from "../../lib/tauri";
@@ -45,6 +46,17 @@ export function ConnectionModal({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [clearing, setClearing] = useState(false);
+  // Local, independent of `existing` (a snapshot prop) — flips the instant a
+  // clear succeeds so the placeholder/button don't lie about what's stored.
+  const [hasStoredPassword, setHasStoredPassword] = useState(existing?.has_password ?? false);
+  const [passwordCleared, setPasswordCleared] = useState(false);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
+  // Matches NewSessionDialog: focus lands inside the dialog on open so a bare
+  // Escape (no prior click) actually reaches this div's onKeyDown.
+  useEffect(() => {
+    nameInputRef.current?.focus();
+  }, []);
 
   function field<K extends keyof ConnectionInput>(key: K, value: ConnectionInput[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -53,7 +65,15 @@ export function ConnectionModal({
   async function test() {
     setTestResult("idle");
     try {
-      await invokeTestConnection(form);
+      // An untouched password field on an edit is blank, not "no password" —
+      // testing `form` directly would send an empty password and report a
+      // false failure for a connection that works fine. Only a password the
+      // user actually retyped should go through the raw `form`.
+      if (existing && !form.password) {
+        await invokeTestSavedConnection(existing.id);
+      } else {
+        await invokeTestConnection(form);
+      }
       setTestResult("ok");
     } catch {
       setTestResult("error");
@@ -82,15 +102,21 @@ export function ConnectionModal({
     }
   }
 
-  // A direct action, not routed through the Save flow — mirrors ProviderPane's
-  // "Remove key": clearing a secret shouldn't wait on unrelated field edits.
+  // A direct action against the backend, like ProviderPane's "Remove key" —
+  // but unlike that flow, this does NOT call onSaved(): onSaved closes the
+  // modal and refreshes the list, which would silently throw away any other
+  // field edits the user has typed but not yet saved. Clearing only updates
+  // local state so the placeholder/button reflect it; the rest of the form
+  // (and the parent's list) still update the normal way, via Save.
   async function clearPassword() {
     if (!existing) return;
     setClearing(true);
     setError(null);
+    setPasswordCleared(false);
     try {
       await invokeClearConnectionPassword(existing.id);
-      onSaved();
+      setHasStoredPassword(false);
+      setPasswordCleared(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -133,6 +159,7 @@ export function ConnectionModal({
             Name
             <input
               id="conn-name"
+              ref={nameInputRef}
               value={form.name}
               onChange={(e) => field("name", e.target.value)}
               className={inputClass}
@@ -198,11 +225,14 @@ export function ConnectionModal({
               type="password"
               autoComplete="off"
               value={form.password ?? ""}
-              onChange={(e) => field("password", e.target.value)}
-              placeholder={existing?.has_password ? "•••••••• (stored)" : "Enter a password"}
+              onChange={(e) => {
+                field("password", e.target.value);
+                setPasswordCleared(false);
+              }}
+              placeholder={hasStoredPassword ? "•••••••• (stored)" : "Enter a password"}
               className={inputClass}
             />
-            {existing?.has_password ? (
+            {hasStoredPassword ? (
               <button
                 type="button"
                 onClick={() => void clearPassword()}
@@ -211,6 +241,8 @@ export function ConnectionModal({
               >
                 Clear stored password
               </button>
+            ) : passwordCleared ? (
+              <span className="text-[11px] normal-case tracking-normal text-success">Stored password cleared.</span>
             ) : null}
           </label>
           <div className={labelClass}>

@@ -12,14 +12,20 @@ type ModalState = { mode: "add" } | { mode: "edit"; connection: ConnectionSummar
 export function ConnectionsPane() {
   const [connections, setConnections] = useState<ConnectionSummary[]>([]);
   const [statuses, setStatuses] = useState<Record<string, "ok" | "error">>({});
-  const [error, setError] = useState<string | null>(null);
+  // Separate from actionError: a failed load must read as "couldn't load"
+  // (distinct from a genuinely empty list), not fold into a generic banner
+  // that a delete/other-action failure also writes to.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalState>(null);
 
   const refresh = useCallback(async () => {
     try {
-      setConnections(await invokeListConnections());
+      const list = await invokeListConnections();
+      setConnections(list);
+      setLoadError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setLoadError(err instanceof Error ? err.message : String(err));
     }
   }, []);
 
@@ -36,9 +42,16 @@ export function ConnectionsPane() {
     }
   }
 
-  async function remove(id: string) {
-    await invokeDeleteConnection(id).catch(() => {});
-    await refresh();
+  async function remove(id: string, name: string) {
+    setActionError(null);
+    try {
+      await invokeDeleteConnection(id);
+      await refresh();
+    } catch (err) {
+      // A failed delete must say so — the row staying put is the only other
+      // signal, and that alone reads as "nothing happened" rather than "no".
+      setActionError(`Couldn't delete "${name}": ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   return (
@@ -59,7 +72,11 @@ export function ConnectionsPane() {
       </div>
 
       <div className="mt-6 flex flex-col gap-2">
-        {connections.length === 0 ? (
+        {loadError ? (
+          <div className="rounded-lg border border-border bg-danger-bg p-4 text-sm text-danger">
+            Couldn't load connections: {loadError}
+          </div>
+        ) : connections.length === 0 ? (
           <div className="rounded-lg border border-border p-4 text-sm text-text-faint">
             No connections configured. Add one to browse and query a database.
           </div>
@@ -99,7 +116,7 @@ export function ConnectionsPane() {
                   </button>
                   <button
                     aria-label={`Delete ${c.name}`}
-                    onClick={() => void remove(c.id)}
+                    onClick={() => void remove(c.id, c.name)}
                     className="rounded-sm px-2 py-1 text-xs text-text-faint hover:bg-surface-2 hover:text-text"
                   >
                     ✕
@@ -110,7 +127,7 @@ export function ConnectionsPane() {
           ))
         )}
       </div>
-      {error ? <div className="mt-2 text-xs text-danger">{error}</div> : null}
+      {actionError ? <div className="mt-2 text-xs text-danger">{actionError}</div> : null}
 
       {modal ? (
         <ConnectionModal
