@@ -130,10 +130,14 @@ pub async fn list_table_rows_impl(
     if let Some((column, descending)) = order_by {
         sql.push_str(&format!(" ORDER BY \"{column}\" {}", if descending { "DESC" } else { "ASC" }));
     }
-    // limit/offset are i64, not user-supplied text — nothing to inject.
-    sql.push_str(&format!(" LIMIT {limit} OFFSET {offset}"));
+    // No other value in this query is bound (table/column are identifiers,
+    // which Postgres can't bind — they're interpolated after validation
+    // instead), so limit/offset are $1/$2.
+    sql.push_str(" LIMIT $1 OFFSET $2");
 
     let rows = sqlx::query(&sql)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(pool)
         .await
         .map_err(|e| format!("query failed: {e}"))?;
