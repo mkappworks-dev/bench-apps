@@ -68,7 +68,7 @@ describe("invokeRunCorrelatedRequest", () => {
 
   it("sends the session id alongside the request, connection, and watched tables", async () => {
     await invokeRunCorrelatedRequest({
-      request: { method: "GET", url: "/api/orders" },
+      request: { method: "GET", url: "/api/orders", headers: [] },
       connection,
       watchedTables: ["orders"],
       sessionId: "sess-1",
@@ -77,7 +77,7 @@ describe("invokeRunCorrelatedRequest", () => {
     const [command, payload] = lastInvoke();
     expect(command).toBe("run_correlated_request");
     expect(payload).toStrictEqual({
-      request: { method: "GET", url: "/api/orders" },
+      request: { method: "GET", url: "/api/orders", headers: [] },
       connection,
       watchedTables: ["orders"],
       sessionId: "sess-1",
@@ -92,14 +92,14 @@ describe("invokeRunCorrelatedRequest", () => {
 
   it("sends an explicit null session id when the send is unattributed", async () => {
     await invokeRunCorrelatedRequest({
-      request: { method: "GET", url: "/api/orders" },
+      request: { method: "GET", url: "/api/orders", headers: [] },
       connection,
       watchedTables: [],
     });
 
     const [, payload] = lastInvoke();
     expect(payload).toStrictEqual({
-      request: { method: "GET", url: "/api/orders" },
+      request: { method: "GET", url: "/api/orders", headers: [] },
       connection,
       watchedTables: [],
       sessionId: null,

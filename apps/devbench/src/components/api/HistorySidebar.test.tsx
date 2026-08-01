@@ -23,6 +23,9 @@ function entry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
     duration_ms: 142,
     fired_at: "2026-07-30T14:02:11Z",
     session_id: null,
+    request_headers: [],
+    request_body: null,
+    response_headers: [],
     ...overrides,
   };
 }
