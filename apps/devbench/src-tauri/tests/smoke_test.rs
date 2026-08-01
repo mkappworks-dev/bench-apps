@@ -242,6 +242,7 @@ async fn firing_a_request_correlates_both_db_writes_and_log_lines() {
         &emails,
         &edb.pool,
         result.correlation_id,
+        None,
         50_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
     )
     .await
@@ -422,6 +423,7 @@ async fn firing_a_request_correlates_db_writes_log_lines_and_sent_mail() {
         &emails,
         &edb.pool,
         result.correlation_id,
+        None,
         chrono::Utc::now().timestamp_millis() + DEFAULT_CORRELATION_WINDOW_MS + 1,
     )
     .await
