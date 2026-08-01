@@ -13,6 +13,11 @@ use tauri::Manager;
 /// source per tick when nothing has changed.
 const LOG_POLL_INTERVAL_MS: u64 = 250;
 
+/// How often the preview sweep checks for expired transactions. 8x finer
+/// than PREVIEW_TIMEOUT_MS, so an abandoned preview is never held much
+/// longer than the timeout itself implies.
+const PREVIEW_SWEEP_INTERVAL_MS: u64 = 15_000;
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -60,6 +65,18 @@ fn main() {
 
             app.manage(Arc::new(devbench::correlation_state::CorrelationRegistry::new()));
             app.manage(Arc::new(devbench::connection_registry::ConnectionRegistry::new()));
+
+            let preview_registry = std::sync::Arc::new(devbench::preview_state::PendingPreviewRegistry::new());
+            app.manage(std::sync::Arc::clone(&preview_registry));
+            tauri::async_runtime::spawn(async move {
+                let mut ticker =
+                    tokio::time::interval(std::time::Duration::from_millis(PREVIEW_SWEEP_INTERVAL_MS));
+                loop {
+                    ticker.tick().await;
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    preview_registry.sweep_expired(now_ms).await;
+                }
+            });
 
             let emails = Arc::new(EmailState::new());
             // Bind BEFORE spawning: `serve()` blocks forever and can only
