@@ -108,7 +108,7 @@ export function EmailTab({
   }
 
   return (
-    <div className="-m-6 flex h-full flex-col">
+    <div className="-m-6 flex h-full flex-1 flex-col">
       <div className="flex flex-1 overflow-hidden">
         <EmailInbox
           emails={emails}
