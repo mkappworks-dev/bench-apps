@@ -5,6 +5,8 @@ use sqlx::Row;
 use tauri::State;
 use uuid::Uuid;
 
+use super::request::HeaderPair;
+
 #[derive(Debug, Deserialize)]
 pub struct HistoryEntryInput {
     pub method: String,
@@ -15,6 +17,12 @@ pub struct HistoryEntryInput {
     /// `None` = unattributed (no active session, or predates session scoping).
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub request_headers: Vec<HeaderPair>,
+    #[serde(default)]
+    pub request_body: Option<String>,
+    #[serde(default)]
+    pub response_headers: Vec<HeaderPair>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -27,6 +35,9 @@ pub struct HistoryEntry {
     pub duration_ms: i64,
     pub fired_at: String,
     pub session_id: Option<String>,
+    pub request_headers: Vec<HeaderPair>,
+    pub request_body: Option<String>,
+    pub response_headers: Vec<HeaderPair>,
 }
 
 pub async fn save_history_entry_impl(
@@ -35,10 +46,12 @@ pub async fn save_history_entry_impl(
 ) -> Result<(), String> {
     let id = Uuid::new_v4().to_string();
     let fired_at = Utc::now().to_rfc3339();
+    let request_headers = serde_json::to_string(&entry.request_headers).unwrap_or_else(|_| "[]".to_string());
+    let response_headers = serde_json::to_string(&entry.response_headers).unwrap_or_else(|_| "[]".to_string());
 
     sqlx::query(
-        "INSERT INTO request_history (id, method, url, status_code, response_body, duration_ms, fired_at, session_id) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO request_history (id, method, url, status_code, response_body, duration_ms, fired_at, session_id, request_headers, request_body, response_headers) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&entry.method)
@@ -48,6 +61,9 @@ pub async fn save_history_entry_impl(
     .bind(entry.duration_ms as i64)
     .bind(&fired_at)
     .bind(&entry.session_id)
+    .bind(&request_headers)
+    .bind(&entry.request_body)
+    .bind(&response_headers)
     .execute(pool)
     .await
     .map_err(|e| format!("failed to save history entry: {e}"))?;
@@ -59,11 +75,9 @@ pub async fn list_history_impl(
     pool: &sqlx::SqlitePool,
     session_id: Option<&str>,
 ) -> Result<Vec<HistoryEntry>, String> {
-    // Two distinct queries, not one `(?1 IS NULL OR session_id = ?1)` predicate
-    // — that reads as clever but risks matching unattributed rows into a named
-    // session, which must never happen.
     const COLUMNS: &str =
-        "SELECT id, method, url, status_code, response_body, duration_ms, fired_at, session_id \
+        "SELECT id, method, url, status_code, response_body, duration_ms, fired_at, session_id, \
+         request_headers, request_body, response_headers \
          FROM request_history";
 
     let rows = match session_id {
@@ -92,6 +106,9 @@ pub async fn list_history_impl(
             duration_ms: r.get("duration_ms"),
             fired_at: r.get("fired_at"),
             session_id: r.get("session_id"),
+            request_headers: serde_json::from_str(&r.get::<String, _>("request_headers")).unwrap_or_default(),
+            request_body: r.get("request_body"),
+            response_headers: serde_json::from_str(&r.get::<String, _>("response_headers")).unwrap_or_default(),
         })
         .collect())
 }
@@ -134,6 +151,9 @@ mod tests {
                 response_body: "{}".to_string(),
                 duration_ms: 12,
                 session_id,
+                request_headers: vec![],
+                request_body: None,
+                response_headers: vec![],
             },
         )
         .await
@@ -305,5 +325,123 @@ mod tests {
         let restored = list_history_impl(&db.pool, Some(&session.id)).await.unwrap();
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].url, "/orders");
+    }
+
+    #[tokio::test]
+    async fn round_trips_request_and_response_headers_and_body() {
+        let (_dir, db) = db().await;
+
+        save_history_entry_impl(
+            &db.pool,
+            HistoryEntryInput {
+                method: "POST".to_string(),
+                url: "/api/orders".to_string(),
+                status_code: 201,
+                response_body: "{\"id\":1}".to_string(),
+                duration_ms: 12,
+                session_id: None,
+                request_headers: vec![HeaderPair { key: "Content-Type".to_string(), value: "application/json".to_string() }],
+                request_body: Some("{\"sku\":\"WIDGET-1\"}".to_string()),
+                response_headers: vec![HeaderPair { key: "content-type".to_string(), value: "application/json".to_string() }],
+            },
+        )
+        .await
+        .unwrap();
+
+        let entries = list_history_impl(&db.pool, None).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].request_headers,
+            vec![HeaderPair { key: "Content-Type".to_string(), value: "application/json".to_string() }]
+        );
+        assert_eq!(entries[0].request_body.as_deref(), Some("{\"sku\":\"WIDGET-1\"}"));
+        assert_eq!(
+            entries[0].response_headers,
+            vec![HeaderPair { key: "content-type".to_string(), value: "application/json".to_string() }]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_row_with_no_request_body_reads_back_as_none() {
+        let (_dir, db) = db().await;
+
+        save_history_entry_impl(
+            &db.pool,
+            HistoryEntryInput {
+                method: "GET".to_string(),
+                url: "/api/users/8".to_string(),
+                status_code: 200,
+                response_body: "{}".to_string(),
+                duration_ms: 5,
+                session_id: None,
+                request_headers: vec![],
+                request_body: None,
+                response_headers: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        let entries = list_history_impl(&db.pool, None).await.unwrap();
+        assert_eq!(entries[0].request_body, None);
+        assert_eq!(entries[0].request_headers, vec![]);
+        assert_eq!(entries[0].response_headers, vec![]);
+    }
+
+    // Mirrors the existing pre-0003 migration test: builds a real database
+    // migrated only through 0003, writes a row the way the pre-0004 app did,
+    // then opens it through the full migrator (which runs 0004) and confirms
+    // the new columns default sensibly rather than the migration failing or
+    // losing the row.
+    #[tokio::test]
+    async fn a_row_written_before_migration_0004_reads_back_with_empty_defaults() {
+        use sqlx::migrate::Migration;
+        use sqlx::sqlite::SqlitePoolOptions;
+        use std::borrow::Cow;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("devbench.db");
+        let url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let legacy_pool = SqlitePoolOptions::new().max_connections(1).connect(&url).await.unwrap();
+
+        let mut pre_headers = sqlx::migrate!("./migrations");
+        let earlier: Vec<Migration> = pre_headers.migrations.iter().filter(|m| m.version < 4).cloned().collect();
+        assert_eq!(earlier.len(), 3, "expected 0001, 0002, and 0003 to precede 0004");
+        pre_headers.migrations = Cow::Owned(earlier);
+        pre_headers.run(&legacy_pool).await.unwrap();
+
+        let columns: Vec<String> = sqlx::query("PRAGMA table_info(request_history)")
+            .fetch_all(&legacy_pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.get::<String, _>("name"))
+            .collect();
+        assert!(!columns.iter().any(|c| c == "request_headers"), "this database is not pre-0004: {columns:?}");
+
+        sqlx::query(
+            "INSERT INTO request_history (id, method, url, status_code, response_body, duration_ms, fired_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind("legacy-1")
+        .bind("GET")
+        .bind("/legacy")
+        .bind(200_i64)
+        .bind("{}")
+        .bind(7_i64)
+        .bind("2026-01-01T00:00:00Z")
+        .execute(&legacy_pool)
+        .await
+        .unwrap();
+        legacy_pool.close().await;
+
+        let db = LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        let all = list_history_impl(&db.pool, None).await.unwrap();
+        assert_eq!(all.len(), 1, "the migration must not drop existing history");
+        assert_eq!(all[0].url, "/legacy");
+        assert_eq!(all[0].request_headers, vec![]);
+        assert_eq!(all[0].request_body, None);
+        assert_eq!(all[0].response_headers, vec![]);
     }
 }
