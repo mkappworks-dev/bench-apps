@@ -1,5 +1,5 @@
 {
-  "productName": "DevBench",
+  "productName": "Dev Bench",
   "version": "0.1.0",
   "identifier": "app.benchlabs.devbench",
   "build": {
@@ -11,7 +11,7 @@
   "app": {
     "windows": [
       {
-        "title": "DevBench",
+        "title": "Dev Bench",
         "width": 1280,
         "height": 800,
         "titleBarStyle": "Overlay",
