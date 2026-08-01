@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EmailInbox } from "./EmailInbox";
 import { EmailViewer } from "./EmailViewer";
 import { useAppStore } from "../../store/useAppStore";
@@ -26,9 +26,24 @@ export function EmailTab({ focusEmailId = null }: { focusEmailId?: number | null
   const [status, setStatus] = useState<SmtpStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // The live session. A poll tick started under session A can resolve after
+  // the user has switched to B; comparing against this ref (not the tick's
+  // closed-over value) is what lets that resolution be dropped. Same
+  // approach as ApiTab.tsx's `belongsToCurrentSession`.
+  const activeSessionIdRef = useRef(activeSessionId);
+
+  // Switching sessions must not leave a previous session's selected email
+  // sitting in the viewer — same rationale as ApiTab.tsx's clear-on-switch.
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+    setSelectedId(null);
+  }, [activeSessionId]);
+
   const refresh = useCallback(async () => {
+    const requestedSessionId = activeSessionId;
     try {
       const result = await invokeListEmails(activeSessionId, LIST_LIMIT);
+      if (activeSessionIdRef.current !== requestedSessionId) return;
       setEmails(result.emails);
       setEvictedThroughId(result.evicted_through_id);
     } catch {
