@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeListHistory, invokeRunCorrelatedRequest } from "./tauri";
+import { invokeClearEmails, invokeListEmails, invokeListHistory, invokeRunCorrelatedRequest } from "./tauri";
 
 /**
  * Asserts raw `invoke` payloads rather than spying on the wrappers, because
@@ -106,5 +106,57 @@ describe("invokeRunCorrelatedRequest", () => {
     });
     expect(payload.sessionId).toBeNull();
     expect(JSON.stringify(payload)).toContain('"sessionId":null');
+  });
+});
+
+describe("invokeListEmails", () => {
+  beforeEach(() => {
+    invoked.mockClear();
+  });
+
+  it("sends the session id under the camelCase key Tauri maps to `session_id`", async () => {
+    await invokeListEmails("sess-1", 5_000);
+
+    expect(invoked).toHaveBeenCalledWith("list_emails", { sessionId: "sess-1", limit: 5_000 });
+    const [command, payload] = lastInvoke();
+    expect(command).toBe("list_emails");
+    expect(Object.keys(payload).sort()).toEqual(["limit", "sessionId"]);
+    expect(payload).not.toHaveProperty("session_id");
+  });
+
+  it("sends an explicit null when the session is null", async () => {
+    await invokeListEmails(null, 5_000);
+
+    const [command, payload] = lastInvoke();
+    expect(command).toBe("list_emails");
+    expect(payload).toStrictEqual({ sessionId: null, limit: 5_000 });
+    expect(payload.sessionId).toBeNull();
+    expect(JSON.stringify(payload)).toContain('"sessionId":null');
+  });
+});
+
+describe("invokeClearEmails", () => {
+  beforeEach(() => {
+    invoked.mockClear();
+  });
+
+  it("sends the session id under the camelCase key Tauri maps to `session_id`", async () => {
+    await invokeClearEmails("sess-1");
+
+    expect(invoked).toHaveBeenCalledWith("clear_emails", { sessionId: "sess-1" });
+    const [command, payload] = lastInvoke();
+    expect(command).toBe("clear_emails");
+    expect(Object.keys(payload)).toEqual(["sessionId"]);
+    expect(payload).not.toHaveProperty("session_id");
+  });
+
+  it("sends an explicit null when the session is null", async () => {
+    await invokeClearEmails(null);
+
+    const [command, payload] = lastInvoke();
+    expect(command).toBe("clear_emails");
+    expect(payload).toStrictEqual({ sessionId: null });
+    expect(payload.sessionId).toBeNull();
+    expect(JSON.stringify(payload)).toBe('{"sessionId":null}');
   });
 });
