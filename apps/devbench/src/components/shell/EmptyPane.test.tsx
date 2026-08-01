@@ -11,7 +11,7 @@ describe("EmptyPane", () => {
     expect(screen.getByText(/duplicates are allowed/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /add a tool/i }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "API" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^API/ }));
     expect(onAddTab).toHaveBeenCalledWith("api");
   });
 });

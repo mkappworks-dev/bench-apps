@@ -70,7 +70,7 @@ describe("AppStrip", () => {
     const onAddTab = vi.fn();
     render(<AppStrip {...BASE} onAddTab={onAddTab} />);
     fireEvent.click(screen.getByRole("button", { name: /add a tool to the primary pane/i }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Email" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Email/ }));
     expect(onAddTab).toHaveBeenCalledWith("left", "email");
   });
 
@@ -91,7 +91,7 @@ describe("AppStrip", () => {
     render(<AppStrip {...BASE} tabs={[TWO_LEFT_TABS[0]]} onToggleSplit={() => false} onAddTab={onAddTab} />);
 
     fireEvent.click(screen.getByRole("button", { name: /toggle split view/i }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Log" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Log/ }));
 
     expect(onAddTab).toHaveBeenCalledWith("right", "log");
   });
@@ -133,7 +133,7 @@ describe("AppStrip", () => {
     fireEvent.click(screen.getByRole("button", { name: /toggle split view/i }));
     expect(screen.getByRole("menu")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "Log" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Log/ }));
 
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });

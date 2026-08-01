@@ -36,7 +36,7 @@ describe("SplitContent", () => {
     const onAddTab = vi.fn();
     renderSplit({ onAddTab });
     fireEvent.click(screen.getByRole("button", { name: /add a tool/i }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Log" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Log/ }));
     expect(onAddTab).toHaveBeenCalledWith("left", "log");
   });
 

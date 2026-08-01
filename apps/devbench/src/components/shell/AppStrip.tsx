@@ -1,10 +1,8 @@
 import { useState } from "react";
 import { Tabs } from "../ui/Tabs";
 import { Menu } from "../ui/Menu";
-import { TABS } from "./tools";
+import { TABS, TOOL_MENU_OPTIONS } from "./tools";
 import { isSplitOpen, type Pane, type Tab, type ToolKind } from "../../store/useAppStore";
-
-const ADD_OPTIONS = TABS.map((t) => ({ value: t.id, label: t.label }));
 
 export function AppStrip({
   tabs,
@@ -36,7 +34,9 @@ export function AppStrip({
   // Always a defined boolean, never `undefined`, once this exists — Base UI's
   // Menu.Root cannot switch from controlled back to uncontrolled on the same
   // mounted instance, and the right pane's TabGroup can stay mounted across
-  // the phantom-group-to-real-tab transition (see the reviewer's finding).
+  // the phantom-group-to-real-tab transition (a real tab landing while this
+  // menu is still open, hopping straight from `pendingSplitAdd` to `splitOpen`
+  // with no unmount in between).
   const [rightMenuOpen, setRightMenuOpen] = useState(false);
   const showRightGroup = splitOpen || pendingSplitAdd;
 
@@ -121,16 +121,22 @@ const ACTION_CLASS =
   "aria-pressed:bg-surface-2 aria-pressed:text-text";
 
 function tabLabel(tab: Tab): React.ReactNode {
-  const base = TABS.find((t) => t.id === tab.kind)?.label ?? tab.kind;
-  if (tab.kind === "db" && typeof tab.state.table === "string") {
-    return (
+  const meta = TABS.find((t) => t.id === tab.kind);
+  const base = meta?.label ?? tab.kind;
+  const subtitle = tab.kind === "db" && typeof tab.state.table === "string" ? tab.state.table : null;
+  return (
+    <span className="flex items-center gap-1.5">
+      {meta ? (
+        <span aria-hidden="true" className="shrink-0 text-text-faint">
+          {meta.icon}
+        </span>
+      ) : null}
       <span className="flex flex-col items-start leading-tight">
         <span>{base}</span>
-        <span className="font-mono text-[10px] text-text-faint">{tab.state.table}</span>
+        {subtitle ? <span className="font-mono text-[10px] text-text-faint">{subtitle}</span> : null}
       </span>
-    );
-  }
-  return base;
+    </span>
+  );
 }
 
 function tabCloseName(tab: Tab): string {
@@ -204,7 +210,7 @@ function TabGroup({
       </Tabs.List>
       <Menu
         label={`Add a tool to the ${pane === "left" ? "primary" : "secondary"} pane`}
-        options={ADD_OPTIONS}
+        options={TOOL_MENU_OPTIONS}
         onSelect={(kind) => onAddTab(pane, kind as ToolKind)}
         trigger={<PlusIcon />}
         triggerClassName="grid size-7 shrink-0 place-items-center rounded-sm text-text-faint transition-colors duration-150 hover:bg-surface-2 hover:text-text"

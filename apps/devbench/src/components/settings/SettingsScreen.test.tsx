@@ -48,7 +48,7 @@ describe("SettingsScreen", () => {
   it("navigates back to the workspace", async () => {
     const onBack = vi.fn();
     render(<SettingsScreen onBack={onBack} />);
-    fireEvent.click(screen.getByRole("button", { name: /back to devbench/i }));
+    fireEvent.click(screen.getByRole("button", { name: /back to workspace/i }));
     expect(onBack).toHaveBeenCalled();
   });
 });

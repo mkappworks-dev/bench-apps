@@ -116,10 +116,11 @@ export function SessionsSidebar({ onOpenSettings }: { onOpenSettings: () => void
       <div className="flex items-center justify-between border-b border-border p-2.5 text-xs font-bold text-text-muted">
         Sessions
         <button
+          aria-label="New session"
           onClick={() => setShowNew(true)}
-          className="rounded-sm px-1.5 py-0.5 transition-colors duration-150 hover:bg-surface-2 hover:text-text"
+          className="grid size-6 place-items-center rounded-sm transition-colors duration-150 hover:bg-surface-2 hover:text-text"
         >
-          New session
+          <PlusIcon />
         </button>
       </div>
 
@@ -186,5 +187,13 @@ export function SessionsSidebar({ onOpenSettings }: { onOpenSettings: () => void
 
       <NewSessionDialog open={showNew} onCreate={handleCreate} onCancel={() => setShowNew(false)} />
     </aside>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M12 5v14M5 12h14" />
+    </svg>
   );
 }

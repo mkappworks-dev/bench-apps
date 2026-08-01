@@ -21,7 +21,7 @@ export function AppearancePane() {
   const current = THEMES.find((t) => t.value === theme) ?? THEMES[1];
 
   return (
-    <div className="max-w-2xl">
+    <div className="max-w-160">
       <h2 className="text-base font-bold text-text">Appearance</h2>
       <p className="mb-4 text-xs text-text-faint">Applies to every session.</p>
 

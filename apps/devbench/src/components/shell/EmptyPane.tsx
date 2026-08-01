@@ -1,8 +1,6 @@
 import { Menu } from "../ui/Menu";
-import { TABS } from "./tools";
+import { TOOL_MENU_OPTIONS } from "./tools";
 import type { ToolKind } from "../../store/useAppStore";
-
-const ADD_OPTIONS = TABS.map((t) => ({ value: t.id, label: t.label }));
 
 /** Shown when the active session (or the scratch workspace) has no tabs
  *  open. New sessions start genuinely empty — nothing is seeded. */
@@ -15,7 +13,7 @@ export function EmptyPane({ onAddTab }: { onAddTab: (kind: ToolKind) => void }) 
       </p>
       <Menu
         label="Add a tool"
-        options={ADD_OPTIONS}
+        options={TOOL_MENU_OPTIONS}
         onSelect={(kind) => onAddTab(kind as ToolKind)}
         trigger="Add a tool"
         triggerClassName="rounded-sm border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-text transition-colors duration-150 hover:bg-surface-2"

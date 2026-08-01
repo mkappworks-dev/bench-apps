@@ -39,7 +39,7 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
             onClick={onBack}
             className="mb-2 rounded-sm p-2 text-left text-xs font-medium text-text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-text"
           >
-            ← Back to DevBench
+            ← Back to workspace
           </button>
           <Tabs.List className="flex flex-col gap-0.5" aria-label="Settings sections">
             {PANES.map((p) => (
