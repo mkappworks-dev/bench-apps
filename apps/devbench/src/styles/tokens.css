@@ -17,6 +17,9 @@
   --danger-bg: #2b1514;
   --radius-sm: 6px;
   --radius-lg: 12px;
+  /* Shell geometry, shared with the app strip's grid columns. */
+  --w-sidebar: 15rem;
+  --w-chat: 20rem;
 }
 
 @media (prefers-color-scheme: light) {

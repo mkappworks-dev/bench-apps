@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { LogSourcesSidebar } from "./LogSourcesSidebar";
 import { AddLogSourceForm } from "./AddLogSourceForm";
 import { LogStream } from "./LogStream";
-import { useAppStore } from "../../store/useAppStore";
 import {
   invokeAddLogSource,
   invokeListLogSources,
@@ -17,10 +16,13 @@ const POLL_INTERVAL_MS = 500;
 /** How many lines the UI keeps rendered. Matches the Rust buffer's own cap. */
 const MAX_RENDERED_LINES = 5_000;
 
-export function LogTab({ focusSourceId = null }: { focusSourceId?: string | null }) {
-  const activeSourceId = useAppStore((s) => s.activeLogSourceId);
-  const setActiveSourceId = useAppStore((s) => s.setActiveLogSourceId);
-
+export function LogTab({
+  sourceId,
+  onPatchState,
+}: {
+  sourceId: string | null;
+  onPatchState: (patch: { sourceId: string | null }) => void;
+}) {
   const [sources, setSources] = useState<LogSourceStatus[]>([]);
   const [lines, setLines] = useState<LogLine[]>([]);
   const [filter, setFilter] = useState("");
@@ -38,10 +40,6 @@ export function LogTab({ focusSourceId = null }: { focusSourceId?: string | null
   }, []);
 
   useEffect(() => {
-    if (focusSourceId) setActiveSourceId(focusSourceId);
-  }, [focusSourceId, setActiveSourceId]);
-
-  useEffect(() => {
     void refreshSources();
   }, [refreshSources]);
 
@@ -51,7 +49,7 @@ export function LogTab({ focusSourceId = null }: { focusSourceId?: string | null
     afterIdRef.current = 0;
     setLines([]);
     setDropped(0);
-  }, [activeSourceId]);
+  }, [sourceId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -59,7 +57,7 @@ export function LogTab({ focusSourceId = null }: { focusSourceId?: string | null
       try {
         const page = await invokeReadLogLines({
           afterId: afterIdRef.current,
-          sourceId: activeSourceId ?? undefined,
+          sourceId: sourceId ?? undefined,
           limit: 500,
         });
         if (cancelled) return;
@@ -78,7 +76,7 @@ export function LogTab({ focusSourceId = null }: { focusSourceId?: string | null
       cancelled = true;
       clearInterval(timer);
     };
-  }, [activeSourceId, refreshSources]);
+  }, [sourceId, refreshSources]);
 
   async function handleAdd(input: { label: string; path: string }) {
     setAddError(null);
@@ -94,7 +92,7 @@ export function LogTab({ focusSourceId = null }: { focusSourceId?: string | null
   async function handleRemove(id: string) {
     try {
       await invokeRemoveLogSource(id);
-      if (activeSourceId === id) setActiveSourceId(null);
+      if (sourceId === id) onPatchState({ sourceId: null });
       await refreshSources();
     } catch {
       await refreshSources();
@@ -105,8 +103,8 @@ export function LogTab({ focusSourceId = null }: { focusSourceId?: string | null
     <div className="-m-6 flex h-full">
       <LogSourcesSidebar
         sources={sources}
-        activeSourceId={activeSourceId}
-        onSelect={setActiveSourceId}
+        activeSourceId={sourceId}
+        onSelect={(id) => onPatchState({ sourceId: id })}
         onRemove={handleRemove}
         onAdd={() => setShowAdd(true)}
       />

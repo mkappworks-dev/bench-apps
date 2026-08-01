@@ -45,7 +45,7 @@ export function ChatDock({ onClose }: { onClose: () => void }) {
   return (
     // Ghosty and a flex sibling of the content column — it RESIZES the
     // workspace rather than overlaying it (DESIGN.md).
-    <aside aria-label="AI Assistant" className="flex w-80 min-w-80 flex-col border-l border-border">
+    <aside aria-label="AI Assistant" className="flex w-(--w-chat) min-w-(--w-chat) flex-col border-l border-border">
       <div className="flex items-center justify-between border-b border-border p-2.5">
         <span className="text-xs font-bold text-text-muted">AI Assistant</span>
         <button
