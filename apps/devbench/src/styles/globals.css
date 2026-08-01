@@ -30,6 +30,7 @@ body {
   font-family: var(--font-sans);
 }
 
+/* Covers both glass surfaces (NewSessionDialog, Menu) — they share this blur class. */
 @media (prefers-reduced-transparency: reduce) {
   .backdrop-blur-\[24px\] {
     backdrop-filter: none;

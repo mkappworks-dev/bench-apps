@@ -6,6 +6,7 @@ import {
   invokeSetSetting,
   type ProviderStatus,
 } from "../../lib/tauri";
+import { Menu, ChevronIcon } from "../ui/Menu";
 
 const MODELS = [
   { id: "claude-opus-5", label: "Claude Opus 5 — most capable" },
@@ -102,21 +103,20 @@ export function ProviderPane() {
       </section>
 
       <section className="mt-4 rounded-lg border border-border p-4">
-        <label htmlFor="model" className="text-sm font-semibold text-text">
-          Model
-        </label>
-        <select
-          id="model"
+        <div className="text-sm font-semibold text-text">Model</div>
+        <Menu
+          label="Model"
+          options={MODELS.map((m) => ({ value: m.id, label: m.label }))}
           value={status?.model ?? "claude-opus-5"}
-          onChange={(e) => void saveModel(e.target.value)}
-          className="mt-2 w-full max-w-80 rounded-sm border border-border bg-surface-2 px-2.5 py-2 text-sm text-text"
-        >
-          {MODELS.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label}
-            </option>
-          ))}
-        </select>
+          onSelect={(next) => void saveModel(next)}
+          trigger={
+            <>
+              {MODELS.find((m) => m.id === (status?.model ?? "claude-opus-5"))?.label ?? "Select a model"}
+              <ChevronIcon />
+            </>
+          }
+          triggerClassName="mt-2 flex h-9 w-full max-w-80 items-center justify-between gap-2 rounded-sm border border-border bg-surface-2 px-2.5 text-sm text-text transition-colors duration-150 hover:border-text-faint"
+        />
       </section>
     </div>
   );

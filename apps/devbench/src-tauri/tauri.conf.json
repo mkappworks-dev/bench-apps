@@ -13,7 +13,10 @@
       {
         "title": "DevBench",
         "width": 1280,
-        "height": 800
+        "height": 800,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 20, "y": 16 }
       }
     ]
   }

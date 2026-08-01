@@ -1,0 +1,673 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DevBench — v2 shell</title>
+<style>
+  /* ---- DevBench v2 shell ----
+     Six UI changes explored as one artifact:
+       1. Theme selector removed from the workspace, lives only in Settings
+       2. Tools are no longer a fixed 4-tab set — tabs are instances you add
+          with `+`, duplicates allowed (two DB tabs, different tables)
+       3. Chat toggle moved inline with the tabs / + / split controls
+       4. DevBench header row removed
+       5. Native window bar removed — traffic lights inset into the tab strip
+       6. Native <select> replaced with a styled popup (used by +, method, theme)
+     Tokens are verbatim from DESIGN.md / apps/devbench/src/styles/tokens.css.
+  */
+  :root {
+    --bg: #08090c; --surface: #121419; --surface-2: #191c22; --border: #24262e;
+    --text: #ecedf2; --text-muted: #999fac; --text-faint: #666d7a;
+    --accent: #f2f3f5; --accent-strong: #ffffff; --accent-on: #0a0b0e;
+    --page-glow: rgba(255, 255, 255, 0.07);
+    --success: #3fce85; --success-bg: #12271c;
+    --warning: #e3a438; --warning-bg: #2b2210;
+    --danger: #e5695f; --danger-bg: #2b1514;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.5);
+    --glass-bg: rgba(18,20,25,.72); --glass-border: rgba(255,255,255,.08);
+    --glass-hi: inset 0 1px 0 rgba(255,255,255,.06);
+    --radius-sm: 6px; --radius-lg: 12px;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+    /* Four steps, ratios 1.14 / 1.125 / 1.185 — inside DESIGN.md's stated
+       1.125–1.2 band, which is deliberately tighter than a marketing surface.
+       --fs-xs is reserved for uppercase tracked micro-labels, where the casing
+       carries the role distinction and the size only has to stay out of the way. */
+    --fs-xs: 10.5px; --fs-sm: 12px; --fs-md: 13.5px; --fs-h: 16px;
+  }
+  :root[data-theme="light"] {
+    --bg:#f5f7fa; --surface:#ffffff; --surface-2:#eef1f6; --border:#dde3ec;
+    --text:#10151f; --text-muted:#5b6472; --text-faint:#8a92a1;
+    --accent:#10151f; --accent-strong:#000000; --accent-on:#ffffff;
+    --page-glow: rgba(16,21,31,.025);
+    --success:#167a45; --success-bg:#e3f5eb; --warning:#a3660a; --warning-bg:#faf0dc;
+    --danger:#b93a3a; --danger-bg:#fbe9e9;
+    --shadow:0 1px 2px rgba(16,21,31,.05), 0 10px 28px rgba(16,21,31,.09);
+    --glass-bg: rgba(255,255,255,.78); --glass-border: rgba(16,21,31,.07);
+    --glass-hi: inset 0 1px 0 rgba(255,255,255,.6);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; font-family: var(--font-sans); font-size: var(--fs-md); line-height: 1.5;
+    background: radial-gradient(1000px 520px at 8% -12%, var(--page-glow), transparent 60%), var(--bg);
+    color: var(--text); -webkit-font-smoothing: antialiased;
+    font-variant-numeric: tabular-nums;
+  }
+  button, input, textarea { font-family: inherit; font-size: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  svg { display: block; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; border: 3px solid transparent; background-clip: padding-box; }
+
+  .app { display: flex; flex-direction: column; height: 100vh; min-height: 560px; }
+
+  /* ============ 5. Top strip replaces BOTH the native title bar and the
+     DevBench header row. Traffic lights are OS-drawn in the real app; the
+     78px left inset reserves their space. The empty area is -webkit-app-region:
+     drag so the window still moves. ============ */
+  .strip {
+    display: grid; height: 44px; min-height: 44px;
+    border-bottom: 1px solid var(--border);
+    -webkit-app-region: drag; position: relative;
+  }
+  .strip button, .strip .tab { -webkit-app-region: no-drag; }
+  .strip-col { display: flex; align-items: center; min-width: 0; }
+  /* The tab groups sit in the same columns as the panes below, so every tab is
+     directly above the content it controls — no floating second row. */
+  .tabs-col { padding: 0; }
+  .tabgroup { flex: 1 1 50%; display: flex; align-items: center; gap: 2px; min-width: 0; padding: 0 8px; }
+  .tabgroup + .tabgroup { border-left: 1px solid var(--border); }
+  .actions-col { justify-content: flex-end; gap: 2px; padding: 0 10px; }
+
+  .lights { display: flex; gap: 8px; align-items: center; padding: 0 0 0 14px; }
+  .light { width: 12px; height: 12px; border-radius: 50%; }
+  .light.r { background: #ff5f57; } .light.y { background: #febc2e; } .light.g { background: #28c840; }
+
+  /* ============ 2. Tab instances. `data-kind` drives the leading glyph,
+     duplicates are distinguished by their instance subtitle. ============ */
+  .tabs { display: flex; align-items: center; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab {
+    appearance: none; border: 1px solid transparent; background: transparent; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0;
+    height: 30px; padding: 0 8px 0 9px; border-radius: var(--radius-sm);
+    color: var(--text-muted); font-size: var(--fs-sm); font-weight: 500; white-space: nowrap;
+    transition: background-color 150ms ease, color 150ms ease;
+  }
+  .tab:hover { background: var(--surface-2); color: var(--text); }
+  .tab[aria-selected="true"] { background: var(--surface-2); color: var(--text); font-weight: 600; }
+  .tab .glyph { color: var(--text-faint); flex-shrink: 0; }
+  .tab[aria-selected="true"] .glyph { color: var(--text); }
+  .tab .sub { color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-sm); }
+  .tab[aria-selected="true"] .sub { color: var(--text-muted); }
+  .tab-x {
+    appearance: none; border: 0; background: transparent; cursor: pointer; padding: 0;
+    width: 16px; height: 16px; border-radius: 4px; display: grid; place-items: center;
+    color: var(--text-faint); opacity: 0; transition: opacity 150ms ease, background-color 150ms ease;
+  }
+  .tab:hover .tab-x, .tab[aria-selected="true"] .tab-x { opacity: 1; }
+  .tab-x:hover { background: var(--border); color: var(--text); }
+
+  .ghost-btn {
+    appearance: none; border: 1px solid transparent; background: transparent; cursor: pointer;
+    height: 30px; padding: 0 9px; border-radius: var(--radius-sm);
+    display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+    color: var(--text-muted); font-size: var(--fs-sm); font-weight: 500;
+    transition: background-color 150ms ease, color 150ms ease;
+  }
+  .ghost-btn:hover { background: var(--surface-2); color: var(--text); }
+  .ghost-btn[aria-pressed="true"] { background: var(--surface-2); color: var(--text); }
+  .ghost-btn.icon-only { width: 30px; padding: 0; justify-content: center; }
+  .strip .spacer { flex: 1; min-width: 8px; }
+  .strip .divider { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; margin: 0 4px; }
+
+  /* ============ 6. Styled popup — one primitive for the + menu, the HTTP
+     method picker and the theme picker. Glass, because it's transient. ============ */
+  .menu {
+    position: absolute; z-index: 50; min-width: 208px; padding: 5px;
+    background: var(--glass-bg); border: 1px solid var(--glass-border);
+    border-radius: var(--radius-lg); box-shadow: var(--shadow), var(--glass-hi);
+    backdrop-filter: blur(22px) saturate(155%); -webkit-backdrop-filter: blur(22px) saturate(155%);
+  }
+  @media (prefers-reduced-transparency: reduce) { .menu { background: var(--surface); backdrop-filter: none; } }
+  .menu-label { padding: 6px 9px 5px; font-size: var(--fs-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-faint); }
+  .menu-item {
+    appearance: none; width: 100%; border: 0; background: transparent; cursor: pointer; text-align: left;
+    display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: var(--radius-sm);
+    color: var(--text-muted); font-size: var(--fs-md);
+  }
+  .menu-item:hover, .menu-item.hi { background: var(--surface-2); color: var(--text); }
+  .menu-item .k { margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-faint); }
+  .menu-item .desc { display: block; font-size: var(--fs-sm); color: var(--text-faint); font-weight: 400; }
+  .menu-item strong { font-weight: 600; font-size: var(--fs-md); }
+  .menu-sep { height: 1px; background: var(--border); margin: 5px 3px; }
+  .scrim { position: fixed; inset: 0; z-index: 40; }
+
+  .select-trigger {
+    appearance: none; cursor: pointer; display: inline-flex; align-items: center; gap: 8px;
+    border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius-sm);
+    padding: 0 8px 0 11px; height: 34px; color: var(--text); font-size: var(--fs-md); font-weight: 600;
+    transition: border-color 150ms ease, background-color 150ms ease;
+  }
+  .select-trigger:hover { border-color: var(--text-faint); background: var(--surface-2); }
+  .select-trigger .chev { color: var(--text-faint); margin-left: auto; }
+  .select-trigger.mono { font-family: var(--font-mono); }
+
+  .body-grid { flex: 1; display: flex; min-height: 0; }
+
+  /* Sessions sidebar — ghosty, unchanged in role */
+  .sidebar { width: 218px; min-width: 218px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+  .side-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 10px 10px 12px; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+  .side-search { margin: 8px; padding: 6px 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text-faint); font-size: var(--fs-sm); }
+  .side-list { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+  .side-item { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: var(--radius-sm); cursor: pointer; color: var(--text-muted); font-size: var(--fs-sm); border: 0; background: transparent; width: 100%; text-align: left; }
+  .side-item:hover { background: var(--surface-2); }
+  .side-item[aria-current="true"] { background: var(--surface-2); color: var(--text); font-weight: 600; }
+  .side-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .side-item .badge { font-size: var(--fs-xs); letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; }
+  .side-foot { border-top: 1px solid var(--border); padding: 6px; }
+
+  /* Panes */
+  .panes { flex: 1; display: flex; min-width: 0; }
+  .pane { flex: 1 1 50%; min-width: 0; display: flex; flex-direction: column; }
+  .pane + .pane { border-left: 1px solid var(--border); }
+  .pane-strip { display: flex; align-items: center; gap: 2px; height: 38px; min-height: 38px; padding: 0 8px; border-bottom: 1px solid var(--border); }
+  .pane-body { flex: 1; overflow-y: auto; padding: 18px 20px; min-height: 0; }
+
+  /* Chat dock — ghosty */
+  .chat { width: 320px; min-width: 320px; border-left: 1px solid var(--border); display: flex; flex-direction: column; }
+  .chat-head { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); display: flex; justify-content: space-between; align-items: center; }
+  .chat-log { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { border-radius: var(--radius-lg); padding: 9px 11px; font-size: var(--fs-sm); line-height: 1.55; }
+  .msg.user { background: var(--surface-2); color: var(--text); align-self: flex-end; max-width: 88%; }
+  .msg.bot { border: 1px solid var(--border); color: var(--text-muted); }
+  .msg .tool { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-faint); display: block; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); }
+  .chat-input { margin: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); padding: 8px 10px; color: var(--text-faint); font-size: var(--fs-sm); }
+
+  /* Tool content */
+  h2.tool-h { margin: 0 0 3px; font-size: var(--fs-h); font-weight: 700; letter-spacing: -.01em; }
+  p.tool-sub { margin: 0 0 16px; font-size: var(--fs-sm); color: var(--text-faint); }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .field { flex: 1; height: 34px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); padding: 0 11px; display: flex; align-items: center; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text); overflow: hidden; white-space: nowrap; }
+  .primary { appearance: none; border: 0; cursor: pointer; height: 34px; padding: 0 16px; border-radius: var(--radius-sm); background: var(--accent); color: var(--accent-on); font-size: var(--fs-md); font-weight: 700; }
+  .primary:hover { background: var(--accent-strong); }
+  .card { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); overflow: hidden; }
+  .card-head { padding: 9px 12px; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); display: flex; align-items: center; gap: 8px; }
+  .pill { font-size: var(--fs-xs); font-weight: 700; padding: 2px 7px; border-radius: 20px; font-family: var(--font-mono); }
+  .pill.ok { background: var(--success-bg); color: var(--success); }
+  .pill.warn { background: var(--warning-bg); color: var(--warning); }
+  .pill.err { background: var(--danger-bg); color: var(--danger); }
+  pre.code { margin: 0; padding: 12px; font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.65; color: var(--text-muted); overflow-x: auto; }
+  .grid-2 { display: grid; grid-template-columns: 176px 1fr; gap: 14px; align-items: start; }
+  table.data { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: var(--fs-sm); }
+  table.data th { text-align: left; padding: 7px 12px; color: var(--text-faint); font-weight: 600; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .04em; }
+  table.data td { padding: 7px 12px; border-bottom: 1px solid var(--border); color: var(--text-muted); }
+  table.data tr:last-child td { border-bottom: 0; }
+  .tree-item { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border-radius: var(--radius-sm); cursor: pointer; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-muted); border: 0; background: transparent; width: 100%; text-align: left; }
+  .tree-item:hover { background: var(--surface-2); }
+  .tree-item[aria-current="true"] { background: var(--surface-2); color: var(--text); }
+  .tree-item .eye { margin-left: auto; color: var(--text-faint); }
+  .tree-item.watched .eye { color: var(--success); }
+  .logline { display: flex; gap: 10px; padding: 3px 0; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-muted); border-bottom: 1px solid transparent; }
+  .logline .ts { color: var(--text-faint); flex-shrink: 0; }
+  .logline .lvl { flex-shrink: 0; width: 42px; font-weight: 700; }
+  .lvl.info { color: var(--text-faint); } .lvl.warn { color: var(--warning); } .lvl.err { color: var(--danger); }
+  .rollup { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .rollup .chip { display: flex; align-items: center; gap: 7px; border: 1px solid var(--border); border-radius: 20px; padding: 4px 11px 4px 9px; font-size: var(--fs-sm); color: var(--text-muted); cursor: pointer; background: transparent; }
+  .rollup .chip:hover { background: var(--surface-2); color: var(--text); }
+  .rollup .chip b { color: var(--text); font-family: var(--font-mono); }
+
+  /* Settings */
+  .settings { flex: 1; display: flex; min-height: 0; }
+  .settings-nav { width: 190px; min-width: 190px; border-right: 1px solid var(--border); padding: 10px 8px; display: flex; flex-direction: column; gap: 2px; }
+  .settings-body { flex: 1; overflow-y: auto; padding: 26px 32px; }
+  .settings-body .inner { max-width: 620px; }
+  .set-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding: 16px 0; border-bottom: 1px solid var(--border); }
+  .set-row .label { font-size: var(--fs-md); font-weight: 600; }
+  .set-row .help { font-size: var(--fs-sm); color: var(--text-faint); margin-top: 2px; max-width: 42ch; }
+
+  .empty { display: grid; place-items: center; height: 100%; text-align: center; color: var(--text-faint); }
+  .empty .box { max-width: 320px; }
+  .empty h3 { margin: 14px 0 6px; font-size: var(--fs-md); color: var(--text-muted); font-weight: 600; }
+  .empty p { margin: 0 0 16px; font-size: var(--fs-sm); line-height: 1.6; }
+
+  /* Annotation overlay */
+  .anno { position: absolute; z-index: 30; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: var(--accent-on); font-size: var(--fs-xs); font-weight: 800; display: grid; place-items: center; box-shadow: var(--shadow); pointer-events: none; }
+  .anno-toggle { position: fixed; left: 50%; transform: translateX(-50%); bottom: 14px; z-index: 60; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); border-radius: 20px; padding: 7px 14px; font-size: var(--fs-sm); font-weight: 600; cursor: pointer; box-shadow: var(--shadow); }
+  .anno-toggle:hover { color: var(--text); border-color: var(--text-faint); }
+</style>
+</head>
+<body>
+<div id="root" class="app"></div>
+<button class="anno-toggle" id="annoToggle">Show what changed</button>
+
+<script>
+/* ------------------------------------------------------------------ icons */
+const I = {
+  plus:  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  x:     '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  split: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></svg>',
+  chat:  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M20 15a2 2 0 0 1-2 2H8l-4 3V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z"/></svg>',
+  chev:  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
+  check: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
+  api:   '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4.5 13H11l-1 9 8.5-11H12z"/></svg>',
+  db:    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v13c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-13"/><path d="M4.5 12c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3"/></svg>',
+  log:   '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h10M4 18h13"/></svg>',
+  email: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3.5 7l8.5 6 8.5-6"/></svg>',
+  gear:  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M21.5 12h-3M5.5 12h-3M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1M18.7 18.7l-2.1-2.1M7.4 7.4L5.3 5.3"/></svg>',
+  back:  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
+  eye:   '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12s3.8-6.5 10-6.5S22 12 22 12s-3.8 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg>',
+};
+
+const TOOLS = {
+  api:   { label: 'API',   icon: I.api,   desc: 'Send requests, watch effects' },
+  db:    { label: 'DB',    icon: I.db,    desc: 'Browse schema and rows' },
+  log:   { label: 'Log',   icon: I.log,   desc: 'Tail a log source' },
+  email: { label: 'Email', icon: I.email, desc: 'Captured outbound mail' },
+};
+
+/* ------------------------------------------------------------------ state */
+let uid = 0;
+const nid = () => 't' + (++uid);
+
+const SESSIONS = [
+  { id: 's1', name: 'checkout 500s', kind: 'api' },
+  { id: 's2', name: 'welcome email bounces', kind: 'email' },
+  { id: 's3', name: 'slow orders query', kind: 'db' },
+];
+
+/* Tabs are per-session and persisted. Note s1 has TWO db tabs on different
+   tables — the whole point of change #2. */
+const TABS_BY_SESSION = {
+  s1: [
+    { id: nid(), kind: 'api',   pane: 'left',  state: {} },
+    { id: nid(), kind: 'db',    pane: 'left',  state: { table: 'orders' } },
+    { id: nid(), kind: 'db',    pane: 'right', state: { table: 'payments' } },
+    { id: nid(), kind: 'log',   pane: 'left',  state: {} },
+  ],
+  s2: [
+    { id: nid(), kind: 'email', pane: 'left', state: {} },
+    { id: nid(), kind: 'db',    pane: 'left', state: { table: 'users' } },
+  ],
+  s3: [],
+};
+
+const S = {
+  route: 'workspace',
+  theme: 'dark',
+  sessionId: 's1',
+  chatOpen: true,
+  anno: false,
+  active: { s1: { left: null, right: null }, s2: { left: null, right: null }, s3: { left: null, right: null } },
+  menu: null,           // { kind, anchorRect, pane? }
+};
+for (const sid of Object.keys(TABS_BY_SESSION)) {
+  const t = TABS_BY_SESSION[sid];
+  S.active[sid].left  = (t.find(x => x.pane === 'left')  || {}).id || null;
+  S.active[sid].right = (t.find(x => x.pane === 'right') || {}).id || null;
+}
+
+const tabs      = () => TABS_BY_SESSION[S.sessionId];
+const paneTabs  = p => tabs().filter(t => t.pane === p);
+const splitOpen = () => paneTabs('right').length > 0;
+const activeTab = p => tabs().find(t => t.id === S.active[S.sessionId][p]) || paneTabs(p)[0] || null;
+
+/* ------------------------------------------------------------------ chrome */
+function strip() {
+  const cols = `218px 1fr ${S.chatOpen ? '320px' : 'auto'}`;
+  return `
+  <div class="strip" style="grid-template-columns:${cols}">
+    <!-- 5. traffic lights inset; OS-drawn in the real app -->
+    <div class="strip-col" title="OS traffic lights (decorations: false + overlay titlebar)">
+      <div class="lights"><span class="light r"></span><span class="light y"></span><span class="light g"></span></div>
+    </div>
+    <div class="strip-col tabs-col">
+      ${tabGroup('left')}
+      ${splitOpen() ? tabGroup('right') : ''}
+    </div>
+    <div class="strip-col actions-col">
+      <button class="ghost-btn" data-act="split" aria-pressed="${splitOpen()}" title="Split view">${I.split}<span>Split</span></button>
+      <div class="divider"></div>
+      <!-- 3. chat toggle now lives here, not in a header row -->
+      <button class="ghost-btn" data-act="chat" aria-pressed="${S.chatOpen}" title="AI chat">${I.chat}<span>Chat</span></button>
+    </div>
+  </div>`;
+}
+
+function tabGroup(pane) {
+  return `<div class="tabgroup">
+    <div class="tabs">${paneTabs(pane).map(t => tabEl(t, pane)).join('')}</div>
+    <button class="ghost-btn icon-only" data-menu="add" data-pane="${pane}" title="Add a tool (⌘T)">${I.plus}</button>
+    ${pane === 'right' ? `<div class="spacer"></div><button class="ghost-btn icon-only" data-act="closeSplit" aria-label="Close split">${I.x}</button>` : ''}
+  </div>`;
+}
+
+function tabEl(t, pane) {
+  const sel = activeTab(pane) && activeTab(pane).id === t.id;
+  const sub = t.kind === 'db' && t.state.table ? `<span class="sub">${t.state.table}</span>` : '';
+  return `<span class="tab" role="tab" aria-selected="${sel}" data-tab="${t.id}">
+    <span class="glyph">${TOOLS[t.kind].icon}</span>
+    <span>${TOOLS[t.kind].label}</span>${sub}
+    <button class="tab-x" data-close="${t.id}" aria-label="Close tab">${I.x}</button>
+  </span>`;
+}
+
+function sidebar() {
+  return `<aside class="sidebar">
+    <div class="side-head">Sessions<button class="ghost-btn" data-act="newSession" style="height:24px;padding:0 7px;font-size:var(--fs-xs);text-transform:none;letter-spacing:0">${I.plus}New</button></div>
+    <div class="side-search">Search sessions…</div>
+    <div class="side-list">
+      ${SESSIONS.map(s => `<button class="side-item" aria-current="${s.id === S.sessionId}" data-session="${s.id}">
+        <span class="name">${s.name}</span><span class="badge">${s.kind}</span></button>`).join('')}
+    </div>
+    <div class="side-foot">
+      <button class="side-item" data-act="settings">${I.gear}<span class="name">Settings</span></button>
+    </div>
+  </aside>`;
+}
+
+function chat() {
+  if (!S.chatOpen) return '';
+  return `<aside class="chat">
+    <div class="chat-head">Chat<button class="ghost-btn icon-only" data-act="chat" aria-label="Close chat">${I.x}</button></div>
+    <div class="chat-log">
+      <div class="msg user">why did POST /checkout return 500?</div>
+      <div class="msg bot">The request wrote one row to <code>orders</code> but no matching row in <code>payments</code>, then the log shows a constraint violation 40ms later.
+        <span class="tool">→ query_db(table: "payments", since: request_start)</span>
+        <span class="tool">→ read_logs(window_ms: 2000)</span>
+      </div>
+    </div>
+    <div class="chat-input">Ask about this session…</div>
+  </aside>`;
+}
+
+/* ------------------------------------------------------------------ tools */
+function toolBody(t) {
+  if (!t) return emptyPane();
+  if (t.kind === 'api')   return apiTool();
+  if (t.kind === 'db')    return dbTool(t);
+  if (t.kind === 'log')   return logTool();
+  if (t.kind === 'email') return emailTool();
+}
+
+function emptyPane() {
+  return `<div class="empty"><div class="box">
+    <div style="color:var(--text-faint)">${I.plus}</div>
+    <h3>No tools open</h3>
+    <p>This session has an empty workspace. Add the tools you need — you can open more than one of the same kind.</p>
+    <button class="ghost-btn" data-menu="add" data-pane="left" style="border-color:var(--border);margin:0 auto">${I.plus}<span>Add a tool</span></button>
+  </div></div>`;
+}
+
+function apiTool() {
+  return `
+  <div class="rollup">
+    <button class="chip">${I.db}<span>DB</span><b>2</b><span style="color:var(--text-faint)">rows</span></button>
+    <button class="chip">${I.log}<span>Log</span><b>7</b><span style="color:var(--text-faint)">lines</span></button>
+    <button class="chip">${I.email}<span>Email</span><b>0</b><span style="color:var(--text-faint)">sent</span></button>
+  </div>
+  <div class="row" style="margin-bottom:14px">
+    <!-- 6. custom select, not native -->
+    <button class="select-trigger mono" data-menu="method" style="width:104px">POST ${I.chev}</button>
+    <div class="field">http://localhost:3000/api/checkout</div>
+    <button class="primary">Send</button>
+  </div>
+  <div class="card" style="margin-bottom:14px">
+    <div class="card-head">Response<span class="pill err">500</span><span style="margin-left:auto;font-family:var(--font-mono);text-transform:none;letter-spacing:0">148 ms · 312 B</span></div>
+    <pre class="code">{
+  "error": "internal_error",
+  "request_id": "req_8fk29dla"
+}</pre>
+  </div>`;
+}
+
+function dbTool(t) {
+  const TABLES = ['users', 'orders', 'payments', 'sessions', 'email_log'];
+  const ROWS = {
+    orders:   [['1041', 'usr_88', 'pending', '2026-07-31 09:14'], ['1042', 'usr_12', 'paid', '2026-07-31 09:15'], ['1043', 'usr_88', 'failed', '2026-07-31 09:15']],
+    payments: [['pay_77', '1042', 'succeeded', '4200'], ['pay_78', '1043', 'declined', '1899']],
+    users:    [['usr_12', 'ada@example.com', 'active'], ['usr_88', 'grace@example.com', 'active']],
+    sessions: [['sess_a', 'usr_12', '2026-07-31 08:02']],
+    email_log:[['1', 'welcome', 'bounced']],
+  };
+  const HEADS = {
+    orders: ['id', 'user_id', 'status', 'created_at'], payments: ['id', 'order_id', 'status', 'amount'],
+    users: ['id', 'email', 'status'], sessions: ['id', 'user_id', 'started_at'], email_log: ['id', 'template', 'status'],
+  };
+  const tbl = t.state.table || 'orders';
+  return `<div class="grid-2">
+    <div>
+      <div style="font-size:var(--fs-xs);font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-faint);padding:0 9px 7px">Tables</div>
+      ${TABLES.map(n => `<button class="tree-item ${n === 'orders' || n === 'payments' ? 'watched' : ''}" aria-current="${n === tbl}" data-table="${t.id}:${n}">
+        ${n}<span class="eye">${I.eye}</span></button>`).join('')}
+    </div>
+    <div class="card">
+      <div class="card-head">${tbl}<span style="margin-left:auto;text-transform:none;letter-spacing:0;font-family:var(--font-mono)">${(ROWS[tbl]||[]).length} rows</span></div>
+      <table class="data">
+        <thead><tr>${HEADS[tbl].map(h => `<th>${h}</th>`).join('')}</tr></thead>
+        <tbody>${(ROWS[tbl]||[]).map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+function logTool() {
+  const L = [
+    ['09:15:02.114', 'info', 'POST /api/checkout  body=142B'],
+    ['09:15:02.140', 'info', 'BEGIN tx#8814'],
+    ['09:15:02.191', 'warn', 'payments.gateway timeout after 40ms, retrying (1/2)'],
+    ['09:15:02.238', 'err',  'PG error 23503: insert on "payments" violates fk "payments_order_id_fkey"'],
+    ['09:15:02.241', 'info', 'ROLLBACK tx#8814'],
+    ['09:15:02.262', 'err',  'unhandled: internal_error req_8fk29dla'],
+  ];
+  return `<div class="card"><div class="card-head">api-server<span class="pill warn">tailing</span></div>
+    <div style="padding:10px 12px">${L.map(([ts, lv, m]) =>
+      `<div class="logline"><span class="ts">${ts}</span><span class="lvl ${lv}">${lv.toUpperCase()}</span><span>${m}</span></div>`).join('')}
+    </div></div>`;
+}
+
+function emailTool() {
+  return `<div class="grid-2">
+    <div class="card"><div class="card-head">Inbox</div>
+      <button class="tree-item" aria-current="true" style="border-radius:0">welcome → grace@…</button>
+      <button class="tree-item" style="border-radius:0">receipt → ada@…</button>
+    </div>
+    <div class="card"><div class="card-head">welcome<span class="pill err" style="margin-left:auto">bounced</span></div>
+      <pre class="code">To:      grace@example.com
+Subject: Welcome to Acme
+
+Hi Grace — your account is ready.</pre></div>
+  </div>`;
+}
+
+/* ---------------------------------------------------------------- settings */
+function settingsScreen() {
+  const NAV = ['General', 'Appearance', 'Provider', 'MCP', 'Archive'];
+  return `<div class="settings">
+    <nav class="settings-nav">
+      ${NAV.map(n => `<button class="side-item" aria-current="${n === 'Appearance'}"><span class="name">${n}</span></button>`).join('')}
+    </nav>
+    <div class="settings-body"><div class="inner">
+      <h2 class="tool-h">Appearance</h2>
+      <p class="tool-sub">Applies to every session.</p>
+      <div class="set-row" data-anno-host>
+        <div><div class="label">Theme</div><div class="help">Dark is the authored default. “System” follows your OS setting.</div></div>
+        <!-- 1. the theme control's ONLY home -->
+        <button class="select-trigger" data-menu="theme" style="width:150px;justify-content:space-between">
+          <span>${S.theme[0].toUpperCase() + S.theme.slice(1)}</span>${I.chev}</button>
+      </div>
+      <div class="set-row">
+        <div><div class="label">Correlation window</div><div class="help">How long after a request DevBench keeps attributing effects to it.</div></div>
+        <div class="field" style="width:150px;flex:none">2000 ms</div>
+      </div>
+      <div class="set-row" style="border-bottom:0">
+        <div><div class="label">Restore tabs on launch</div><div class="help">Reopen each session's tab layout when DevBench starts.</div></div>
+        <button class="select-trigger" style="width:150px;justify-content:space-between"><span>On</span>${I.chev}</button>
+      </div>
+    </div></div>
+  </div>`;
+}
+
+/* ------------------------------------------------------------------ render */
+function render() {
+  document.documentElement.setAttribute('data-theme', S.theme === 'system' ? 'dark' : S.theme);
+  // Menu + scrim live on <body>, not inside #root, so they survive the innerHTML
+  // rebuild below unless cleared first.
+  document.querySelectorAll('.menu, .scrim').forEach(e => e.remove());
+  const root = document.getElementById('root');
+
+  if (S.route === 'settings') {
+    root.innerHTML = `
+      <div class="strip" style="grid-template-columns:190px 1fr auto">
+        <div class="strip-col">
+          <div class="lights"><span class="light r"></span><span class="light y"></span><span class="light g"></span></div>
+        </div>
+        <div class="strip-col" style="padding-left:8px">
+          <button class="ghost-btn" data-act="workspace">${I.back}<span>Back to workspace</span></button>
+        </div>
+        <div class="strip-col actions-col">
+          <span style="font-size:var(--fs-sm);font-weight:600;color:var(--text-faint)">Settings</span>
+        </div>
+      </div>
+      ${settingsScreen()}`;
+  } else {
+    root.innerHTML = `
+      ${strip()}
+      <div class="body-grid">
+        ${sidebar()}
+        <div class="panes">
+          <div class="pane"><div class="pane-body">${toolBody(activeTab('left'))}</div></div>
+          ${splitOpen() ? `<div class="pane"><div class="pane-body">${toolBody(activeTab('right'))}</div></div>` : ''}
+        </div>
+        ${chat()}
+      </div>`;
+  }
+
+  if (S.menu) renderMenu();
+  if (S.anno) renderAnno();
+  document.getElementById('annoToggle').textContent = S.anno ? 'Hide what changed' : 'Show what changed';
+}
+
+/* -------------------------------------------------------------- popup menu */
+const MENUS = {
+  add: () => ({ label: 'Add a tool', items: Object.entries(TOOLS).map(([k, v]) =>
+    ({ id: k, html: `${v.icon}<span><strong>${v.label}</strong><span class="desc">${v.desc}</span></span>` })) }),
+  method: () => ({ label: 'Method', items: ['GET','POST','PUT','PATCH','DELETE'].map(m =>
+    ({ id: m, html: `<span style="font-family:var(--font-mono);font-weight:600">${m}</span>`, on: m === 'POST' })) }),
+  theme: () => ({ label: 'Theme', items: ['system','dark','light'].map(t =>
+    ({ id: t, html: `<span>${t[0].toUpperCase()+t.slice(1)}</span>`, on: t === S.theme })) }),
+};
+
+function renderMenu() {
+  const { kind, rect } = S.menu;
+  const cfg = MENUS[kind]();
+  const scrim = document.createElement('div');
+  scrim.className = 'scrim';
+  scrim.onclick = () => { S.menu = null; render(); };
+  const el = document.createElement('div');
+  el.className = 'menu';
+  el.innerHTML = `<div class="menu-label">${cfg.label}</div>` + cfg.items.map(i =>
+    `<button class="menu-item" data-pick="${i.id}">${i.html}${i.on ? `<span class="k">${I.check}</span>` : ''}</button>`).join('');
+  document.body.append(scrim, el);
+  const top = Math.min(rect.bottom + 6, window.innerHeight - el.offsetHeight - 10);
+  const left = Math.min(rect.left, window.innerWidth - el.offsetWidth - 10);
+  el.style.top = top + 'px'; el.style.left = left + 'px';
+  el.querySelectorAll('[data-pick]').forEach(b => b.onclick = () => pick(kind, b.dataset.pick));
+}
+
+function pick(kind, id) {
+  if (kind === 'add') {
+    const pane = S.menu.pane;
+    const t = { id: nid(), kind: id, pane, state: id === 'db' ? { table: 'orders' } : {} };
+    tabs().push(t);
+    S.active[S.sessionId][pane] = t.id;
+  }
+  if (kind === 'theme') S.theme = id;
+  S.menu = null;
+  render();
+}
+
+/* ------------------------------------------------------------ annotations */
+const ANNO = [
+  { sel: '.strip .lights',                    n: '5', dx: 6,   dy: -7 },
+  { sel: '.tabgroup [data-menu="add"]',       n: '2', dx: 16,  dy: -7 },
+  { sel: '.strip [data-act="chat"]',          n: '3', dx: -10, dy: -7 },
+  { sel: '.strip',                            n: '4', dx: 232, dy: -7 },
+  { sel: '[data-menu="method"]',              n: '6', dx: 92,  dy: -7 },
+  { sel: '[data-menu="theme"]',               n: '1', dx: -8,  dy: -7 },
+];
+function renderAnno() {
+  document.querySelectorAll('.anno').forEach(e => e.remove());
+  for (const a of ANNO) {
+    const el = document.querySelector(a.sel);
+    if (!el) continue;
+    const r = el.getBoundingClientRect();
+    const dot = document.createElement('div');
+    dot.className = 'anno'; dot.textContent = a.n;
+    dot.style.left = (r.left + a.dx) + 'px';
+    dot.style.top = (r.top + a.dy) + 'px';
+    dot.style.position = 'fixed';
+    document.body.append(dot);
+  }
+}
+
+/* --------------------------------------------------------------- listeners */
+document.addEventListener('click', e => {
+  const menuBtn = e.target.closest('[data-menu]');
+  if (menuBtn) {
+    S.menu = { kind: menuBtn.dataset.menu, pane: menuBtn.dataset.pane || 'left', rect: menuBtn.getBoundingClientRect() };
+    render(); return;
+  }
+  const close = e.target.closest('[data-close]');
+  if (close) {
+    const id = close.dataset.close;
+    const arr = tabs(); const i = arr.findIndex(t => t.id === id); const pane = arr[i].pane;
+    arr.splice(i, 1);
+    if (S.active[S.sessionId][pane] === id) S.active[S.sessionId][pane] = (paneTabs(pane)[0] || {}).id || null;
+    render(); return;
+  }
+  const tab = e.target.closest('[data-tab]');
+  if (tab) {
+    const t = tabs().find(x => x.id === tab.dataset.tab);
+    S.active[S.sessionId][t.pane] = t.id; render(); return;
+  }
+  const tbl = e.target.closest('[data-table]');
+  if (tbl) {
+    const [tid, name] = tbl.dataset.table.split(':');
+    tabs().find(t => t.id === tid).state.table = name; render(); return;
+  }
+  const sess = e.target.closest('[data-session]');
+  if (sess) { S.sessionId = sess.dataset.session; render(); return; }
+
+  const act = e.target.closest('[data-act]');
+  if (!act) return;
+  const a = act.dataset.act;
+  if (a === 'chat') S.chatOpen = !S.chatOpen;
+  if (a === 'settings') S.route = 'settings';
+  if (a === 'workspace') S.route = 'workspace';
+  if (a === 'split') {
+    if (splitOpen()) { tabs().forEach(t => t.pane = 'left'); S.active[S.sessionId].right = null; }
+    else {
+      const cur = activeTab('left');
+      if (cur && paneTabs('left').length > 1) { cur.pane = 'right'; S.active[S.sessionId].right = cur.id; S.active[S.sessionId].left = paneTabs('left')[0].id; }
+      else { const t = { id: nid(), kind: 'db', pane: 'right', state: { table: 'payments' } }; tabs().push(t); S.active[S.sessionId].right = t.id; }
+    }
+  }
+  if (a === 'closeSplit') { tabs().forEach(t => { if (t.pane === 'right') t.pane = 'left'; }); S.active[S.sessionId].right = null; }
+  render();
+});
+
+document.getElementById('annoToggle').onclick = () => {
+  S.anno = !S.anno;
+  if (!S.anno) document.querySelectorAll('.anno').forEach(e => e.remove());
+  render();
+};
+window.addEventListener('resize', () => S.anno && renderAnno());
+
+render();
+</script>
+</body>
+</html>

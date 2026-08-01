@@ -21,11 +21,12 @@ describe("SettingsScreen", () => {
     vi.spyOn(tauriLib, "invokeListMcpServers").mockResolvedValue([]);
   });
 
-  it("offers the four settings sections from the spec", async () => {
+  it("offers the five settings sections from the spec", async () => {
     render(<SettingsScreen onBack={() => {}} />);
     await waitFor(() => screen.getByRole("heading", { name: "General" }));
     expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual([
       "General",
+      "Appearance",
       "Provider",
       "MCP",
       "Archive",
@@ -47,7 +48,7 @@ describe("SettingsScreen", () => {
   it("navigates back to the workspace", async () => {
     const onBack = vi.fn();
     render(<SettingsScreen onBack={onBack} />);
-    fireEvent.click(screen.getByRole("button", { name: /back to devbench/i }));
+    fireEvent.click(screen.getByRole("button", { name: /back to workspace/i }));
     expect(onBack).toHaveBeenCalled();
   });
 });
