@@ -1,6 +1,11 @@
 import { useState } from "react";
-import { invokeRunCorrelatedRequest, type CorrelationResult, type QualifiedTable } from "../../lib/tauri";
+import { invokeRunCorrelatedRequest, type CorrelationResult, type QualifiedTable, type HeaderPair } from "../../lib/tauri";
 import { Menu, ChevronIcon } from "../ui/Menu";
+import { RequestTabs, type ReqTab } from "./composer/RequestTabs";
+import type { KeyValueRow } from "./composer/KeyValueEditor";
+import type { BodyType } from "./composer/BodyEditor";
+import { DEFAULT_AUTH, resolveAuthHeader, resolveAuthQueryParam, type AuthState } from "./composer/AuthEditor";
+import { splitUrlAndParams, joinUrlAndParams } from "./composer/urlParams";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"].map((m) => ({ value: m, label: m }));
 
@@ -17,21 +22,45 @@ export function RequestBuilder({
   onSendStart,
   onError,
 }: {
-  /** `null` when no connection is selected yet — Send stays a no-op until one is. */
   connectionId: string | null;
-  /** Real identities, not `"schema.name"` keys — this goes straight onto the
-   *  wire, and a Postgres identifier can legally contain a dot. */
   watchedTables: QualifiedTable[];
-  /** Attributes the fired request's history entry to this session. `null` = unattributed. */
-  sessionId?: string | null;
   method: string;
   url: string;
   onPatchState: (patch: { method?: string; url?: string }) => void;
+  /** Attributes the fired request's history entry to this session. `null` = unattributed. */
+  sessionId?: string | null;
   onResult: (result: CorrelationResult) => void;
   onSendStart?: () => void;
   onError?: (message: string) => void;
 }) {
+  const [headers, setHeaders] = useState<KeyValueRow[]>([]);
+  const [body, setBody] = useState("");
+  const [bodyType, setBodyType] = useState<BodyType>("none");
+  const [auth, setAuth] = useState<AuthState>(DEFAULT_AUTH);
+  const [activeReqTab, setActiveReqTab] = useState<ReqTab>("headers");
   const [sending, setSending] = useState(false);
+
+  const { base, params } = splitUrlAndParams(url);
+
+  function handleParamsChange(rows: KeyValueRow[]) {
+    onPatchState({ url: joinUrlAndParams(base, rows) });
+  }
+
+  function buildHeaders(): HeaderPair[] {
+    const resolved: HeaderPair[] = headers
+      .filter((h) => h.enabled !== false && h.key)
+      .map((h) => ({ key: h.key, value: h.value }));
+    const authHeader = resolveAuthHeader(auth);
+    if (authHeader) resolved.push(authHeader);
+    return resolved;
+  }
+
+  function buildUrl(): string {
+    const authParam = resolveAuthQueryParam(auth);
+    if (!authParam) return url;
+    const { base: b, params: p } = splitUrlAndParams(url);
+    return joinUrlAndParams(b, [...p, { key: authParam.key, value: authParam.value }]);
+  }
 
   async function handleSend() {
     if (!connectionId) return;
@@ -39,7 +68,12 @@ export function RequestBuilder({
     onSendStart?.();
     try {
       const result = await invokeRunCorrelatedRequest({
-        request: { method, url, body: undefined },
+        request: {
+          method,
+          url: buildUrl(),
+          headers: buildHeaders(),
+          body: bodyType === "none" ? undefined : body,
+        },
         connectionId,
         watchedTables,
         sessionId,
@@ -53,34 +87,50 @@ export function RequestBuilder({
   }
 
   return (
-    <div className="flex gap-2 rounded-t-lg border border-b-0 border-border bg-surface p-3">
-      <Menu
-        label="Method"
-        options={METHODS}
-        value={method}
-        onSelect={(m) => onPatchState({ method: m })}
-        trigger={
-          <>
-            {method}
-            <ChevronIcon />
-          </>
-        }
-        triggerClassName="flex h-9 w-28 shrink-0 items-center justify-between gap-2 rounded-sm border border-border bg-surface px-3 font-mono text-sm font-semibold text-text transition-colors duration-150 hover:border-text-faint hover:bg-surface-2"
+    <div className="flex flex-col gap-2.5 rounded-t-lg border border-b-0 border-border bg-surface p-3">
+      <div className="flex gap-2">
+        <Menu
+          label="Method"
+          options={METHODS}
+          value={method}
+          onSelect={(m) => onPatchState({ method: m })}
+          trigger={
+            <>
+              {method}
+              <ChevronIcon />
+            </>
+          }
+          triggerClassName="flex h-9 w-28 shrink-0 items-center justify-between gap-2 rounded-sm border border-border bg-surface px-3 font-mono text-sm font-semibold text-text transition-colors duration-150 hover:border-text-faint hover:bg-surface-2"
+        />
+        <input
+          value={url}
+          onChange={(e) => onPatchState({ url: e.target.value })}
+          placeholder="/api/orders"
+          className="flex-1 rounded-sm border border-border bg-bg px-2.5 py-2 font-mono text-text"
+        />
+        <button
+          onClick={handleSend}
+          disabled={sending || !connectionId}
+          title={!connectionId ? "Select a connection first" : undefined}
+          className="min-w-21 rounded-sm bg-accent px-4 font-bold text-accent-on disabled:opacity-60"
+        >
+          {sending ? "Sending…" : "Send"}
+        </button>
+      </div>
+      <RequestTabs
+        activeTab={activeReqTab}
+        onTabChange={setActiveReqTab}
+        params={params}
+        onParamsChange={handleParamsChange}
+        headers={headers}
+        onHeadersChange={setHeaders}
+        body={body}
+        bodyType={bodyType}
+        onBodyChange={setBody}
+        onBodyTypeChange={setBodyType}
+        auth={auth}
+        onAuthChange={setAuth}
       />
-      <input
-        value={url}
-        onChange={(e) => onPatchState({ url: e.target.value })}
-        placeholder="/api/orders"
-        className="flex-1 rounded-sm border border-border bg-bg px-2.5 py-2 font-mono text-text"
-      />
-      <button
-        onClick={handleSend}
-        disabled={sending || !connectionId}
-        title={!connectionId ? "Select a connection first" : undefined}
-        className="min-w-21 rounded-sm bg-accent px-4 font-bold text-accent-on disabled:opacity-60"
-      >
-        {sending ? "Sending…" : "Send"}
-      </button>
     </div>
   );
 }
