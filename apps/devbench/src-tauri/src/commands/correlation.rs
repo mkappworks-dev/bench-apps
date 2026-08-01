@@ -191,6 +191,9 @@ async fn save_correlation_history(
         response_body: response.body.clone(),
         duration_ms: response.duration_ms,
         session_id: session_id.map(str::to_string),
+        request_headers: vec![],
+        request_body: None,
+        response_headers: vec![],
     };
     match save_history_entry_impl(pool, entry).await {
         Ok(id) => Some(id),

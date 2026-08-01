@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use futures::stream::StreamExt;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HeaderPair {
     pub key: String,
     pub value: String,
