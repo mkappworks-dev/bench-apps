@@ -117,6 +117,45 @@ describe("SchemaTree", () => {
     expect(screen.queryByText(/select a connection/i)).not.toBeInTheDocument();
   });
 
+  // The bug this guards: folding a failed connections fetch into the
+  // zero-connections branch tells a user with connections configured to go
+  // add one, when the real problem is a transient load failure.
+  it("shows a distinct error when the connections list itself fails to load, not the zero-connections copy", async () => {
+    vi.spyOn(tauriLib, "invokeListConnections").mockRejectedValue(new Error("keychain locked"));
+    const listTables = vi.spyOn(tauriLib, "invokeDbConnectAndListTables");
+
+    render(
+      <SchemaTree
+        connectionId={null}
+        watchedTables={new Set()}
+        onToggleWatch={() => {}}
+        onSelectTable={() => {}}
+        onConnectionChange={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText(/keychain locked/)).toBeInTheDocument();
+    expect(screen.queryByText("Add a connection in Settings to browse a database.")).not.toBeInTheDocument();
+    expect(listTables).not.toHaveBeenCalled();
+  });
+
+  it("shows the zero-connections empty state once the list has actually loaded and is empty", async () => {
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+
+    render(
+      <SchemaTree
+        connectionId={null}
+        watchedTables={new Set()}
+        onToggleWatch={() => {}}
+        onSelectTable={() => {}}
+        onConnectionChange={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText("Add a connection in Settings to browse a database.")).toBeInTheDocument();
+    expect(screen.getByText("No connections")).toBeInTheDocument();
+  });
+
   it("exposes each table as a keyboard-reachable button, not a clickable div", async () => {
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([

@@ -21,12 +21,20 @@ export function SchemaTree({
   onConnectionChange: (connectionId: string) => void;
 }) {
   const [connections, setConnections] = useState<ConnectionSummary[]>([]);
+  // Distinct from `connections.length === 0`: a failed fetch must not read as
+  // "you have no connections configured" — those call for different actions.
+  const [connectionsError, setConnectionsError] = useState<string | null>(null);
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    invokeListConnections().then(setConnections).catch(() => setConnections([]));
+    invokeListConnections()
+      .then((list) => {
+        setConnections(list);
+        setConnectionsError(null);
+      })
+      .catch((err) => setConnectionsError(err instanceof Error ? err.message : String(err)));
   }, []);
 
   useEffect(() => {
@@ -51,7 +59,14 @@ export function SchemaTree({
   return (
     <aside className="w-50 min-w-50 border-r border-border">
       <div className="border-b border-border p-2">
-        {connections.length === 0 ? (
+        {connectionsError ? (
+          <div
+            className="rounded-sm border border-border bg-danger-bg px-2 py-1.5 text-xs font-bold text-danger"
+            title={connectionsError}
+          >
+            Couldn't load connections
+          </div>
+        ) : connections.length === 0 ? (
           <div className="px-1 py-1.5 text-xs font-bold text-text-faint">No connections</div>
         ) : (
           <Menu
@@ -69,7 +84,11 @@ export function SchemaTree({
           />
         )}
       </div>
-      {!connectionId ? (
+      {connectionsError ? (
+        <div className="rounded-lg m-1.5 border border-border bg-danger-bg p-2.5 text-xs text-danger">
+          Couldn't load connections: {connectionsError}
+        </div>
+      ) : !connectionId ? (
         <div className="m-1.5 rounded-lg border border-border p-2.5 text-xs text-text-faint">
           {connections.length === 0
             ? "Add a connection in Settings to browse a database."
