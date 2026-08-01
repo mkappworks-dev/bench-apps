@@ -116,6 +116,14 @@ export interface CapturedEmail extends EmailSummary {
   html_body: string | null;
   text_body: string | null;
   raw: string;
+  /** Set once a correlated request's window observes this email. */
+  request_id: string | null;
+}
+
+export interface ListEmailsResult {
+  emails: EmailSummary[];
+  /** Highest id ever evicted by the 5,000-message cap. 0 = nothing evicted yet. */
+  evicted_through_id: number;
 }
 
 export interface SmtpStatus {
@@ -124,16 +132,17 @@ export interface SmtpStatus {
   error: string | null;
 }
 
-export function invokeListEmails(limit: number): Promise<EmailSummary[]> {
-  return invoke("list_emails", { limit });
+/** `sessionId` null lists every captured email regardless of session (the unscoped view) — same convention as `invokeListHistory`. */
+export function invokeListEmails(sessionId: string | null, limit: number): Promise<ListEmailsResult> {
+  return invoke("list_emails", { sessionId, limit });
 }
 
 export function invokeGetEmail(id: number): Promise<CapturedEmail> {
   return invoke("get_email", { id });
 }
 
-export function invokeClearEmails(): Promise<void> {
-  return invoke("clear_emails");
+export function invokeClearEmails(sessionId: string | null): Promise<void> {
+  return invoke("clear_emails", { sessionId });
 }
 
 export function invokeSmtpStatus(): Promise<SmtpStatus> {
