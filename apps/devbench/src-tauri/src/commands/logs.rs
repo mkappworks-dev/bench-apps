@@ -90,6 +90,11 @@ pub struct PersistedSource {
     pub kind: crate::log_state::SourceKind,
 }
 
+/// A malformed individual row (unknown `kind`, missing `path`/`program`,
+/// unparseable `args` JSON) is logged and skipped rather than failing the
+/// whole load — one corrupted row must not take every other source down
+/// with it. A failure fetching the rows at all (a real DB/query problem, a
+/// different class of failure) still returns `Err`.
 pub async fn load_persisted_sources(pool: &SqlitePool) -> Result<Vec<PersistedSource>, String> {
     let rows = sqlx::query("SELECT id, label, kind, path, program, args, cwd FROM log_sources")
         .fetch_all(pool)
@@ -104,21 +109,41 @@ pub async fn load_persisted_sources(pool: &SqlitePool) -> Result<Vec<PersistedSo
         let kind = match kind_str.as_str() {
             "file" => {
                 let path: Option<String> = row.get("path");
-                let path = path.ok_or_else(|| format!("log source {id} is kind=file but has no path"))?;
-                crate::log_state::SourceKind::File { path: PathBuf::from(path) }
+                match path {
+                    Some(path) => crate::log_state::SourceKind::File { path: PathBuf::from(path) },
+                    None => {
+                        eprintln!("skipping persisted log source {id}: kind=file but has no path");
+                        continue;
+                    }
+                }
             }
             "command" => {
                 let program: Option<String> = row.get("program");
-                let program = program.ok_or_else(|| format!("log source {id} is kind=command but has no program"))?;
+                let program = match program {
+                    Some(p) => p,
+                    None => {
+                        eprintln!("skipping persisted log source {id}: kind=command but has no program");
+                        continue;
+                    }
+                };
                 let args_json: Option<String> = row.get("args");
                 let args: Vec<String> = match args_json {
-                    Some(json) => serde_json::from_str(&json).map_err(|e| format!("log source {id} has malformed args JSON: {e}"))?,
+                    Some(json) => match serde_json::from_str(&json) {
+                        Ok(args) => args,
+                        Err(e) => {
+                            eprintln!("skipping persisted log source {id}: malformed args JSON: {e}");
+                            continue;
+                        }
+                    },
                     None => Vec::new(),
                 };
                 let cwd: Option<String> = row.get("cwd");
                 crate::log_state::SourceKind::Command { program, args, cwd: cwd.map(PathBuf::from) }
             }
-            other => return Err(format!("log source {id} has unknown kind {other}")),
+            other => {
+                eprintln!("skipping persisted log source {id}: unknown kind {other}");
+                continue;
+            }
         };
         sources.push(PersistedSource { id, label, kind });
     }
@@ -137,9 +162,14 @@ pub async fn delete_persisted_source(pool: &SqlitePool, id: &str) -> Result<(), 
     Ok(())
 }
 
+/// Deletes the persisted row before touching in-memory state: a `DELETE` on
+/// an unknown id is a harmless no-op, but if this were reversed and the DB
+/// delete failed AFTER the in-memory removal already succeeded, the source
+/// would vanish from `list_sources` while its row stayed behind to resurrect
+/// on the next restart — the exact split-brain this function exists to avoid.
 pub async fn remove_log_source_impl(state: &LogState, pool: &SqlitePool, id: &str) -> Result<(), String> {
-    state.remove_source(id)?;
-    delete_persisted_source(pool, id).await
+    delete_persisted_source(pool, id).await?;
+    state.remove_source(id)
 }
 
 /// Re-adds every persisted source on startup — re-stats the file or
@@ -257,6 +287,34 @@ mod tests {
         assert_eq!(input.cwd, None);
     }
 
+    #[test]
+    fn parse_source_kind_rejects_a_command_input_with_no_program() {
+        let input = AddLogSourceInput {
+            label: "x".into(),
+            path: None,
+            kind: "command".into(),
+            program: None,
+            args: Vec::new(),
+            cwd: None,
+        };
+        let err = parse_source_kind(&input).unwrap_err();
+        assert!(err.contains("program"), "{err}");
+    }
+
+    #[test]
+    fn parse_source_kind_rejects_an_unrecognized_kind() {
+        let input = AddLogSourceInput {
+            label: "x".into(),
+            path: None,
+            kind: "pipe".into(),
+            program: None,
+            args: Vec::new(),
+            cwd: None,
+        };
+        let err = parse_source_kind(&input).unwrap_err();
+        assert!(err.contains("pipe"), "{err}");
+    }
+
     #[tokio::test]
     async fn persist_and_load_round_trips_a_file_source() {
         let dir = tempfile::tempdir().unwrap();
@@ -298,6 +356,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn load_persisted_sources_skips_a_row_with_malformed_args_json_but_still_loads_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+
+        let path = dir.path().join("app.log");
+        std::fs::write(&path, "").unwrap();
+        let good_kind = crate::log_state::SourceKind::File { path: path.clone() };
+        let good_status = LogState::new().add_source("app.log".into(), good_kind.clone()).unwrap();
+        persist_log_source(&db.pool, &good_status, &good_kind).await.unwrap();
+
+        // Inserted directly — persist_log_source can never itself produce
+        // invalid args JSON, so this simulates on-disk corruption.
+        sqlx::query("INSERT INTO log_sources (id, label, kind, program, args, created_at) VALUES (?, ?, 'command', ?, ?, ?)")
+            .bind("src-bad-args")
+            .bind("broken")
+            .bind("npm")
+            .bind("not valid json")
+            .bind("2026-07-31T00:00:00Z")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let loaded = load_persisted_sources(&db.pool).await.unwrap();
+        assert_eq!(loaded.len(), 1, "the malformed row must be skipped individually, not abort the whole batch");
+        assert_eq!(loaded[0].id, good_status.id);
+    }
+
+    #[tokio::test]
+    async fn load_persisted_sources_skips_a_row_with_an_unknown_kind_but_still_loads_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+
+        let path = dir.path().join("app.log");
+        std::fs::write(&path, "").unwrap();
+        let good_kind = crate::log_state::SourceKind::File { path: path.clone() };
+        let good_status = LogState::new().add_source("app.log".into(), good_kind.clone()).unwrap();
+        persist_log_source(&db.pool, &good_status, &good_kind).await.unwrap();
+
+        sqlx::query("INSERT INTO log_sources (id, label, kind, created_at) VALUES (?, ?, 'pipe', ?)")
+            .bind("src-bad-kind")
+            .bind("mystery")
+            .bind("2026-07-31T00:00:00Z")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let loaded = load_persisted_sources(&db.pool).await.unwrap();
+        assert_eq!(loaded.len(), 1, "the unknown-kind row must be skipped individually, not abort the whole batch");
+        assert_eq!(loaded[0].id, good_status.id);
+    }
+
+    #[tokio::test]
     async fn add_log_source_falls_back_to_the_file_name_when_no_label_is_given() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("server.log");
@@ -322,6 +432,76 @@ mod tests {
 
         assert_eq!(source.label, "server.log");
         assert_eq!(source.state, "live");
+    }
+
+    // The only other add_log_source_impl test above exercises kind="file";
+    // this covers the Command dispatch arm (parse_source_kind ->
+    // spawn_command_source -> persist_log_source) end to end through the
+    // same entry point the add_log_source tauri command actually calls.
+    #[tokio::test]
+    async fn add_log_source_impl_spawns_and_persists_a_command_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        let state = Arc::new(LogState::new());
+
+        let status = add_log_source_impl(
+            &state,
+            &db.pool,
+            AddLogSourceInput {
+                label: "web".into(),
+                path: None,
+                kind: "command".into(),
+                program: Some("sh".into()),
+                args: vec!["-c".into(), "echo hi".into()],
+                cwd: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(status.kind, "command");
+        assert_eq!(status.state, "live");
+        assert_eq!(status.path, "sh -c echo hi");
+
+        // LogState::add_source alone would produce identical status fields
+        // for a Command kind without ever running anything — this only
+        // passes if spawn_command_source's reader task actually captured
+        // the process's real stdout, proving the dispatch arm was taken.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let page = state.read_since(0, Some(&status.id), 100);
+        assert!(page.lines.iter().any(|l| l.message == "hi"), "{:?}", page.lines);
+
+        let loaded = load_persisted_sources(&db.pool).await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, status.id);
+        assert_eq!(
+            loaded[0].kind,
+            crate::log_state::SourceKind::Command { program: "sh".into(), args: vec!["-c".into(), "echo hi".into()], cwd: None }
+        );
+    }
+
+    #[tokio::test]
+    async fn add_log_source_impl_falls_back_to_the_program_name_when_no_label_is_given_for_a_command_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        let state = Arc::new(LogState::new());
+
+        let status = add_log_source_impl(
+            &state,
+            &db.pool,
+            AddLogSourceInput {
+                label: "   ".into(),
+                path: None,
+                kind: "command".into(),
+                program: Some("sh".into()),
+                args: vec!["-c".into(), "echo hi".into()],
+                cwd: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(status.label, "sh");
     }
 
     #[test]
