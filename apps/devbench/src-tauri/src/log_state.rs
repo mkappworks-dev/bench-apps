@@ -455,7 +455,9 @@ impl LogState {
                 entry.status.exit_code = exit_code;
             }
         }
-        self.commands.lock().unwrap().remove(source_id);
+        if let Ok(mut commands) = self.commands.lock() {
+            commands.remove(source_id);
+        }
     }
 
     pub fn add_source(&self, label: String, kind: SourceKind) -> Result<LogSourceStatus, String> {
@@ -512,15 +514,21 @@ impl LogState {
         }
         drop(inner);
 
-        if let Some(child) = self.commands.lock().unwrap().remove(id) {
-            // A non-blocking try_lock: if the reader task currently holds the
-            // lock it's because the process is already exiting on its own —
-            // `mark_exited` will run momentarily and this kill is redundant,
-            // not required for correctness (`kill_on_drop` below is the
-            // actual backstop for that race, and for the app-quit case).
-            if let Ok(mut guard) = child.try_lock() {
+        let removed_child = {
+            let mut commands = self.commands.lock().map_err(|_| "log state poisoned".to_string())?;
+            commands.remove(id)
+        };
+        if let Some(child) = removed_child {
+            // Spawned rather than awaited here, so `remove_source` itself stays
+            // synchronous. `.lock().await`, not `try_lock()`: the wait task
+            // (see spawn_command_source) holds this same lock only briefly, once
+            // per try_wait() poll tick, so a try_lock() here could collide and
+            // silently skip the kill — with the registry entry already gone by
+            // then, nothing could ever reach that child again to retry.
+            tokio::spawn(async move {
+                let mut guard = child.lock().await;
                 let _ = guard.start_kill();
-            }
+            });
         }
         Ok(())
     }
@@ -623,7 +631,10 @@ impl LogState {
     /// the shutdown path actually relies on, since it doesn't depend on
     /// exactly when a detached task's last `Arc<Child>` reference drops.
     pub async fn kill_all_commands(&self) {
-        let handles: Vec<_> = self.commands.lock().unwrap().values().cloned().collect();
+        let handles: Vec<_> = match self.commands.lock() {
+            Ok(commands) => commands.values().cloned().collect(),
+            Err(_) => Vec::new(),
+        };
         for child in handles {
             let mut guard = child.lock().await;
             let _ = guard.start_kill();
@@ -666,7 +677,10 @@ pub async fn spawn_command_source(
     let status = logs.add_source(label, SourceKind::Command { program, args, cwd })?;
 
     let child = Arc::new(tokio::sync::Mutex::new(child));
-    logs.commands.lock().unwrap().insert(status.id.clone(), Arc::clone(&child));
+    logs.commands
+        .lock()
+        .map_err(|_| "log state poisoned".to_string())?
+        .insert(status.id.clone(), Arc::clone(&child));
 
     let out_logs = Arc::clone(&logs);
     let out_id = status.id.clone();
@@ -1085,22 +1099,31 @@ mod tests {
 
     #[tokio::test]
     async fn removing_a_command_source_kills_its_process() {
+        let marker_dir = tempfile::tempdir().unwrap();
+        let marker = marker_dir.path().join("still-alive");
         let state = Arc::new(LogState::new());
-        // `sleep 30` would still be running long after this test's own
-        // timeout if remove_source failed to kill it.
-        let status = spawn_command_source(Arc::clone(&state), "long-runner".into(), "sleep".into(), vec!["30".into()], None)
-            .await
-            .unwrap();
+        // The marker only appears if the process was still running ~2s after
+        // being told to stop — a real proof of death, unlike checking the
+        // registry alone (remove_source empties that synchronously regardless
+        // of whether the kill actually lands).
+        let status = spawn_command_source(
+            Arc::clone(&state),
+            "long-runner".into(),
+            "sh".into(),
+            vec!["-c".into(), format!("sleep 2; touch {}", marker.display())],
+            None,
+        )
+        .await
+        .unwrap();
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         state.remove_source(&status.id).unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2_200)).await;
 
-        // The wait task's mark_exited call removes the command handle once
-        // the killed process's exit is observed — an empty registry is this
-        // test's proof the process actually died rather than being merely
-        // forgotten about.
-        assert!(state.commands.lock().unwrap().is_empty(), "the killed child's handle should be cleaned up once its exit is observed");
+        assert!(!marker.exists(), "remove_source should have killed the process before it could touch the marker file");
+        // Removed synchronously by remove_source itself, independent of the
+        // kill's outcome — bookkeeping, not proof of death (see above).
+        assert!(state.commands.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
