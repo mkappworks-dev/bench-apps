@@ -230,6 +230,7 @@ pub async fn run_correlated_request_impl_with_registry(
     watched_tables: Vec<String>,
     logs: &LogState,
     emails: &EmailState,
+    db: &sqlx::SqlitePool,
     registry: &CorrelationRegistry,
     now_ms: i64,
     // How long after the response to keep collecting. Comes from Settings >
@@ -238,7 +239,7 @@ pub async fn run_correlated_request_impl_with_registry(
     window_ms: i64,
 ) -> Result<CorrelationResult, String> {
     let from_log_id = logs.next_line_id().saturating_sub(1);
-    let from_email_id = emails.store().lock().map(|s| s.next_id().saturating_sub(1)).unwrap_or(0);
+    let from_email_id = crate::email_state::current_max_email_id(db).await.unwrap_or(0);
 
     // The window's end is anchored to *response* time, not request-start
     // time: `now_ms` is captured by the caller before `fire_request_impl`
@@ -269,6 +270,7 @@ pub async fn collect_correlation_window_impl(
     registry: &CorrelationRegistry,
     logs: &LogState,
     emails: &EmailState,
+    db: &sqlx::SqlitePool,
     correlation_id: String,
     now_ms: i64,
 ) -> Result<CorrelationWindowResult, String> {
@@ -288,11 +290,11 @@ pub async fn collect_correlation_window_impl(
     // A catcher that is not listening did not observe anything — reporting
     // zero mail would be a false negative, which principle 4 forbids.
     let (captured, emails_truncated) = if emails.status().listening {
-        match emails.store().lock() {
-            Ok(store) => (
-                Some(store.between(window.from_email_id, window.window_ends_at_ms)),
-                store.evicted_through_id() > window.from_email_id,
-            ),
+        match crate::email_state::between_captured_emails(db, window.from_email_id, window.window_ends_at_ms).await {
+            Ok(list) => {
+                let evicted = crate::email_state::evicted_through_id(db).await.unwrap_or(0);
+                (Some(list), evicted > window.from_email_id)
+            }
             Err(_) => (None, false),
         }
     } else {
@@ -312,12 +314,14 @@ pub async fn collect_correlation_window(
     registry: State<'_, Arc<CorrelationRegistry>>,
     logs: State<'_, Arc<LogState>>,
     emails: State<'_, Arc<EmailState>>,
+    db: State<'_, LocalDb>,
     correlation_id: String,
 ) -> Result<CorrelationWindowResult, String> {
     collect_correlation_window_impl(
         &registry,
         &logs,
         &emails,
+        &db.pool,
         correlation_id,
         chrono::Utc::now().timestamp_millis(),
     )
@@ -351,6 +355,7 @@ pub async fn run_correlated_request(
         watched_tables,
         &logs,
         &emails,
+        &db.pool,
         &registry,
         chrono::Utc::now().timestamp_millis(),
         window_ms,
@@ -402,6 +407,12 @@ mod tests {
         let after = vec![snap("1", "a")];
         let diff = diff_table_snapshots("orders", &before, &after);
         assert_eq!(diff, TableDiff { table: "orders".into(), inserted: 0, updated: 0, deleted: 0 });
+    }
+
+    async fn db() -> (tempfile::TempDir, LocalDb) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        (dir, db)
     }
 
     fn test_connection() -> DbConnectInput {
@@ -784,6 +795,7 @@ mod tests {
         let logs = LogState::new();
         let emails = EmailState::new();
         let registry = CorrelationRegistry::new();
+        let (_edb_dir, edb) = db().await;
 
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("app.log");
@@ -810,15 +822,12 @@ mod tests {
             .await;
 
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput {
-                method: "POST".to_string(),
-                url: format!("{}/orders", server.url()),
-                body: None,
-            },
+            FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), body: None },
             conn,
             vec![],
             &logs,
             &emails,
+            &edb.pool,
             &registry,
             10_000,
             DEFAULT_CORRELATION_WINDOW_MS,
@@ -829,14 +838,13 @@ mod tests {
         mock.assert_async().await;
         assert!(!result.correlation_id.is_empty());
 
-        // The tailer has not run since the write; drive it explicitly with a
-        // capture time inside the window.
         logs.poll_all(10_100);
 
         let window = collect_correlation_window_impl(
             &registry,
             &logs,
             &emails,
+            &edb.pool,
             result.correlation_id.clone(),
             10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
         )
@@ -856,6 +864,7 @@ mod tests {
         let logs = LogState::new();
         let emails = EmailState::new();
         let registry = CorrelationRegistry::new();
+        let (_edb_dir, edb) = db().await;
 
         let mut server = mockito::Server::new_async().await;
         let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
@@ -866,6 +875,7 @@ mod tests {
             vec![],
             &logs,
             &emails,
+            &edb.pool,
             &registry,
             10_000,
             DEFAULT_CORRELATION_WINDOW_MS,
@@ -878,6 +888,7 @@ mod tests {
             &registry,
             &logs,
             &emails,
+            &edb.pool,
             result.correlation_id,
             10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
         )
@@ -892,8 +903,9 @@ mod tests {
         let logs = LogState::new();
         let emails = EmailState::new();
         let registry = CorrelationRegistry::new();
+        let (_edb_dir, edb) = db().await;
         let result =
-            collect_correlation_window_impl(&registry, &logs, &emails, "not-a-real-id".into(), 1_000)
+            collect_correlation_window_impl(&registry, &logs, &emails, &edb.pool, "not-a-real-id".into(), 1_000)
                 .await;
         assert!(result.is_err());
     }
@@ -903,10 +915,11 @@ mod tests {
         let logs = LogState::new();
         let emails = EmailState::new();
         let registry = CorrelationRegistry::new();
+        let (_edb_dir, edb) = db().await;
         let id = registry.open(0, 0, 500);
 
-        assert!(collect_correlation_window_impl(&registry, &logs, &emails, id.clone(), 1_000).await.is_ok());
-        assert!(collect_correlation_window_impl(&registry, &logs, &emails, id, 1_000).await.is_err());
+        assert!(collect_correlation_window_impl(&registry, &logs, &emails, &edb.pool, id.clone(), 1_000).await.is_ok());
+        assert!(collect_correlation_window_impl(&registry, &logs, &emails, &edb.pool, id, 1_000).await.is_err());
         assert_eq!(registry.len(), 0);
     }
 
@@ -930,37 +943,56 @@ mod tests {
         let logs = LogState::new();
         let emails = listening_email_state();
         let registry = CorrelationRegistry::new();
+        let (_edb_dir, edb) = db().await;
 
-        let store_for_mock = emails.store();
+        let pool_for_mock = edb.pool.clone();
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("POST", "/orders")
             .with_status(201)
-            // Pushing into the inbox from inside the mock's body callback puts
-            // the capture strictly between the request being sent and the
-            // response landing — the same shape as a real backend sending mail
-            // mid-request, without needing a live SMTP round trip here (that
-            // is covered end to end in Task 9).
+            // `with_body_from_request`'s closure runs synchronously on
+            // mockito's own already-entered dedicated current-thread Tokio
+            // runtime (see the detailed explanation on
+            // `run_correlated_request_reports_only_tables_that_actually_changed`
+            // above) — `tauri::async_runtime::block_on` cannot be nested in
+            // there any more than `tokio::task::block_in_place` can; it panics
+            // with "Cannot start a runtime from within a runtime" (verified).
+            // Spawning a plain OS thread with its own throwaway runtime and
+            // `.join()`-ing it, exactly like that Postgres test does, is what
+            // actually works here.
             .with_body_from_request(move |_req| {
-                store_for_mock
-                    .lock()
-                    .unwrap()
-                    .push("orders@shop.test", &["customer@example.com".into()], TEST_EMAIL, 10_100);
+                let pool = pool_for_mock.clone();
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("failed to build throwaway runtime for synchronized insert");
+                    rt.block_on(async {
+                        crate::email_state::insert_captured_email(
+                            &pool,
+                            "orders@shop.test",
+                            &["customer@example.com".to_string()],
+                            TEST_EMAIL,
+                            10_100,
+                        )
+                        .await
+                        .unwrap();
+                    });
+                })
+                .join()
+                .expect("insert thread panicked");
                 br#"{"id":8841}"#.to_vec()
             })
             .create_async()
             .await;
 
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput {
-                method: "POST".to_string(),
-                url: format!("{}/orders", server.url()),
-                body: None,
-            },
+            FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), body: None },
             conn,
             vec![],
             &logs,
             &emails,
+            &edb.pool,
             &registry,
             10_000,
             DEFAULT_CORRELATION_WINDOW_MS,
@@ -974,6 +1006,7 @@ mod tests {
             &registry,
             &logs,
             &emails,
+            &edb.pool,
             result.correlation_id,
             10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
         )
@@ -1009,28 +1042,42 @@ mod tests {
         let logs = LogState::new();
         let emails = listening_email_state();
         let registry = CorrelationRegistry::new();
+        let (_edb_dir, edb) = db().await;
 
         const WINDOW_MS: i64 = 100;
         const SIMULATED_BACKEND_DELAY_MS: u64 = 200;
 
-        let store_for_mock = emails.store();
+        let pool_for_mock = edb.pool.clone();
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("POST", "/orders")
             .with_status(201)
-            // A real sleep here simulates a backend slow enough to outlast
-            // `WINDOW_MS` on its own, then pushes the "side effect" email
-            // once the delay elapses — capturing real wall-clock time at the
-            // moment of the push, exactly like a real SMTP catcher would.
+            // Same mockito-runtime-nesting hazard as the test above — see the
+            // comment there. The OS-thread + throwaway-runtime bridge is used
+            // again here instead of `tauri::async_runtime::block_on`.
             .with_body_from_request(move |_req| {
                 std::thread::sleep(std::time::Duration::from_millis(SIMULATED_BACKEND_DELAY_MS));
                 let captured_at_ms = chrono::Utc::now().timestamp_millis();
-                store_for_mock.lock().unwrap().push(
-                    "orders@shop.test",
-                    &["customer@example.com".into()],
-                    TEST_EMAIL,
-                    captured_at_ms,
-                );
+                let pool = pool_for_mock.clone();
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("failed to build throwaway runtime for synchronized insert");
+                    rt.block_on(async {
+                        crate::email_state::insert_captured_email(
+                            &pool,
+                            "orders@shop.test",
+                            &["customer@example.com".to_string()],
+                            TEST_EMAIL,
+                            captured_at_ms,
+                        )
+                        .await
+                        .unwrap();
+                    });
+                })
+                .join()
+                .expect("insert thread panicked");
                 br#"{"id":8841}"#.to_vec()
             })
             .create_async()
@@ -1038,15 +1085,12 @@ mod tests {
 
         let started_at_ms = chrono::Utc::now().timestamp_millis();
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput {
-                method: "POST".to_string(),
-                url: format!("{}/orders", server.url()),
-                body: None,
-            },
+            FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), body: None },
             conn,
             vec![],
             &logs,
             &emails,
+            &edb.pool,
             &registry,
             started_at_ms,
             WINDOW_MS,
@@ -1056,13 +1100,12 @@ mod tests {
 
         mock.assert_async().await;
 
-        // Collect comfortably past the CORRECT window end so the internal
-        // sleep in `collect_correlation_window_impl` is skipped entirely.
         let collect_at_ms = chrono::Utc::now().timestamp_millis() + 1_000;
         let window = collect_correlation_window_impl(
             &registry,
             &logs,
             &emails,
+            &edb.pool,
             result.correlation_id,
             collect_at_ms,
         )
@@ -1085,12 +1128,17 @@ mod tests {
         let logs = LogState::new();
         let emails = listening_email_state();
         let registry = CorrelationRegistry::new();
+        let (_edb_dir, edb) = db().await;
 
-        emails
-            .store()
-            .lock()
-            .unwrap()
-            .push("old@shop.test", &["someone@example.com".into()], TEST_EMAIL, 5_000);
+        crate::email_state::insert_captured_email(
+            &edb.pool,
+            "old@shop.test",
+            &["someone@example.com".to_string()],
+            TEST_EMAIL,
+            5_000,
+        )
+        .await
+        .unwrap();
 
         let mut server = mockito::Server::new_async().await;
         let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
@@ -1101,6 +1149,7 @@ mod tests {
             vec![],
             &logs,
             &emails,
+            &edb.pool,
             &registry,
             10_000,
             DEFAULT_CORRELATION_WINDOW_MS,
@@ -1113,6 +1162,7 @@ mod tests {
             &registry,
             &logs,
             &emails,
+            &edb.pool,
             result.correlation_id,
             10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
         )
@@ -1133,6 +1183,7 @@ mod tests {
             error: Some("SMTP port 1025 is unavailable".to_string()),
         });
         let registry = CorrelationRegistry::new();
+        let (_edb_dir, edb) = db().await;
 
         let mut server = mockito::Server::new_async().await;
         let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
@@ -1143,6 +1194,7 @@ mod tests {
             vec![],
             &logs,
             &emails,
+            &edb.pool,
             &registry,
             10_000,
             DEFAULT_CORRELATION_WINDOW_MS,
@@ -1155,6 +1207,7 @@ mod tests {
             &registry,
             &logs,
             &emails,
+            &edb.pool,
             result.correlation_id,
             10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
         )
@@ -1181,25 +1234,37 @@ mod tests {
         let logs = LogState::new();
         let emails = listening_email_state();
         let registry = CorrelationRegistry::new();
+        let (_edb_dir, edb) = db().await;
 
-        let store_for_mock = emails.store();
+        let pool_for_mock = edb.pool.clone();
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("GET", "/ping")
             .with_status(200)
-            // Captured at 25_000: strictly AFTER where a hardcoded 5s default
-            // window opened at 10_000 would end (10_000 + 5_000 = 15_000),
-            // but strictly BEFORE where the real 30s window this test passes
-            // ends (10_000 + 30_000 = 40_000). Only a `window_ms` that was
-            // genuinely threaded through as 30_000 — not silently replaced by
-            // the 5s default — includes this message in the collected window.
+            // Same mockito-runtime-nesting hazard as the earlier tests in this
+            // file — see the comment on
+            // `a_correlation_window_captures_mail_sent_during_the_request`.
             .with_body_from_request(move |_req| {
-                store_for_mock.lock().unwrap().push(
-                    "orders@shop.test",
-                    &["customer@example.com".into()],
-                    TEST_EMAIL,
-                    25_000,
-                );
+                let pool = pool_for_mock.clone();
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("failed to build throwaway runtime for synchronized insert");
+                    rt.block_on(async {
+                        crate::email_state::insert_captured_email(
+                            &pool,
+                            "orders@shop.test",
+                            &["customer@example.com".to_string()],
+                            TEST_EMAIL,
+                            25_000,
+                        )
+                        .await
+                        .unwrap();
+                    });
+                })
+                .join()
+                .expect("insert thread panicked");
                 b"pong".to_vec()
             })
             .create_async()
@@ -1211,25 +1276,19 @@ mod tests {
             vec![],
             &logs,
             &emails,
+            &edb.pool,
             &registry,
             10_000,
-            30_000, // a 30s window, not the 5s default
+            30_000,
         )
         .await
         .unwrap();
         mock.assert_async().await;
 
-        // Collecting at 40_001 is past the REAL window's end (40_000), so no
-        // sleep occurs here regardless of which window length was used —
-        // the differentiator is entirely in whether the 25_000-timestamped
-        // message below survives `EmailStore::between`'s upper bound.
-        let window = collect_correlation_window_impl(&registry, &logs, &emails, result.correlation_id, 40_001)
+        let window = collect_correlation_window_impl(&registry, &logs, &emails, &edb.pool, result.correlation_id, 40_001)
             .await
             .unwrap();
 
-        // If `window_ms` had silently fallen back to the 5s default, the
-        // window would have closed at 15_000 and this message (captured at
-        // 25_000) would be excluded, failing this assertion.
         let captured = window.emails.expect("the catcher is running, so emails must be Some");
         assert_eq!(captured.len(), 1, "a real 30s window must include mail captured at 25_000");
         assert_eq!(captured[0].subject, "Order confirmation #8841");
