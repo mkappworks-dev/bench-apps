@@ -1,7 +1,7 @@
 {
   "productName": "DevBench",
   "version": "0.1.0",
-  "identifier": "com.benchapps.devbench",
+  "identifier": "app.benchlabs.devbench",
   "build": {
     "beforeDevCommand": "bun run dev",
     "beforeBuildCommand": "bun run build",
