@@ -94,14 +94,17 @@ pub async fn snapshot_table(
 
 #[derive(Debug, Serialize)]
 pub struct CorrelationResult {
-    /// Handle for the second phase (`collect_correlation_window`). Filled in
-    /// by Task 6; a fixed placeholder until then.
+    /// Handle for the second phase (`collect_correlation_window`).
     pub correlation_id: String,
     pub response: FireRequestOutput,
     /// `None` means the DB could not be verified — never rendered as "0 writes".
     /// `Some(vec![])` means it WAS verified and nothing changed.
     pub table_diffs: Option<Vec<TableDiff>>,
     pub db_error: Option<String>,
+    /// The `request_history` row's id, once saved — `None` only if that save
+    /// itself failed. Threaded into `collect_correlation_window` so it can
+    /// attach `request_id` to whichever captured emails the window observes.
+    pub history_id: Option<String>,
 }
 
 /// Snapshots every watched table. Returned as a `Result` so the caller can
@@ -173,6 +176,7 @@ pub async fn run_correlated_request_impl(
         response,
         table_diffs,
         db_error,
+        history_id: None,
     })
 }
 
@@ -190,7 +194,7 @@ async fn save_correlation_history(
     url: &str,
     response: &FireRequestOutput,
     session_id: Option<&str>,
-) {
+) -> Option<String> {
     let entry = HistoryEntryInput {
         method: method.to_string(),
         url: url.to_string(),
@@ -199,8 +203,12 @@ async fn save_correlation_history(
         duration_ms: response.duration_ms,
         session_id: session_id.map(str::to_string),
     };
-    if let Err(e) = save_history_entry_impl(pool, entry).await {
-        eprintln!("failed to save request history entry after a successful correlated request: {e}");
+    match save_history_entry_impl(pool, entry).await {
+        Ok(id) => Some(id),
+        Err(e) => {
+            eprintln!("failed to save request history entry after a successful correlated request: {e}");
+            None
+        }
     }
 }
 
@@ -272,6 +280,7 @@ pub async fn collect_correlation_window_impl(
     emails: &EmailState,
     db: &sqlx::SqlitePool,
     correlation_id: String,
+    history_id: Option<&str>,
     now_ms: i64,
 ) -> Result<CorrelationWindowResult, String> {
     let window = registry
@@ -301,6 +310,25 @@ pub async fn collect_correlation_window_impl(
         (None, false)
     };
 
+    // Persist the link now that both halves are known: which request (via
+    // `history_id`, saved right after the response) sent which emails (via
+    // `captured`, only known once the window closes). Neither the timing
+    // above nor the None-vs-Some(vec![]) semantics are touched by this.
+    if let (Some(hid), Some(list)) = (history_id, &captured) {
+        if !list.is_empty() {
+            let ids: Vec<i64> = list.iter().map(|e| e.id as i64).collect();
+            let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!("UPDATE captured_emails SET request_id = ? WHERE id IN ({placeholders})");
+            let mut q = sqlx::query(&sql).bind(hid);
+            for id in &ids {
+                q = q.bind(id);
+            }
+            if let Err(e) = q.execute(db).await {
+                eprintln!("failed to link captured emails to request {hid}: {e}");
+            }
+        }
+    }
+
     Ok(CorrelationWindowResult {
         log_lines,
         log_lines_truncated,
@@ -316,6 +344,7 @@ pub async fn collect_correlation_window(
     emails: State<'_, Arc<EmailState>>,
     db: State<'_, LocalDb>,
     correlation_id: String,
+    history_id: Option<String>,
 ) -> Result<CorrelationWindowResult, String> {
     collect_correlation_window_impl(
         &registry,
@@ -323,6 +352,7 @@ pub async fn collect_correlation_window(
         &emails,
         &db.pool,
         correlation_id,
+        history_id.as_deref(),
         chrono::Utc::now().timestamp_millis(),
     )
     .await
@@ -349,7 +379,7 @@ pub async fn run_correlated_request(
         .await
         .map(|s| s.correlation_window_ms)
         .unwrap_or(DEFAULT_CORRELATION_WINDOW_MS);
-    let result = run_correlated_request_impl_with_registry(
+    let mut result = run_correlated_request_impl_with_registry(
         request,
         connection,
         watched_tables,
@@ -361,7 +391,8 @@ pub async fn run_correlated_request(
         window_ms,
     )
     .await?;
-    save_correlation_history(&db.pool, &method, &url, &result.response, session_id.as_deref()).await;
+    result.history_id =
+        save_correlation_history(&db.pool, &method, &url, &result.response, session_id.as_deref()).await;
     Ok(result)
 }
 
@@ -848,6 +879,7 @@ mod tests {
             &emails,
             &edb.pool,
             result.correlation_id.clone(),
+            None,
             10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
         )
         .await
@@ -892,6 +924,7 @@ mod tests {
             &emails,
             &edb.pool,
             result.correlation_id,
+            None,
             10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
         )
         .await
@@ -907,7 +940,7 @@ mod tests {
         let registry = CorrelationRegistry::new();
         let (_edb_dir, edb) = db().await;
         let result =
-            collect_correlation_window_impl(&registry, &logs, &emails, &edb.pool, "not-a-real-id".into(), 1_000)
+            collect_correlation_window_impl(&registry, &logs, &emails, &edb.pool, "not-a-real-id".into(), None, 1_000)
                 .await;
         assert!(result.is_err());
     }
@@ -920,8 +953,8 @@ mod tests {
         let (_edb_dir, edb) = db().await;
         let id = registry.open(0, 0, 500);
 
-        assert!(collect_correlation_window_impl(&registry, &logs, &emails, &edb.pool, id.clone(), 1_000).await.is_ok());
-        assert!(collect_correlation_window_impl(&registry, &logs, &emails, &edb.pool, id, 1_000).await.is_err());
+        assert!(collect_correlation_window_impl(&registry, &logs, &emails, &edb.pool, id.clone(), None, 1_000).await.is_ok());
+        assert!(collect_correlation_window_impl(&registry, &logs, &emails, &edb.pool, id, None, 1_000).await.is_err());
         assert_eq!(registry.len(), 0);
     }
 
@@ -1018,6 +1051,7 @@ mod tests {
             &emails,
             &edb.pool,
             result.correlation_id,
+            None,
             10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
         )
         .await
@@ -1124,6 +1158,7 @@ mod tests {
             &emails,
             &edb.pool,
             result.correlation_id,
+            None,
             collect_at_ms,
         )
         .await
@@ -1181,6 +1216,7 @@ mod tests {
             &emails,
             &edb.pool,
             result.correlation_id,
+            None,
             10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
         )
         .await
@@ -1226,6 +1262,7 @@ mod tests {
             &emails,
             &edb.pool,
             result.correlation_id,
+            None,
             10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
         )
         .await
@@ -1314,7 +1351,8 @@ mod tests {
         // sleep occurs here regardless of which window length was used —
         // the differentiator is entirely in whether the 25_000-timestamped
         // message above survives `between_captured_emails`'s upper bound.
-        let window = collect_correlation_window_impl(&registry, &logs, &emails, &edb.pool, result.correlation_id, 40_001)
+        let window =
+            collect_correlation_window_impl(&registry, &logs, &emails, &edb.pool, result.correlation_id, None, 40_001)
             .await
             .unwrap();
 
@@ -1325,5 +1363,145 @@ mod tests {
         assert_eq!(captured.len(), 1, "a real 30s window must include mail captured at 25_000");
         assert_eq!(captured[0].subject, "Order confirmation #8841");
         assert_eq!(captured[0].to, vec!["customer@example.com".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_completed_window_links_its_captured_emails_to_the_request_that_sent_them() {
+        let conn = test_connection();
+        let logs = LogState::new();
+        let emails = listening_email_state();
+        let registry = CorrelationRegistry::new();
+        let (_edb_dir, edb) = db().await;
+
+        let pool_for_mock = edb.pool.clone();
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/orders")
+            .with_status(201)
+            // Same mockito-runtime-nesting hazard as
+            // `a_correlation_window_captures_mail_sent_during_the_request` above
+            // (and the plan's own brief for this exact test literally specifies
+            // `tauri::async_runtime::block_on` here, which panics with "Cannot
+            // start a runtime from within a runtime" — verified empirically,
+            // matching the same defect Task 4 already found and fixed). The
+            // OS-thread + throwaway-runtime bridge is used instead.
+            .with_body_from_request(move |_req| {
+                let pool = pool_for_mock.clone();
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("failed to build throwaway runtime for synchronized insert");
+                    rt.block_on(async {
+                        crate::email_state::insert_captured_email(
+                            &pool,
+                            "orders@shop.test",
+                            &["customer@example.com".to_string()],
+                            TEST_EMAIL,
+                            10_100,
+                        )
+                        .await
+                        .unwrap();
+                    });
+                })
+                .join()
+                .expect("insert thread panicked");
+                br#"{"id":8841}"#.to_vec()
+            })
+            .create_async()
+            .await;
+
+        let result = run_correlated_request_impl_with_registry(
+            FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), body: None },
+            conn,
+            vec![],
+            &logs,
+            &emails,
+            &edb.pool,
+            &registry,
+            10_000,
+            DEFAULT_CORRELATION_WINDOW_MS,
+        )
+        .await
+        .unwrap();
+        mock.assert_async().await;
+
+        let history_id = save_correlation_history(&edb.pool, "POST", "/orders", &result.response, None).await;
+
+        let window = collect_correlation_window_impl(
+            &registry,
+            &logs,
+            &emails,
+            &edb.pool,
+            result.correlation_id,
+            history_id.as_deref(),
+            10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
+        )
+        .await
+        .unwrap();
+
+        let captured = window.emails.expect("the catcher is running, so emails must be Some");
+        assert_eq!(captured.len(), 1);
+
+        let linked = crate::email_state::get_captured_email(&edb.pool, captured[0].id).await.unwrap().unwrap();
+        assert_eq!(linked.request_id, history_id, "the captured email must be linked to the request that sent it");
+    }
+
+    #[tokio::test]
+    async fn mail_outside_the_window_is_never_linked_to_a_request_that_did_not_send_it() {
+        let conn = test_connection();
+        let logs = LogState::new();
+        let emails = listening_email_state();
+        let registry = CorrelationRegistry::new();
+        let (_edb_dir, edb) = db().await;
+
+        // Captured well before this request fired — the existing "not
+        // attributed" guarantee (`mail_sent_before_the_request_is_not_attributed_to_it`)
+        // must extend to the new UPDATE, not just to the returned list.
+        crate::email_state::insert_captured_email(
+            &edb.pool,
+            "old@shop.test",
+            &["someone@example.com".to_string()],
+            TEST_EMAIL,
+            5_000,
+        )
+        .await
+        .unwrap();
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
+
+        let result = run_correlated_request_impl_with_registry(
+            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
+            conn,
+            vec![],
+            &logs,
+            &emails,
+            &edb.pool,
+            &registry,
+            10_000,
+            DEFAULT_CORRELATION_WINDOW_MS,
+        )
+        .await
+        .unwrap();
+        mock.assert_async().await;
+
+        let history_id = save_correlation_history(&edb.pool, "GET", "/ping", &result.response, None).await;
+
+        collect_correlation_window_impl(
+            &registry,
+            &logs,
+            &emails,
+            &edb.pool,
+            result.correlation_id,
+            history_id.as_deref(),
+            10_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
+        )
+        .await
+        .unwrap();
+
+        let old_email_id = crate::email_state::list_captured_emails(&edb.pool, None, 10).await.unwrap().emails[0].id;
+        let old_email = crate::email_state::get_captured_email(&edb.pool, old_email_id).await.unwrap().unwrap();
+        assert_eq!(old_email.request_id, None, "mail sent before the request must never be linked to it");
     }
 }
