@@ -4,7 +4,7 @@ import { describe, expect, it, vi, beforeEach, beforeAll } from "vitest";
 import { DbTab } from "./DbTab";
 import { useAppStore } from "../../store/useAppStore";
 import * as tauriLib from "../../lib/tauri";
-import type { TableRows } from "../../lib/tauri";
+import type { TableRows, QueryPreview } from "../../lib/tauri";
 
 // DbTab renders DataGrid, which virtualizes rows via TanStack Virtual. jsdom
 // gives every element a height of 0, which makes the virtualizer compute a
@@ -519,6 +519,160 @@ describe("DbTab", () => {
       expect(screen.getByRole("table")).toBeInTheDocument();
       // Dropped back into an editable draft, not silently committed or wiped.
       expect(screen.getByDisplayValue("shipped")).toBeInTheDocument();
+    });
+
+    // Review-round regression guards: none of the tests above ever interact
+    // *during* a pending preview/commit request — every one of them awaits
+    // settlement first. That's exactly what let a missing staleness guard on
+    // these three handlers hide: fetchRows has always had one (requestIdRef);
+    // previewEdit/commitEdit/rollbackEdit didn't. These four fire the second
+    // action (or the navigation) before the first request's deferred promise
+    // resolves, on purpose.
+    describe("interacting while a preview/commit request is still in flight", () => {
+      it("double-clicking Commit edit fires exactly one commit request and reports the true outcome", async () => {
+        vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+          columns: ["id", "status"],
+          rows: [["1", "pending"]],
+          pk_column: "id",
+        });
+        vi.spyOn(tauriLib, "invokePreviewCellEdit").mockResolvedValue({
+          preview_id: "p1",
+          columns: [],
+          rows: [],
+          rows_affected: 1,
+        });
+        const deferredCommit: { resolve: (() => void) | null } = { resolve: null };
+        const commit = vi
+          .spyOn(tauriLib, "invokeCommitPreview")
+          .mockImplementation(() => new Promise<void>((resolve) => (deferredCommit.resolve = resolve)));
+
+        renderDb("orders");
+        await waitFor(() => screen.getByText("pending"));
+        fireEvent.click(screen.getByText("pending"));
+        fireEvent.change(await screen.findByDisplayValue("pending"), { target: { value: "shipped" } });
+        fireEvent.click(screen.getByRole("button", { name: "Preview change" }));
+        const commitButton = await screen.findByRole("button", { name: "Commit edit" });
+
+        // Two clicks before the first's request resolves — the second must
+        // land on an already-disabled button, not fire a second request.
+        fireEvent.click(commitButton);
+        fireEvent.click(commitButton);
+        expect(commit).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+          deferredCommit.resolve?.();
+          await Promise.resolve();
+        });
+
+        // The single commit succeeded — it must be reported as a success,
+        // not clobbered by a phantom second response.
+        await waitFor(() => expect(screen.queryByRole("button", { name: "Commit edit" })).not.toBeInTheDocument());
+        expect(screen.getByText("shipped")).toBeInTheDocument();
+        expect(screen.queryByText(/nothing was written/i)).not.toBeInTheDocument();
+      });
+
+      it("switching tables while Preview is in flight rolls back the preview once it lands, without resurrecting it on the new table", async () => {
+        vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation(async (_conn, t) => ({
+          columns: ["id", "status"],
+          rows: [["1", t === "orders" ? "pending" : "waiting"]],
+          pk_column: "id",
+        }));
+        const deferredPreview: { resolve: ((v: QueryPreview) => void) | null } = { resolve: null };
+        vi.spyOn(tauriLib, "invokePreviewCellEdit").mockImplementation(
+          () => new Promise<QueryPreview>((resolve) => (deferredPreview.resolve = resolve)),
+        );
+        const rollback = vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+
+        const { rerender, onPatchState } = renderDb("orders");
+        await waitFor(() => screen.getByText("pending"));
+        fireEvent.click(screen.getByText("pending"));
+        fireEvent.change(await screen.findByDisplayValue("pending"), { target: { value: "shipped" } });
+        fireEvent.click(screen.getByRole("button", { name: "Preview change" }));
+        // Still in flight — no preview UI exists yet to abandon.
+        expect(screen.queryByRole("button", { name: "Commit edit" })).not.toBeInTheDocument();
+
+        rerender(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table="payments" onPatchState={onPatchState} />);
+        await waitFor(() => expect(screen.getByText("waiting")).toBeInTheDocument());
+
+        // The request lands late, against a table the user has since left.
+        await act(async () => {
+          deferredPreview.resolve?.({ preview_id: "p1", columns: [], rows: [], rows_affected: 1 });
+          await Promise.resolve();
+        });
+
+        await waitFor(() => expect(rollback).toHaveBeenCalledWith("p1"));
+        expect(screen.queryByRole("button", { name: "Commit edit" })).not.toBeInTheDocument();
+        expect(screen.getByText("waiting")).toBeInTheDocument();
+      });
+
+      it("switching tables while Commit is in flight does not replace the new table's grid with the old table's rows", async () => {
+        vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation(async (_conn, t) => ({
+          columns: ["id", "status"],
+          rows: [["1", t === "orders" ? "pending" : "waiting"]],
+          pk_column: "id",
+        }));
+        vi.spyOn(tauriLib, "invokePreviewCellEdit").mockResolvedValue({
+          preview_id: "p1",
+          columns: [],
+          rows: [],
+          rows_affected: 1,
+        });
+        const deferredCommit: { resolve: (() => void) | null } = { resolve: null };
+        vi.spyOn(tauriLib, "invokeCommitPreview").mockImplementation(
+          () => new Promise<void>((resolve) => (deferredCommit.resolve = resolve)),
+        );
+
+        const { rerender, onPatchState } = renderDb("orders");
+        await waitFor(() => screen.getByText("pending"));
+        fireEvent.click(screen.getByText("pending"));
+        fireEvent.change(await screen.findByDisplayValue("pending"), { target: { value: "shipped" } });
+        fireEvent.click(screen.getByRole("button", { name: "Preview change" }));
+        fireEvent.click(await screen.findByRole("button", { name: "Commit edit" }));
+
+        rerender(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table="payments" onPatchState={onPatchState} />);
+        await waitFor(() => expect(screen.getByText("waiting")).toBeInTheDocument());
+
+        // The commit lands after the switch — it did write "shipped" for
+        // real on orders, but that must not overwrite payments' own grid.
+        await act(async () => {
+          deferredCommit.resolve?.();
+          await Promise.resolve();
+        });
+
+        expect(screen.getByText("waiting")).toBeInTheDocument();
+        expect(screen.queryByText("shipped")).not.toBeInTheDocument();
+      });
+
+      it("cancelling while Preview is in flight discards the draft and rolls the preview back once it lands, instead of resurrecting it", async () => {
+        vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+          columns: ["id", "status"],
+          rows: [["1", "pending"]],
+          pk_column: "id",
+        });
+        const deferredPreview: { resolve: ((v: QueryPreview) => void) | null } = { resolve: null };
+        vi.spyOn(tauriLib, "invokePreviewCellEdit").mockImplementation(
+          () => new Promise<QueryPreview>((resolve) => (deferredPreview.resolve = resolve)),
+        );
+        const rollback = vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+
+        renderDb("orders");
+        await waitFor(() => screen.getByText("pending"));
+        fireEvent.click(screen.getByText("pending"));
+        fireEvent.change(await screen.findByDisplayValue("pending"), { target: { value: "shipped" } });
+        fireEvent.click(screen.getByRole("button", { name: "Preview change" }));
+
+        fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
+        expect(screen.getByText("pending")).toBeInTheDocument();
+
+        await act(async () => {
+          deferredPreview.resolve?.({ preview_id: "p1", columns: [], rows: [], rows_affected: 1 });
+          await Promise.resolve();
+        });
+
+        expect(rollback).toHaveBeenCalledWith("p1");
+        expect(screen.queryByRole("button", { name: "Commit edit" })).not.toBeInTheDocument();
+        expect(screen.getByText("pending")).toBeInTheDocument();
+      });
     });
   });
 });

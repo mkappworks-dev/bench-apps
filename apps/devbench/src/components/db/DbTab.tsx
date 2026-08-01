@@ -17,9 +17,13 @@ const PAGE_SIZE = 100;
 // `draft` mirrors the wire value directly (`string | null`) rather than a
 // separate string + "is this null" flag — one field that's either a string
 // or NULL, matching what actually goes over the wire to preview_cell_edit.
+// `pending` is true while a preview/commit/rollback request for *this* edit
+// is in flight — it disables the button that would fire an overlapping
+// duplicate request, and gates whether a landing response is still allowed
+// to touch component state (see `editGenerationRef` below).
 type CellEdit =
-  | { rowIndex: number; columnIndex: number; phase: "editing"; draft: string | null }
-  | { rowIndex: number; columnIndex: number; phase: "preview"; draft: string | null; previewId: string };
+  | { rowIndex: number; columnIndex: number; phase: "editing"; draft: string | null; pending: boolean }
+  | { rowIndex: number; columnIndex: number; phase: "preview"; draft: string | null; previewId: string; pending: boolean };
 
 function isEditableCell(pkColumn: string | null, column: string, value: string | null): boolean {
   // A cell the grid can't even faithfully display (pk_column === null means
@@ -91,15 +95,31 @@ export function DbTab({
     editingRef.current = editing;
   }, [editing]);
 
+  // Bumped every time an edit is abandoned (table/connection switch, sort,
+  // paging, a different cell, cancel, or unmount). previewEdit/commitEdit/
+  // rollbackEdit each capture the current value before their `await` and
+  // compare it after: a mismatch means whatever they were acting on is gone
+  // by the time the response lands, so they must not touch component state —
+  // this is the same shape as `requestIdRef` above, applied to the mutation
+  // path instead of the read path. Without it, a request that outlives the
+  // edit it belongs to can resurrect a preview UI on a different table,
+  // report a successful write as failed, or stomp a freshly-fetched grid
+  // with stale rows from the edit it started on.
+  const editGenerationRef = useRef(0);
+
   // An open preview holds a real transaction (and its row lock) on the
   // user's database. Firing this whenever a preview is abandoned — by table
-  // switch, sort, paging, editing a different cell, or unmount — is what
-  // keeps that lock from leaking for up to the sweep's full 2-minute window.
-  // Swallowing the result: if the sweep already reclaimed it, this call
-  // fails with "no open preview", which is not a real problem — the outcome
-  // (transaction gone) is identical either way.
-  function abandonOpenPreview(current: CellEdit | null) {
-    if (current?.phase === "preview") {
+  // switch, sort, paging, editing a different cell, cancelling, or unmount —
+  // is what keeps that lock from leaking for up to the sweep's full
+  // 2-minute window. Swallowing the result: if the sweep already reclaimed
+  // it, this call fails with "no open preview", which is not a real problem
+  // — the outcome (transaction gone) is identical either way.
+  function abandonEdit(current: CellEdit | null) {
+    editGenerationRef.current++;
+    // If a commit or rollback is already in flight for this preview
+    // (`pending`), it already owns deciding that preview's fate — firing a
+    // second, redundant rollback here would just race it for no benefit.
+    if (current?.phase === "preview" && !current.pending) {
       void invokeRollbackPreview(current.previewId).catch(() => {});
     }
   }
@@ -143,7 +163,7 @@ export function DbTab({
     // columnIndex are about to describe entirely different data once the new
     // table's rows land, and any open preview is a transaction against
     // whatever connection/table it was opened on.
-    abandonOpenPreview(editingRef.current);
+    abandonEdit(editingRef.current);
     setEditing(null);
     setEditError(null);
     setSortColumn(null);
@@ -163,15 +183,20 @@ export function DbTab({
 
   // Rolls back any preview left open when the tab itself goes away (closed,
   // or its pane repurposed) — the table/connection-switch effect above only
-  // covers switches within a mounted DbTab, not unmounting it outright.
+  // covers switches within a mounted DbTab, not unmounting it outright. If a
+  // preview/commit *request* is still in flight (no materialized preview to
+  // roll back yet, or a commit already claimed it), bumping the generation
+  // here is what makes that request's own continuation self-correct when it
+  // eventually lands — `setEditing` after unmount would be a no-op, so this
+  // is the only recovery path for that case.
   useEffect(() => {
-    return () => abandonOpenPreview(editingRef.current);
+    return () => abandonEdit(editingRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function handleSort(column: string) {
     if (!table || !activeConnectionId) return;
-    abandonOpenPreview(editing);
+    abandonEdit(editing);
     setEditing(null);
     setEditError(null);
     const descending = sortColumn === column ? !sortDescending : false;
@@ -183,7 +208,7 @@ export function DbTab({
 
   function handlePrevPage() {
     if (!table || !activeConnectionId) return;
-    abandonOpenPreview(editing);
+    abandonEdit(editing);
     setEditing(null);
     setEditError(null);
     const nextPage = Math.max(0, page - 1);
@@ -193,7 +218,7 @@ export function DbTab({
 
   function handleNextPage() {
     if (!table || !activeConnectionId) return;
-    abandonOpenPreview(editing);
+    abandonEdit(editing);
     setEditing(null);
     setEditError(null);
     const nextPage = page + 1;
@@ -202,47 +227,69 @@ export function DbTab({
   }
 
   function startEdit(rowIndex: number, columnIndex: number, currentValue: string | null) {
-    abandonOpenPreview(editing);
+    // A cell mid-request for its own preview/commit/rollback can't be
+    // abandoned by clicking elsewhere — every other cell renders disabled
+    // while anything is pending (see `renderCell`), so this is a defensive
+    // backstop, not the primary guard.
+    if (editing?.pending) return;
+    abandonEdit(editing);
     setEditError(null);
-    setEditing({ rowIndex, columnIndex, phase: "editing", draft: currentValue });
+    setEditing({ rowIndex, columnIndex, phase: "editing", draft: currentValue, pending: false });
   }
 
   async function previewEdit() {
-    if (!editing || editing.phase !== "editing" || !tableRows?.pk_column || !activeConnectionId || !table) return;
+    if (!editing || editing.phase !== "editing" || editing.pending || !tableRows?.pk_column || !activeConnectionId || !table) return;
     const pkIndex = tableRows.columns.indexOf(tableRows.pk_column);
     const pkValue = tableRows.rows[editing.rowIndex][pkIndex];
     if (pkValue === null) {
       setEditError("Can't edit this row — its primary key value is NULL.");
       return;
     }
+    // Captured before the `await`: `generation` is compared against
+    // `editGenerationRef.current` when the request lands to tell whether
+    // this edit is still the one the user is looking at (see
+    // `editGenerationRef`'s comment). `target` is this edit's own identity,
+    // independent of whatever `editing` holds by the time we get a reply.
+    const generation = editGenerationRef.current;
+    const target = editing;
+    const column = tableRows.columns[target.columnIndex];
+    setEditing({ ...target, pending: true });
     try {
-      const preview = await invokePreviewCellEdit(
-        activeConnectionId,
-        table,
-        tableRows.pk_column,
-        pkValue,
-        tableRows.columns[editing.columnIndex],
-        editing.draft,
-      );
+      const preview = await invokePreviewCellEdit(activeConnectionId, table, tableRows.pk_column, pkValue, column, target.draft);
+      if (generation !== editGenerationRef.current) {
+        // Whatever this edit belonged to (this cell, this table, this
+        // mounted tab) is gone — table switch, cancel, or unmount happened
+        // while the request was in flight. We now hold a live transaction
+        // nobody's watching; roll it back immediately rather than leaking
+        // it for the sweep's ~2-minute window.
+        void invokeRollbackPreview(preview.preview_id).catch(() => {});
+        return;
+      }
       setEditError(null);
-      setEditing({ ...editing, phase: "preview", previewId: preview.preview_id });
+      setEditing({ ...target, phase: "preview", previewId: preview.preview_id, pending: false });
     } catch (err) {
+      // Nobody's watching this outcome anymore — don't resurrect edit UI for
+      // a cell (or table) the user has already left.
+      if (generation !== editGenerationRef.current) return;
       // The row this edit targeted no longer matches 1-for-1 (e.g. deleted
       // or changed by something else since the page loaded) or the preview
       // never opened at all — nothing was written either way. Drop back to
       // "editing" rather than clearing the draft, so a genuinely transient
       // failure doesn't cost the user their typed value.
       setEditError(err instanceof Error ? err.message : String(err));
-      setEditing({ rowIndex: editing.rowIndex, columnIndex: editing.columnIndex, phase: "editing", draft: editing.draft });
+      setEditing({ ...target, pending: false });
     }
   }
 
   async function commitEdit() {
-    if (!editing || editing.phase !== "preview" || !tableRows) return;
-    const { rowIndex, columnIndex, draft, previewId } = editing;
+    if (!editing || editing.phase !== "preview" || editing.pending || !tableRows) return;
+    const generation = editGenerationRef.current;
+    const target = editing;
+    setEditing({ ...target, pending: true });
     try {
-      await invokeCommitPreview(previewId);
+      await invokeCommitPreview(target.previewId);
     } catch (err) {
+      if (generation !== editGenerationRef.current) return; // see success branch below
       const message = err instanceof Error ? err.message : String(err);
       // Distinguish "the sweep already rolled this back" (previews expire
       // ~2 minutes after being opened) from any other commit failure — both
@@ -256,9 +303,20 @@ export function DbTab({
       // The preview_id is unusable regardless of which branch failed (sqlx
       // consumes the transaction on both a successful and a failed commit),
       // so retrying means previewing again, not resubmitting the same id.
-      setEditing({ rowIndex, columnIndex, phase: "editing", draft });
+      setEditing({ rowIndex: target.rowIndex, columnIndex: target.columnIndex, phase: "editing", draft: target.draft, pending: false });
       return;
     }
+    if (generation !== editGenerationRef.current) {
+      // The write committed for real — that part already happened and
+      // can't be (and doesn't need to be) undone. But `tableRows` in this
+      // closure is a snapshot from whatever table this edit started on; if
+      // the user has since switched tables, applying it here would stomp
+      // the *new* table's freshly-fetched rows with the old table's stale
+      // snapshot. Nothing further to reconcile locally — the next time this
+      // table is opened, a fresh fetch shows the committed value for real.
+      return;
+    }
+    const { rowIndex, columnIndex, draft } = target;
     setTableRows({
       ...tableRows,
       rows: tableRows.rows.map((row, ri) => (ri === rowIndex ? row.map((v, ci) => (ci === columnIndex ? draft : v)) : row)),
@@ -268,22 +326,34 @@ export function DbTab({
   }
 
   async function rollbackEdit() {
-    if (editing?.phase !== "preview") {
+    if (!editing || editing.phase !== "preview" || editing.pending) {
       setEditing(null);
       return;
     }
+    const generation = editGenerationRef.current;
+    const previewId = editing.previewId;
+    setEditing({ ...editing, pending: true });
     try {
-      await invokeRollbackPreview(editing.previewId);
-      setEditError(null);
+      await invokeRollbackPreview(previewId);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      // An already-resolved preview (the sweep beat the user to it) is not
-      // worth surfacing — the user asked to discard the edit, and it's gone
-      // either way. Anything else genuinely failed and should be visible.
-      if (!isExpiredPreviewError(message)) setEditError(message);
+      // Only worth surfacing if this is still the edit in view — an
+      // already-resolved preview (the sweep beat the user to it) isn't a
+      // real failure either way, and one that landed after the user moved
+      // on isn't something to report against whatever they're looking at now.
+      if (generation === editGenerationRef.current) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!isExpiredPreviewError(message)) setEditError(message);
+      }
     }
     setEditing(null);
   }
+
+  // Icon buttons here are neutral (`text-text-faint`), matching AppStrip's
+  // icon-button convention — DESIGN.md reserves semantic color for actual
+  // state, and a confirm/cancel affordance is generic interactivity, not
+  // state. The diff's red-strikethrough/green-new-value text below is the
+  // legitimate use of semantic color: it reports a real fact (old vs. new).
+  const actionButtonClass = "shrink-0 rounded-sm p-0.5 text-text-faint hover:bg-surface-2 hover:text-text disabled:opacity-40";
 
   function renderCell(rowIndex: number, columnIndex: number, value: string | null) {
     const column = tableRows?.columns[columnIndex] ?? "";
@@ -303,19 +373,24 @@ export function DbTab({
           ) : (
             <span className="truncate font-semibold text-success">{editing.draft}</span>
           )}
+          {/* Both buttons lock once a commit/rollback request is in flight —
+              once that round trip is actually running, there's no honest
+              "cancel" to offer; the outcome is already decided server-side. */}
           <button
             type="button"
             aria-label="Rollback edit"
+            disabled={editing.pending}
             onClick={() => void rollbackEdit()}
-            className="shrink-0 rounded-sm p-0.5 text-text-faint hover:bg-surface-2 hover:text-text"
+            className={actionButtonClass}
           >
             <CrossIcon />
           </button>
           <button
             type="button"
             aria-label="Commit edit"
+            disabled={editing.pending}
             onClick={() => void commitEdit()}
-            className="shrink-0 rounded-sm p-0.5 text-success hover:bg-surface-2"
+            className={actionButtonClass}
           >
             <CheckIcon />
           </button>
@@ -329,7 +404,7 @@ export function DbTab({
         <div className="flex items-center gap-1.5">
           <input
             autoFocus
-            disabled={isNull}
+            disabled={isNull || editing.pending}
             value={editing.draft ?? ""}
             onChange={(e) => setEditing({ ...editing, draft: e.target.value })}
             className="min-w-0 flex-1 rounded-sm border border-accent bg-bg px-1.5 py-0.5 text-sm text-text disabled:opacity-50"
@@ -338,6 +413,7 @@ export function DbTab({
             <input
               type="checkbox"
               checked={isNull}
+              disabled={editing.pending}
               onChange={(e) => setEditing({ ...editing, draft: e.target.checked ? null : "" })}
             />
             NULL
@@ -345,16 +421,25 @@ export function DbTab({
           <button
             type="button"
             aria-label="Preview change"
+            disabled={editing.pending}
             onClick={() => void previewEdit()}
-            className="shrink-0 rounded-sm p-0.5 text-success hover:bg-surface-2"
+            className={actionButtonClass}
           >
             <CheckIcon />
           </button>
+          {/* Deliberately never disabled, even while a preview request for
+              this exact draft is in flight: the request already left and
+              can't be pulled back, but its eventual response is made to
+              check in (via editGenerationRef) and roll itself back rather
+              than resurrect a preview the user already walked away from. */}
           <button
             type="button"
             aria-label="Cancel edit"
-            onClick={() => setEditing(null)}
-            className="shrink-0 rounded-sm p-0.5 text-text-faint hover:bg-surface-2 hover:text-text"
+            onClick={() => {
+              abandonEdit(editing);
+              setEditing(null);
+            }}
+            className={actionButtonClass}
           >
             <CrossIcon />
           </button>
@@ -362,11 +447,15 @@ export function DbTab({
       );
     }
 
+    // Disabled while any cell's edit is mid-request, not just this one — one
+    // edit in flight at a time keeps two concurrent commits from racing to
+    // apply their own stale `tableRows` snapshot over each other.
+    const anyEditPending = editing !== null && editing.pending;
     const { text, className } = cellDisplay(value);
     return (
       <button
         type="button"
-        disabled={!editable}
+        disabled={!editable || anyEditPending}
         onClick={() => editable && startEdit(rowIndex, columnIndex, value)}
         className={`w-full truncate text-left ${editable ? "cursor-text hover:bg-surface-2" : ""} ${className}`}
       >
