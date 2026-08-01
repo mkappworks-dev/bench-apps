@@ -19,7 +19,7 @@ export interface DataGridProps {
   renderCell?: (rowIndex: number, columnIndex: number, value: string | null) => ReactNode;
 }
 
-function cellDisplay(value: string | null): { text: string; className: string } {
+export function cellDisplay(value: string | null): { text: string; className: string } {
   if (value === null) return { text: "NULL", className: "italic text-text-faint" };
   if (value === "<unsupported type>") return { text: value, className: "italic text-warning" };
   if (/^-?\d+(\.\d+)?$/.test(value)) return { text: value, className: "text-right tabular-nums" };

@@ -111,9 +111,14 @@ describe("SplitContent", () => {
   // both instances' fetched rows must be independently queryable even though
   // only "a" is visible.
   it("gives two simultaneously-mounted DB tabs in the same pane independent, distinctly-rendered rows", async () => {
+    // The cell value is derived from, but distinct from, the table name
+    // itself (not just `table`) — since Task 12, a table with no PK also
+    // renders its own name in a "cells are read-only" note below the grid,
+    // and a cell value identical to the table name would ambiguously match
+    // both `getByText` queries below.
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation(async (_conn, table: string) => ({
       columns: ["table"],
-      rows: [[table]],
+      rows: [[`row-${table}`]],
       pk_column: null,
     }));
     useAppStore.setState({
@@ -125,8 +130,8 @@ describe("SplitContent", () => {
     });
     renderSplit();
 
-    await waitFor(() => expect(screen.getByText("orders")).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByText("payments")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("row-orders")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("row-payments")).toBeInTheDocument());
     expect(listRows).toHaveBeenCalledWith(expect.anything(), "orders", expect.anything());
     expect(listRows).toHaveBeenCalledWith(expect.anything(), "payments", expect.anything());
 
@@ -138,7 +143,7 @@ describe("SplitContent", () => {
       useAppStore.getState().setActiveTabId("left", "b");
     });
     expect(listRows.mock.calls.length).toBe(callCountAfterMount);
-    expect(screen.getByText("orders")).toBeInTheDocument();
-    expect(screen.getByText("payments")).toBeInTheDocument();
+    expect(screen.getByText("row-orders")).toBeInTheDocument();
+    expect(screen.getByText("row-payments")).toBeInTheDocument();
   });
 });

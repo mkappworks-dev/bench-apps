@@ -304,4 +304,221 @@ describe("DbTab", () => {
     expect(screen.queryByText("STALE-status")).not.toBeInTheDocument();
     expect(screen.getByText("by-id")).toBeInTheDocument();
   });
+
+  describe("inline cell editing", () => {
+    it("clicking an editable cell shows an input; previewing shows a diff; committing updates the grid", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["id", "status"],
+        rows: [["1", "pending"]],
+        pk_column: "id",
+      });
+      const preview = vi.spyOn(tauriLib, "invokePreviewCellEdit").mockResolvedValue({
+        preview_id: "p1",
+        columns: [],
+        rows: [],
+        rows_affected: 1,
+      });
+      const commit = vi.spyOn(tauriLib, "invokeCommitPreview").mockResolvedValue(undefined);
+
+      renderDb("orders");
+      await waitFor(() => screen.getByText("pending"));
+
+      fireEvent.click(screen.getByText("pending"));
+      const input = await screen.findByDisplayValue("pending");
+      fireEvent.change(input, { target: { value: "shipped" } });
+      fireEvent.click(screen.getByRole("button", { name: "Preview change" }));
+
+      await waitFor(() => expect(preview).toHaveBeenCalledWith("c1", "orders", "id", "1", "status", "shipped"));
+      expect(await screen.findByText("shipped")).toBeInTheDocument();
+      expect(screen.getByText("pending")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Commit edit" }));
+
+      await waitFor(() => expect(commit).toHaveBeenCalledWith("p1"));
+      await waitFor(() => expect(screen.queryByRole("button", { name: "Commit edit" })).not.toBeInTheDocument());
+    });
+
+    it("rolling back an edit discards the draft and calls rollback_preview", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["id", "status"],
+        rows: [["1", "pending"]],
+        pk_column: "id",
+      });
+      vi.spyOn(tauriLib, "invokePreviewCellEdit").mockResolvedValue({
+        preview_id: "p1",
+        columns: [],
+        rows: [],
+        rows_affected: 1,
+      });
+      const rollback = vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+
+      renderDb("orders");
+      await waitFor(() => screen.getByText("pending"));
+
+      fireEvent.click(screen.getByText("pending"));
+      fireEvent.change(await screen.findByDisplayValue("pending"), { target: { value: "shipped" } });
+      fireEvent.click(screen.getByRole("button", { name: "Preview change" }));
+      await screen.findByRole("button", { name: "Rollback edit" });
+
+      fireEvent.click(screen.getByRole("button", { name: "Rollback edit" }));
+
+      await waitFor(() => expect(rollback).toHaveBeenCalledWith("p1"));
+      expect(await screen.findByText("pending")).toBeInTheDocument();
+    });
+
+    it("cells are not clickable to edit when the table has no single-column primary key", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["tenant_id", "item_id"],
+        rows: [["t1", "i1"]],
+        pk_column: null,
+      });
+
+      renderDb("payments");
+      await waitFor(() => screen.getByText("t1"));
+
+      fireEvent.click(screen.getByText("t1"));
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+      expect(screen.getByText(/No single-column primary key/)).toBeInTheDocument();
+    });
+
+    // The backend renders an unstringifiable value as this literal marker
+    // (distinct from NULL) — editing it would mean overwriting something the
+    // user never actually saw, PK or no PK.
+    it("cells showing <unsupported type> are not editable even when the table has a primary key", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["id", "status", "payload"],
+        rows: [["1", "pending", "<unsupported type>"]],
+        pk_column: "id",
+      });
+
+      renderDb("orders");
+      await waitFor(() => screen.getByText("<unsupported type>"));
+
+      // Prove editing works at all in this row first — an ordinary cell in
+      // the same row must open — so the assertion below can't pass simply
+      // because nothing in the row is editable yet.
+      fireEvent.click(screen.getByText("pending"));
+      expect(await screen.findByDisplayValue("pending")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
+
+      fireEvent.click(screen.getByText("<unsupported type>"));
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    });
+
+    // NULL and "" are different values on the wire (preview_cell_edit takes
+    // `value: string | null`) — a NULL cell must default to an explicit NULL
+    // toggle rather than silently becoming an empty string the moment it's
+    // opened for editing.
+    it("editing a NULL cell defaults the NULL toggle on, and previewing sends null rather than an empty string", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["id", "status"],
+        rows: [["1", null]],
+        pk_column: "id",
+      });
+      const preview = vi.spyOn(tauriLib, "invokePreviewCellEdit").mockResolvedValue({
+        preview_id: "p1",
+        columns: [],
+        rows: [],
+        rows_affected: 1,
+      });
+
+      renderDb("orders");
+      await waitFor(() => screen.getByText("NULL"));
+
+      fireEvent.click(screen.getByText("NULL"));
+      const checkbox = await screen.findByRole("checkbox", { name: "NULL" });
+      expect(checkbox).toBeChecked();
+      expect(screen.getByRole("textbox")).toBeDisabled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Preview change" }));
+      await waitFor(() => expect(preview).toHaveBeenCalledWith("c1", "orders", "id", "1", "status", null));
+    });
+
+    // This is the design point the task brief calls out explicitly: an open
+    // preview is a live transaction (and row lock) on the user's database.
+    // Navigating away from it must roll it back, not just drop the local
+    // state and leak the transaction until the ~2-minute sweep catches it.
+    it("switching tables while a preview is open rolls back the abandoned preview instead of leaking it", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["id", "status"],
+        rows: [["1", "pending"]],
+        pk_column: "id",
+      });
+      vi.spyOn(tauriLib, "invokePreviewCellEdit").mockResolvedValue({
+        preview_id: "p1",
+        columns: [],
+        rows: [],
+        rows_affected: 1,
+      });
+      const rollback = vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+
+      const { rerender, onPatchState } = renderDb("orders");
+      await waitFor(() => screen.getByText("pending"));
+      fireEvent.click(screen.getByText("pending"));
+      fireEvent.change(await screen.findByDisplayValue("pending"), { target: { value: "shipped" } });
+      fireEvent.click(screen.getByRole("button", { name: "Preview change" }));
+      await screen.findByRole("button", { name: "Rollback edit" });
+
+      rerender(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table="payments" onPatchState={onPatchState} />);
+
+      await waitFor(() => expect(rollback).toHaveBeenCalledWith("p1"));
+    });
+
+    // Failure-honesty regression guard: a failed preview must not silently
+    // discard the user's typed draft, and must not be indistinguishable from
+    // a successful one.
+    it("a failed preview reports the failure and keeps the draft editable rather than discarding it", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["id", "status"],
+        rows: [["1", "pending"]],
+        pk_column: "id",
+      });
+      vi.spyOn(tauriLib, "invokePreviewCellEdit").mockRejectedValue(
+        new Error("expected to match exactly 1 row by id = 1, matched 0"),
+      );
+
+      renderDb("orders");
+      await waitFor(() => screen.getByText("pending"));
+      fireEvent.click(screen.getByText("pending"));
+      fireEvent.change(await screen.findByDisplayValue("pending"), { target: { value: "shipped" } });
+      fireEvent.click(screen.getByRole("button", { name: "Preview change" }));
+
+      expect(await screen.findByText(/matched 0/)).toBeInTheDocument();
+      expect(screen.getByDisplayValue("shipped")).toBeInTheDocument();
+    });
+
+    // Failure-honesty regression guard, commit side: an expired preview (the
+    // background sweep can beat the user to a commit) must read as neither
+    // "committed" nor "nothing happened" — and must not blank the grid the
+    // way the shared fetch-error state would.
+    it("a failed commit reports the failure, does not apply the edit, and leaves the grid visible", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["id", "status"],
+        rows: [["1", "pending"]],
+        pk_column: "id",
+      });
+      vi.spyOn(tauriLib, "invokePreviewCellEdit").mockResolvedValue({
+        preview_id: "p1",
+        columns: [],
+        rows: [],
+        rows_affected: 1,
+      });
+      vi.spyOn(tauriLib, "invokeCommitPreview").mockRejectedValue(new Error("no open preview with id p1"));
+
+      renderDb("orders");
+      await waitFor(() => screen.getByText("pending"));
+      fireEvent.click(screen.getByText("pending"));
+      fireEvent.change(await screen.findByDisplayValue("pending"), { target: { value: "shipped" } });
+      fireEvent.click(screen.getByRole("button", { name: "Preview change" }));
+      await screen.findByRole("button", { name: "Commit edit" });
+
+      fireEvent.click(screen.getByRole("button", { name: "Commit edit" }));
+
+      expect(await screen.findByText(/expired/i)).toBeInTheDocument();
+      // The failure banner sits beside the grid, not instead of it.
+      expect(screen.getByRole("table")).toBeInTheDocument();
+      // Dropped back into an editable draft, not silently committed or wiped.
+      expect(screen.getByDisplayValue("shipped")).toBeInTheDocument();
+    });
+  });
 });

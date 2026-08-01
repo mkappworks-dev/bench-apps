@@ -196,6 +196,32 @@ export function invokeSetWatchedTable(connectionId: string, table: string, watch
   return invoke("set_watched_table", { connectionId, table, watched });
 }
 
+export interface QueryPreview {
+  preview_id: string;
+  columns: string[];
+  rows: (string | null)[][];
+  rows_affected: number | null;
+}
+
+export function invokePreviewCellEdit(
+  connectionId: string,
+  table: string,
+  pkColumn: string,
+  pkValue: string,
+  column: string,
+  value: string | null,
+): Promise<QueryPreview> {
+  return invoke("preview_cell_edit", { connectionId, table, pkColumn, pkValue, column, value });
+}
+
+export function invokeCommitPreview(previewId: string): Promise<void> {
+  return invoke("commit_preview", { previewId });
+}
+
+export function invokeRollbackPreview(previewId: string): Promise<void> {
+  return invoke("rollback_preview", { previewId });
+}
+
 export interface Session {
   id: string;
   name: string;
