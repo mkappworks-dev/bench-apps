@@ -1,3 +1,6 @@
+-- `session_id`/`request_id`'s ON DELETE SET NULL, like 0003 and 0004's own
+-- foreign keys, is only enforceable because sqlx-sqlite issues
+-- `PRAGMA foreign_keys = ON` by default.
 CREATE TABLE captured_emails (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id   TEXT REFERENCES sessions(id) ON DELETE SET NULL,

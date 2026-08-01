@@ -301,8 +301,13 @@ pub async fn collect_correlation_window_impl(
     let (captured, emails_truncated) = if emails.status().listening {
         match crate::email_state::between_captured_emails(db, window.from_email_id, window.window_ends_at_ms).await {
             Ok(list) => {
-                let evicted = crate::email_state::evicted_through_id(db).await.unwrap_or(0);
-                (Some(list), evicted > window.from_email_id)
+                let truncated = match crate::email_state::evicted_through_id(db).await {
+                    Ok(evicted) => evicted > window.from_email_id,
+                    // A failed read must not report "nothing was truncated" — that's
+                    // the same false-negative principle 4 forbids elsewhere.
+                    Err(_) => true,
+                };
+                (Some(list), truncated)
             }
             Err(_) => (None, false),
         }
@@ -318,7 +323,14 @@ pub async fn collect_correlation_window_impl(
         if !list.is_empty() {
             let ids: Vec<i64> = list.iter().map(|e| e.id as i64).collect();
             let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let sql = format!("UPDATE captured_emails SET request_id = ? WHERE id IN ({placeholders})");
+            // `AND request_id IS NULL` makes an attribution immutable once set
+            // (first-writer-wins): two overlapping windows can both observe the
+            // same email (e.g. a second Send fires while the first window is
+            // still open), and without this guard the later `collect` silently
+            // overwrites an already-correct link.
+            let sql = format!(
+                "UPDATE captured_emails SET request_id = ? WHERE id IN ({placeholders}) AND request_id IS NULL"
+            );
             let mut q = sqlx::query(&sql).bind(hid);
             for id in &ids {
                 q = q.bind(id);
@@ -544,22 +556,15 @@ mod tests {
             // what actually proves the snapshot -> request -> snapshot sandwich
             // works, rather than merely observing pre-seeded data was still there.
             //
-            // mockito 1.x serves every connection from its own dedicated
-            // current-thread Tokio runtime running on a separate OS thread
-            // (verified by reading mockito 1.7.2's `Server::try_new_with_opts_async`
-            // in server.rs, which spins up `runtime::Builder::new_current_thread()`
-            // on a `thread::spawn`'d thread regardless of the caller's own runtime
-            // flavor). That means `tokio::task::block_in_place` cannot be used from
-            // this closure: it panics with "can call blocking only when running on
-            // the multi-threaded runtime" because it's mockito's *own* internal
-            // runtime that's current here, not the multi-thread flavor of this
-            // test's runtime, no matter what flavor this test itself uses.
-            //
-            // Spawning a plain OS thread with its own throwaway single-threaded
-            // Tokio runtime (and its own fresh connection pool, to avoid driving
-            // any resource from a runtime other than the one that created it) and
-            // `.join()`-ing it is what actually works here: it performs a real,
-            // deterministic async database write with no sleep or timing race.
+            // mockito 1.x runs every connection on its own dedicated
+            // current-thread Tokio runtime, on a separate OS thread — so
+            // `tokio::task::block_in_place` panics from inside this closure
+            // ("can call blocking only when running on the multi-threaded
+            // runtime"), since it's mockito's runtime that's current here, not
+            // this test's. A plain OS thread with its own throwaway runtime,
+            // `.join()`-ed, works instead: a real, deterministic write with no
+            // sleep or timing race. (Canonical explanation for this hazard —
+            // other tests below just reference this comment.)
             .with_body_from_request(move |_request| {
                 let conn_str = insert_conn_str.clone();
                 std::thread::spawn(move || {
@@ -990,19 +995,11 @@ mod tests {
             // landing — the same shape as a real backend sending mail
             // mid-request, without needing a live SMTP round trip here.
             //
-            // `with_body_from_request`'s closure runs synchronously on
-            // mockito's own already-entered dedicated current-thread Tokio
-            // runtime — `tauri::async_runtime::block_on` cannot be nested in
-            // there, and panics with "Cannot start a runtime from within a
-            // runtime" (verified). Spawning a plain OS thread with its own
-            // throwaway runtime and `.join()`-ing it, the same bridging shape
+            // Same mockito runtime-nesting hazard as
             // `run_correlated_request_reports_only_tables_that_actually_changed`
-            // above uses, is what actually works here — though unlike that
-            // test, this reuses `edb`'s existing pool (cloned) instead of
-            // opening a fresh one; that's fine because sqlx's SQLite driver
-            // parks each connection on its own worker thread, but it's not
-            // the same "never drive a resource from a runtime other than the
-            // one that created it" discipline that test follows.
+            // above — see that comment. This reuses `edb`'s pool (cloned)
+            // rather than opening a fresh one, which is fine since sqlx's
+            // SQLite driver parks each connection on its own worker thread.
             .with_body_from_request(move |_req| {
                 let pool = pool_for_mock.clone();
                 std::thread::spawn(move || {
@@ -1101,9 +1098,9 @@ mod tests {
             // once the delay elapses — capturing real wall-clock time at the
             // moment of the insert, exactly like a real SMTP catcher would.
             //
-            // Same mockito-runtime-nesting hazard as the test above — see the
-            // comment there. The OS-thread + throwaway-runtime bridge is used
-            // again here instead of `tauri::async_runtime::block_on`.
+            // Same mockito runtime-nesting hazard as
+            // `run_correlated_request_reports_only_tables_that_actually_changed`
+            // above — the OS-thread + throwaway-runtime bridge is used again.
             .with_body_from_request(move |_req| {
                 std::thread::sleep(std::time::Duration::from_millis(SIMULATED_BACKEND_DELAY_MS));
                 let captured_at_ms = chrono::Utc::now().timestamp_millis();
@@ -1303,9 +1300,9 @@ mod tests {
             // genuinely threaded through as 30_000 — not silently replaced by
             // the 5s default — includes this message in the collected window.
             //
-            // Same mockito-runtime-nesting hazard as the earlier tests in this
-            // file — see the comment on
-            // `a_correlation_window_captures_mail_sent_during_the_request`.
+            // Same mockito runtime-nesting hazard as
+            // `run_correlated_request_reports_only_tables_that_actually_changed`
+            // above.
             .with_body_from_request(move |_req| {
                 let pool = pool_for_mock.clone();
                 std::thread::spawn(move || {
@@ -1378,13 +1375,9 @@ mod tests {
         let mock = server
             .mock("POST", "/orders")
             .with_status(201)
-            // Same mockito-runtime-nesting hazard as
-            // `a_correlation_window_captures_mail_sent_during_the_request` above
-            // (and the plan's own brief for this exact test literally specifies
-            // `tauri::async_runtime::block_on` here, which panics with "Cannot
-            // start a runtime from within a runtime" — verified empirically,
-            // matching the same defect Task 4 already found and fixed). The
-            // OS-thread + throwaway-runtime bridge is used instead.
+            // Same mockito runtime-nesting hazard as
+            // `run_correlated_request_reports_only_tables_that_actually_changed`
+            // above — the OS-thread + throwaway-runtime bridge is used again.
             .with_body_from_request(move |_req| {
                 let pool = pool_for_mock.clone();
                 std::thread::spawn(move || {
@@ -1443,10 +1436,22 @@ mod tests {
         let captured = window.emails.expect("the catcher is running, so emails must be Some");
         assert_eq!(captured.len(), 1);
 
+        // Without this, `assert_eq!(linked.request_id, history_id)` below would
+        // pass vacuously as `None == None` if the history save had failed — and
+        // that same failure path also skips the UPDATE, so the test would prove
+        // nothing about the link actually working.
+        assert!(history_id.is_some(), "history save must succeed for this test to prove anything");
         let linked = crate::email_state::get_captured_email(&edb.pool, captured[0].id).await.unwrap().unwrap();
         assert_eq!(linked.request_id, history_id, "the captured email must be linked to the request that sent it");
     }
 
+    // Regression test for a vacuous predecessor: with only a pre-existing email
+    // in the DB, `between_captured_emails` returns an empty list, the UPDATE's
+    // `if !list.is_empty()` guard is false, and the UPDATE never runs at all —
+    // so the "never linked" assertion passed for the wrong reason and gave zero
+    // coverage of the actual UPDATE. This version captures a SECOND email
+    // inside the window so the UPDATE genuinely executes, over a mixed set:
+    // one email inside the window, one outside it.
     #[tokio::test]
     async fn mail_outside_the_window_is_never_linked_to_a_request_that_did_not_send_it() {
         let conn = test_connection();
@@ -1468,8 +1473,40 @@ mod tests {
         .await
         .unwrap();
 
+        let pool_for_mock = edb.pool.clone();
         let mut server = mockito::Server::new_async().await;
-        let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
+        let mock = server
+            .mock("GET", "/ping")
+            .with_status(200)
+            // Captures a second email strictly inside the window, so the
+            // UPDATE has a non-empty id list to act on. See the runtime-nesting
+            // comment on `run_correlated_request_reports_only_tables_that_actually_changed`
+            // for why this bridges through a throwaway OS thread.
+            .with_body_from_request(move |_req| {
+                let pool = pool_for_mock.clone();
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("failed to build throwaway runtime for synchronized insert");
+                    rt.block_on(async {
+                        crate::email_state::insert_captured_email(
+                            &pool,
+                            "orders@shop.test",
+                            &["customer@example.com".to_string()],
+                            TEST_EMAIL,
+                            10_100,
+                        )
+                        .await
+                        .unwrap();
+                    });
+                })
+                .join()
+                .expect("insert thread panicked");
+                b"pong".to_vec()
+            })
+            .create_async()
+            .await;
 
         let result = run_correlated_request_impl_with_registry(
             FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
@@ -1487,8 +1524,9 @@ mod tests {
         mock.assert_async().await;
 
         let history_id = save_correlation_history(&edb.pool, "GET", "/ping", &result.response, None).await;
+        assert!(history_id.is_some(), "history save must succeed for this test to prove anything");
 
-        collect_correlation_window_impl(
+        let window = collect_correlation_window_impl(
             &registry,
             &logs,
             &emails,
@@ -1500,8 +1538,87 @@ mod tests {
         .await
         .unwrap();
 
-        let old_email_id = crate::email_state::list_captured_emails(&edb.pool, None, 10).await.unwrap().emails[0].id;
+        let captured = window.emails.expect("the catcher is running, so emails must be Some");
+        assert_eq!(captured.len(), 1, "only the in-window email should be observed");
+
+        let inside = crate::email_state::get_captured_email(&edb.pool, captured[0].id).await.unwrap().unwrap();
+        assert_eq!(inside.request_id, history_id, "the UPDATE must actually run and link the in-window email");
+
+        let old_email_id = crate::email_state::list_captured_emails(&edb.pool, None, 10)
+            .await
+            .unwrap()
+            .emails
+            .iter()
+            .find(|e| e.from == "old@shop.test")
+            .unwrap()
+            .id;
         let old_email = crate::email_state::get_captured_email(&edb.pool, old_email_id).await.unwrap().unwrap();
         assert_eq!(old_email.request_id, None, "mail sent before the request must never be linked to it");
+    }
+
+    // Dedicated coverage for item 1's `AND request_id IS NULL` guard: the
+    // mixed-set test above proves the UPDATE runs, but never gives it a
+    // chance to overwrite an existing link, since the "outside" email is
+    // never in its id list. This reproduces the actual bug shape instead:
+    // `ApiTab.handleResult` clears `sending` before awaiting the collect
+    // call, so a second Send can open a new window before the first one's
+    // has closed — both windows snapshot the same `from_email_id`, both
+    // observe the same email, and without the guard the later `collect` to
+    // run wins, silently stealing an already-correct attribution.
+    #[tokio::test]
+    async fn a_captured_email_once_linked_is_never_relinked_by_a_later_overlapping_window() {
+        let logs = LogState::new();
+        let emails = listening_email_state();
+        let registry = CorrelationRegistry::new();
+        let (_edb_dir, edb) = db().await;
+
+        let window_a = registry.open(0, 0, 5_000);
+        let window_b = registry.open(0, 0, 5_000);
+
+        crate::email_state::insert_captured_email(
+            &edb.pool,
+            "orders@shop.test",
+            &["customer@example.com".to_string()],
+            TEST_EMAIL,
+            1_000,
+        )
+        .await
+        .unwrap();
+
+        let history_a = save_correlation_history(
+            &edb.pool,
+            "POST",
+            "/orders",
+            &FireRequestOutput { status_code: 201, body: "{}".to_string(), duration_ms: 5 },
+            None,
+        )
+        .await;
+        let history_b = save_correlation_history(
+            &edb.pool,
+            "GET",
+            "/ping",
+            &FireRequestOutput { status_code: 200, body: "pong".to_string(), duration_ms: 2 },
+            None,
+        )
+        .await;
+        assert!(history_a.is_some() && history_b.is_some());
+
+        collect_correlation_window_impl(&registry, &logs, &emails, &edb.pool, window_a, history_a.as_deref(), 6_000)
+            .await
+            .unwrap();
+
+        let email_id = crate::email_state::list_captured_emails(&edb.pool, None, 10).await.unwrap().emails[0].id;
+        let after_a = crate::email_state::get_captured_email(&edb.pool, email_id).await.unwrap().unwrap();
+        assert_eq!(after_a.request_id, history_a, "the first window to collect must set the link");
+
+        collect_correlation_window_impl(&registry, &logs, &emails, &edb.pool, window_b, history_b.as_deref(), 6_000)
+            .await
+            .unwrap();
+
+        let after_b = crate::email_state::get_captured_email(&edb.pool, email_id).await.unwrap().unwrap();
+        assert_eq!(
+            after_b.request_id, history_a,
+            "an already-linked email must not be silently relinked by a later window's collect"
+        );
     }
 }

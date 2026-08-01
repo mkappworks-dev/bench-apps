@@ -17,6 +17,10 @@ export function HistorySidebar({
 }) {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [failed, setFailed] = useState(false);
+  // Distinguishes "still fetching" from "fetched, and the focused entry just
+  // isn't in the result" — needed to show the deep-link note below only once
+  // we actually know it's missing, not while the read is still in flight.
+  const [loading, setLoading] = useState(true);
   // The actually-highlighted row: seeded from focusId once, then follows
   // manual clicks — never re-read from focusId, which never clears.
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -36,6 +40,7 @@ export function HistorySidebar({
     setEntries([]);
     setFailed(false);
     setSelectedId(null);
+    setLoading(true);
 
     // Tracked separately from an empty list — collapsing them would render a
     // fetch failure as "No requests yet." (PRODUCT.md principle 4).
@@ -44,11 +49,13 @@ export function HistorySidebar({
         if (cancelled) return;
         setEntries(loaded);
         setFailed(false);
+        setLoading(false);
       })
       .catch(() => {
         if (cancelled) return;
         setEntries([]);
         setFailed(true);
+        setLoading(false);
       });
 
     return () => {
@@ -70,9 +77,20 @@ export function HistorySidebar({
     onSelect(match);
   }, [focusId, entries, onSelect]);
 
+  // History only ever loads the 50 most recent requests, but mail retention
+  // is 5,000 messages — so a "Sent by" chip on any older email deep-links to
+  // an entry that will never be in `entries`. Without this, that chip
+  // silently switches to the API tab and does nothing.
+  const focusNotFound = Boolean(focusId) && !loading && !failed && !entries.some((e) => e.id === focusId);
+
   return (
     <aside className="w-55 min-w-55 border-r border-border overflow-y-auto">
       <div className="border-b border-border p-2.5 text-xs font-bold text-text-muted">History</div>
+      {focusNotFound ? (
+        <div className="border-b border-border p-2 text-xs text-text-faint">
+          That request is older than what's shown here.
+        </div>
+      ) : null}
       <div className="flex flex-col gap-0.5 p-1.5">
         {entries.length === 0 ? (
           // A new session auto-selects itself, so an empty scoped list is the

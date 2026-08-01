@@ -82,9 +82,14 @@ export function EmailInbox({
         </div>
       )}
       {evictedThroughId > 0 ? (
+        // `evictedThroughId` is a high-water id, not a count of evicted rows —
+        // those only agree while ids are contiguous and nothing was ever
+        // cleared, and it's a global mark shown regardless of the session
+        // filter above. Rendering it as a number ("N earlier evicted") would
+        // regularly be wrong, so this states the fact without inventing a
+        // quantity.
         <div className="border-t border-border px-3 py-1.5 text-[11px] text-text-faint">
-          Showing latest <b className="text-text-muted">5,000</b> —{" "}
-          <b className="text-text-muted">{evictedThroughId}</b> earlier evicted
+          Showing latest <b className="text-text-muted">5,000</b> — older messages were evicted
         </div>
       ) : null}
     </aside>

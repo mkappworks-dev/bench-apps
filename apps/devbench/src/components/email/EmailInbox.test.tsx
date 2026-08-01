@@ -78,10 +78,14 @@ describe("EmailInbox", () => {
     expect(screen.getByText("No messages match your filter.")).toBeInTheDocument();
   });
 
-  it("shows how many earlier messages were evicted", () => {
+  // `evictedThroughId` is a high-water id, not a row count (it stops agreeing
+  // with "how many" the moment ids aren't contiguous, e.g. after a clear), so
+  // the footer must say evictions happened without asserting a specific
+  // number.
+  it("notes that earlier messages were evicted, without stating a count", () => {
     render(<EmailInbox emails={emails} evictedThroughId={212} selectedId={null} onSelect={() => {}} onClear={() => {}} />);
-    expect(screen.getByText(/212/)).toBeInTheDocument();
-    expect(screen.getByText(/earlier evicted/)).toBeInTheDocument();
+    expect(screen.getByText(/older messages were evicted/i)).toBeInTheDocument();
+    expect(screen.queryByText(/212/)).not.toBeInTheDocument();
   });
 
   it("does not show an eviction note when nothing has been evicted", () => {

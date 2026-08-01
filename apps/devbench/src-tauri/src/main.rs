@@ -20,6 +20,10 @@ fn main() {
             // Every git worktree shares one Tauri app data dir (keyed by the app
             // identifier, not the checkout path), so their migrations collide in
             // one sqlite file. This override lets each worktree point at its own.
+            // `#[cfg(debug_assertions)]`-gated: it's a dev-only escape hatch, so a
+            // stale exported var can't silently split a release build's data
+            // across two databases with nothing but an `eprintln!` nobody sees.
+            #[cfg(debug_assertions)]
             let data_dir = match std::env::var("DEVBENCH_DATA_DIR") {
                 Ok(dir) if !dir.is_empty() => {
                     eprintln!("DEVBENCH_DATA_DIR override active: using {dir}");
@@ -30,6 +34,11 @@ fn main() {
                     .app_data_dir()
                     .expect("failed to resolve app data dir"),
             };
+            #[cfg(not(debug_assertions))]
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("failed to resolve app data dir");
             let (db, smtp_port) = tauri::async_runtime::block_on(async move {
                 let db = LocalDb::connect(data_dir)
                     .await

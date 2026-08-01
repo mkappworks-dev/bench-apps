@@ -233,6 +233,30 @@ pub async fn get_captured_email(pool: &SqlitePool, id: u64) -> Result<Option<Cap
 /// `session_id IS NULL` when unscoped), "Clear inbox" with no active session
 /// would leave most of what's on screen untouched.
 pub async fn clear_captured_emails(pool: &SqlitePool, session_id: Option<&str>) -> Result<(), String> {
+    // Advance the high-water mark first, the same way `evict_overflow` does,
+    // to whichever id is highest among the rows this call is about to delete.
+    // Without this, an in-flight correlation window whose `from_email_id`
+    // predates the clear would report `emails: Some([])` instead of
+    // `emails_truncated: true` — "this request sent no mail" when mail was
+    // actually captured and then cleared, the exact false negative principle
+    // 4 forbids.
+    let max_id: Option<i64> = match session_id {
+        Some(id) => {
+            sqlx::query("SELECT MAX(id) as id FROM captured_emails WHERE session_id = ?").bind(id).fetch_one(pool).await
+        }
+        None => sqlx::query("SELECT MAX(id) as id FROM captured_emails").fetch_one(pool).await,
+    }
+    .map_err(|e| format!("failed to look up max captured email id before clearing: {e}"))?
+    .get::<Option<i64>, _>("id");
+
+    if let Some(id) = max_id {
+        sqlx::query("UPDATE captured_emails_state SET evicted_through_id = ?1 WHERE id = 1 AND evicted_through_id < ?1")
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("failed to record eviction high-water mark before clearing: {e}"))?;
+    }
+
     match session_id {
         Some(id) => sqlx::query("DELETE FROM captured_emails WHERE session_id = ?").bind(id).execute(pool).await,
         None => sqlx::query("DELETE FROM captured_emails").execute(pool).await,
@@ -277,8 +301,9 @@ pub async fn evicted_through_id(pool: &SqlitePool) -> Result<u64, String> {
     Ok(row.get::<i64, _>("evicted_through_id") as u64)
 }
 
-/// The id the NEXT captured message would receive. Correlation snapshots this
-/// before firing a request, then selects ids strictly greater (`between_captured_emails`).
+/// The current highest captured-email id (0 if none exist yet). Correlation
+/// snapshots this before firing a request, then selects ids strictly greater
+/// (`between_captured_emails`).
 pub async fn current_max_email_id(pool: &SqlitePool) -> Result<u64, String> {
     let row = sqlx::query("SELECT COALESCE(MAX(id), 0) as id FROM captured_emails")
         .fetch_one(pool)
@@ -554,6 +579,33 @@ mod tests {
 
         assert_eq!(list_captured_emails(&db.pool, Some(&a.id), 10).await.unwrap().emails.len(), 0);
         assert_eq!(list_captured_emails(&db.pool, Some(&b.id), 10).await.unwrap().emails.len(), 1);
+    }
+
+    // Regression test: the old in-memory `EmailStore::clear()` deliberately
+    // advanced its high-water mark so an in-flight correlation window would
+    // still report truncation; the SQL rewrite's plain DELETE dropped that,
+    // which would make "Clear inbox" mid-window look identical to "this
+    // request sent no mail" — a false negative, not just a lost feature.
+    #[tokio::test]
+    async fn clearing_advances_the_eviction_mark_so_an_open_window_can_detect_it() {
+        let (_dir, db) = db().await;
+        insert_captured_email(&db.pool, "a@x.test", &["b@y.test".into()], SIMPLE, 1_000).await.unwrap();
+        let id = list_captured_emails(&db.pool, None, 10).await.unwrap().emails[0].id;
+
+        clear_captured_emails(&db.pool, None).await.unwrap();
+
+        assert_eq!(
+            evicted_through_id(&db.pool).await.unwrap(),
+            id,
+            "clearing must advance the mark to the highest id it deleted, not just delete rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn clearing_an_empty_inbox_leaves_the_eviction_mark_untouched() {
+        let (_dir, db) = db().await;
+        clear_captured_emails(&db.pool, None).await.unwrap();
+        assert_eq!(evicted_through_id(&db.pool).await.unwrap(), 0);
     }
 
     #[tokio::test]

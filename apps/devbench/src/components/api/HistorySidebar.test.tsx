@@ -218,6 +218,38 @@ describe("HistorySidebar", () => {
     expect(screen.getByRole("button", { name: /checkout/ })).toHaveAttribute("aria-current", "false");
   });
 
+  // The list is capped at the 50 most recent requests, but mail retention is
+  // 5,000 messages — so a "Sent by" chip on older mail deep-links to an entry
+  // that will never load. Silently doing nothing left the user with a tab
+  // switch and no explanation; this must say something instead.
+  it("explains that the linked request isn't in the loaded history", async () => {
+    vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([entry({ id: "hist-recent" })]);
+
+    render(<HistorySidebar onSelect={() => {}} focusId="hist-too-old" />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/older than what's shown here/i)).toBeInTheDocument(),
+    );
+  });
+
+  it("does not show the not-found note while the history is still loading", async () => {
+    const pending = deferred<HistoryEntry[]>();
+    vi.spyOn(tauriLib, "invokeListHistory").mockReturnValue(pending.promise);
+
+    render(<HistorySidebar onSelect={() => {}} focusId="hist-too-old" />);
+
+    expect(screen.queryByText(/older than what's shown here/i)).not.toBeInTheDocument();
+  });
+
+  it("does not show the not-found note once the focused entry is found", async () => {
+    vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([entry({ id: "hist-1" })]);
+
+    render(<HistorySidebar onSelect={() => {}} focusId="hist-1" />);
+
+    await waitFor(() => expect(screen.getByText("/api/orders")).toBeInTheDocument());
+    expect(screen.queryByText(/older than what's shown here/i)).not.toBeInTheDocument();
+  });
+
   // Reviewer finding: aria-current/highlight must track the actual selection,
   // not stay pinned to whatever focusId originally pointed at — otherwise a
   // manual click leaves the deep-linked row falsely marked "current".
