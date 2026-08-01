@@ -83,4 +83,24 @@ describe("KeyValueEditor", () => {
     fireEvent.mouseUp(window);
     expect(box).toHaveStyle({ height: "268px" });
   });
+
+  it("drops a drag's window listeners when it unmounts mid-drag", () => {
+    const removeSpy = vi.spyOn(window, "removeEventListener");
+    const { unmount } = render(
+      <KeyValueEditor
+        rows={[{ key: "a", value: "1", enabled: true }]}
+        onChange={() => {}}
+        addLabel="Add header"
+        emptyLabel="No headers set."
+      />,
+    );
+    fireEvent.mouseDown(screen.getByTestId("rows-resize-handle"), { clientY: 100 });
+    removeSpy.mockClear();
+
+    unmount();
+
+    expect(removeSpy).toHaveBeenCalledWith("mousemove", expect.any(Function));
+    expect(removeSpy).toHaveBeenCalledWith("mouseup", expect.any(Function));
+    removeSpy.mockRestore();
+  });
 });

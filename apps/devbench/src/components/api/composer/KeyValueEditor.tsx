@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export interface KeyValueRow {
   key: string;
@@ -25,6 +25,10 @@ export function KeyValueEditor({
 }) {
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
   const dragStart = useRef<{ y: number; height: number } | null>(null);
+  const endDrag = useRef<(() => void) | null>(null);
+
+  // Unmounting mid-drag would otherwise leave this drag's listeners on window.
+  useEffect(() => () => endDrag.current?.(), []);
 
   function updateRow(index: number, patch: Partial<KeyValueRow>) {
     onChange(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
@@ -45,9 +49,11 @@ export function KeyValueEditor({
     }
     function onMouseUp() {
       dragStart.current = null;
+      endDrag.current = null;
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
     }
+    endDrag.current = onMouseUp;
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
   }
