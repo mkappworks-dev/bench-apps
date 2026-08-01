@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 /// Keychain service name. Stable across releases — changing it orphans every
 /// stored key.
-pub const SERVICE: &str = "com.benchapps.devbench";
+pub const SERVICE: &str = "app.benchlabs.devbench";
 
 /// OS-native secret storage, behind a trait for one concrete reason: a
 /// keychain is an ambient OS resource, and a headless CI box has no Secret

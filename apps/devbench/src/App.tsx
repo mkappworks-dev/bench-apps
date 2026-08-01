@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAppStore, type Pane, type ThemePref, type ToolKind } from "./store/useAppStore";
 import { AppStrip } from "./components/shell/AppStrip";
+import { BrandLockup } from "./components/shell/Logo";
 import { TABS } from "./components/shell/tools";
 import { SessionsSidebar } from "./components/shell/SessionsSidebar";
 import { ChatDock } from "./components/shell/ChatDock";
@@ -80,7 +81,9 @@ export default function App() {
   if (route === "settings") {
     return (
       <div className="flex h-screen flex-col">
-        <div data-tauri-drag-region aria-hidden="true" className="h-11 shrink-0 border-b border-border" />
+        <div data-tauri-drag-region className="flex h-11 shrink-0 items-center border-b border-border">
+          <BrandLockup />
+        </div>
         <SettingsScreen onBack={() => setRoute("workspace")} />
       </div>
     );
