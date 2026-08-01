@@ -17,7 +17,15 @@ const POLL_INTERVAL_MS = 1_000;
 /** Matches the backend's global retention cap (`MAX_CAPTURED_EMAILS`). */
 const LIST_LIMIT = 5_000;
 
-export function EmailTab({ focusEmailId = null }: { focusEmailId?: number | null }) {
+export function EmailTab({
+  focusEmailId = null,
+  onOpenHistory,
+}: {
+  focusEmailId?: number | null;
+  /** Forwarded straight to EmailViewer's "Sent by" chip — App.tsx owns the
+   *  actual tab-focusing logic, same split as the Rollup's onOpenEmail. */
+  onOpenHistory?: (requestId: string) => void;
+}) {
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const [emails, setEmails] = useState<EmailSummary[]>([]);
   const [evictedThroughId, setEvictedThroughId] = useState(0);
@@ -113,7 +121,7 @@ export function EmailTab({ focusEmailId = null }: { focusEmailId?: number | null
           {error ? (
             <div className="m-4 rounded-lg border border-border bg-danger-bg p-3 text-sm text-danger">{error}</div>
           ) : (
-            <EmailViewer email={selected} />
+            <EmailViewer email={selected} onOpenHistory={onOpenHistory} />
           )}
         </div>
       </div>

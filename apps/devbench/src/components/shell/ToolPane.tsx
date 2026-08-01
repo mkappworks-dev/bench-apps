@@ -9,9 +9,11 @@ import { useAppStore } from "../../store/useAppStore";
  * Renders one tab instance. Every pane's every tab goes through this, which
  * is what keeps "any tool, any number of times, in either pane" true by
  * construction. `onOpenDb`/`onOpenLog`/`onOpenEmail` are the Rollup deep
- * links; only the "api" case uses them. `emailFocusId` only matters to the
- * "email" case, and only when this specific tab is the deep link's target
- * (App.tsx resolves that before this component ever sees it).
+ * links; only the "api" case uses them. `onOpenHistory` is the reverse deep
+ * link (Email's "Sent by" chip); only the "email" case uses it. `emailFocusId`
+ * and `historyFocusId` only matter to the "email"/"api" case respectively,
+ * and only when this specific tab is the deep link's target (App.tsx resolves
+ * that before this component ever sees it).
  */
 export function ToolPane({
   tab,
@@ -20,6 +22,8 @@ export function ToolPane({
   onOpenLog,
   onOpenEmail,
   emailFocusId,
+  onOpenHistory,
+  historyFocusId,
 }: {
   tab: Tab;
   onPatchState: (patch: Record<string, unknown>) => void;
@@ -27,13 +31,24 @@ export function ToolPane({
   onOpenLog: () => void;
   onOpenEmail: (emailId: number | null) => void;
   emailFocusId: number | null;
+  onOpenHistory: (requestId: string) => void;
+  historyFocusId: string | null;
 }) {
   const watchedTables = useAppStore((s) => s.watchedTables);
   const toggleWatchedTable = useAppStore((s) => s.toggleWatchedTable);
 
   switch (tab.kind) {
     case "api":
-      return <ApiTab tab={tab} onPatchState={onPatchState} onOpenDb={onOpenDb} onOpenLog={onOpenLog} onOpenEmail={onOpenEmail} />;
+      return (
+        <ApiTab
+          tab={tab}
+          onPatchState={onPatchState}
+          onOpenDb={onOpenDb}
+          onOpenLog={onOpenLog}
+          onOpenEmail={onOpenEmail}
+          focusHistoryId={historyFocusId}
+        />
+      );
     case "db":
       return (
         <DbTab
@@ -48,6 +63,6 @@ export function ToolPane({
         <LogTab sourceId={typeof tab.state.sourceId === "string" ? tab.state.sourceId : null} onPatchState={onPatchState} />
       );
     case "email":
-      return <EmailTab focusEmailId={emailFocusId} />;
+      return <EmailTab focusEmailId={emailFocusId} onOpenHistory={onOpenHistory} />;
   }
 }

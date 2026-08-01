@@ -45,6 +45,13 @@ const fullEmail: CapturedEmail = {
   request_url: null,
 };
 
+const linkedEmail: CapturedEmail = {
+  ...fullEmail,
+  request_id: "hist-1",
+  request_method: "POST",
+  request_url: "/api/orders",
+};
+
 describe("EmailTab", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -97,5 +104,20 @@ describe("EmailTab", () => {
     act(() => useAppStore.getState().setActiveSessionId("sess-b"));
 
     await waitFor(() => expect(screen.getByText(/select a message/i)).toBeInTheDocument());
+  });
+
+  // Task 13: the "Sent by" chip's click must reach the caller (App.tsx owns
+  // the actual tab-focusing), not get swallowed on the way through EmailTab.
+  it("forwards a click on the Sent-by chip to onOpenHistory with the linked request id", async () => {
+    vi.spyOn(tauriLib, "invokeListEmails").mockResolvedValue(emailList(1, "A's message"));
+    vi.spyOn(tauriLib, "invokeGetEmail").mockResolvedValue(linkedEmail);
+    const onOpenHistory = vi.fn();
+
+    render(<EmailTab onOpenHistory={onOpenHistory} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /A's message/ }));
+    fireEvent.click(await screen.findByText(/Sent by/));
+
+    expect(onOpenHistory).toHaveBeenCalledWith("hist-1");
   });
 });

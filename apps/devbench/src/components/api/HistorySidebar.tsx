@@ -1,19 +1,28 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invokeListHistory, type HistoryEntry } from "../../lib/tauri";
 
 export function HistorySidebar({
   onSelect,
   refreshKey,
   sessionId,
+  focusId,
 }: {
   onSelect: (entry: HistoryEntry) => void;
   /** Bump this (e.g. a counter) to trigger a refetch, such as after a new entry is saved. */
   refreshKey?: number;
   /** `null`/omitted = unscoped: every request ever fired. Otherwise only this session's. */
   sessionId?: string | null;
+  /** Deep-linked from Email's "Sent by" chip — selects and highlights this entry once it's in `entries`. */
+  focusId?: string | null;
 }) {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [failed, setFailed] = useState(false);
+  // Tracks which focusId has already been acted on. Without this, firing a
+  // new request re-triggers this effect (entries gets a fresh array from the
+  // refetch) and would re-select the OLD linked entry over whatever the user
+  // is now looking at — the same class of bug the session guards elsewhere
+  // exist to prevent, just triggered by a refetch instead of a session switch.
+  const consumedFocusId = useRef<string | null>(null);
 
   // `sessionId` is a dependency: switching sessions must refetch. `cancelled`
   // guards against the two in-flight reads resolving out of order.
@@ -47,6 +56,17 @@ export function HistorySidebar({
     };
   }, [refreshKey, sessionId]);
 
+  // A focusId that arrives before the fetch resolves must not be silently
+  // dropped — depending on `entries` lets this retry once the fetch lands.
+  // The consumed-ref guard is what stops it from firing again afterward.
+  useEffect(() => {
+    if (!focusId || consumedFocusId.current === focusId) return;
+    const match = entries.find((e) => e.id === focusId);
+    if (!match) return;
+    consumedFocusId.current = focusId;
+    onSelect(match);
+  }, [focusId, entries, onSelect]);
+
   return (
     <aside className="w-55 min-w-55 border-r border-border overflow-y-auto">
       <div className="border-b border-border p-2.5 text-xs font-bold text-text-muted">History</div>
@@ -66,7 +86,10 @@ export function HistorySidebar({
             <button
               key={entry.id}
               onClick={() => onSelect(entry)}
-              className="flex flex-col gap-0.5 rounded-sm p-2 text-left hover:bg-surface-2"
+              aria-current={focusId === entry.id}
+              className={`flex flex-col gap-0.5 rounded-sm p-2 text-left hover:bg-surface-2 ${
+                focusId === entry.id ? "bg-surface-2" : ""
+              }`}
             >
               <div className="flex items-center gap-1.5">
                 <span className="w-10 text-xs font-bold text-text-muted">{entry.method}</span>

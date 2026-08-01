@@ -269,4 +269,35 @@ describe("ApiTab", () => {
 
     expect(screen.getByText("1 line")).toBeInTheDocument();
   });
+
+  // Task 13: Email's "Sent by" chip deep-links here via focusHistoryId. This
+  // is the same prop-forwarding bug class as the DB-chip regression test
+  // above, just for an incoming prop instead of an outgoing callback.
+  it("forwards focusHistoryId to HistorySidebar and selects the matching entry", async () => {
+    vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([
+      {
+        id: "hist-1",
+        method: "POST",
+        url: "/api/orders",
+        status_code: 201,
+        response_body: '{"id":8841}',
+        duration_ms: 142,
+        fired_at: "2026-07-30T14:02:11Z",
+        session_id: null,
+      },
+    ]);
+
+    render(
+      <ApiTab
+        tab={tab()}
+        onPatchState={() => {}}
+        onOpenDb={() => {}}
+        onOpenLog={() => {}}
+        onOpenEmail={() => {}}
+        focusHistoryId="hist-1"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('{"id":8841}')).toBeInTheDocument());
+  });
 });

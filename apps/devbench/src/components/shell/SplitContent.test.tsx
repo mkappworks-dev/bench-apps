@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { SplitContent } from "./SplitContent";
 import { useAppStore } from "../../store/useAppStore";
@@ -13,6 +13,8 @@ function renderSplit(overrides: Partial<Parameters<typeof SplitContent>[0]> = {}
       onOpenLog={() => {}}
       onOpenEmail={() => {}}
       emailFocusRequest={null}
+      onOpenHistory={() => {}}
+      historyFocusRequest={null}
       {...overrides}
     />,
   );
@@ -127,5 +129,38 @@ describe("SplitContent", () => {
     expect(listRows.mock.calls.length).toBe(callCountAfterMount);
     expect(screen.getByText("orders")).toBeInTheDocument();
     expect(screen.getByText("payments")).toBeInTheDocument();
+  });
+
+  // Task 13: mirrors the design invariant already relied on for Email's deep
+  // link — two mounted API tabs must never both jump to the same History
+  // entry, only the one instance the deep link actually targeted.
+  it("targets the history focus to the specific api tab instance, not every api tab", async () => {
+    useAppStore.setState({
+      tabs: [
+        { id: "a", kind: "api", pane: "left", ordinal: 0, state: {} },
+        { id: "b", kind: "api", pane: "right", ordinal: 0, state: {} },
+      ],
+      activeTabId: { left: "a", right: "b" },
+    });
+    vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([
+      {
+        id: "hist-1",
+        method: "POST",
+        url: "/api/checkout",
+        status_code: 200,
+        response_body: "{}",
+        duration_ms: 10,
+        fired_at: "2026-07-30T14:02:11Z",
+        session_id: null,
+      },
+    ]);
+
+    renderSplit({ historyFocusRequest: { tabId: "b", requestId: "hist-1" } });
+
+    const [leftMain, rightMain] = screen.getAllByRole("main");
+    await waitFor(() =>
+      expect(within(rightMain).getByRole("button", { name: /checkout/ })).toHaveAttribute("aria-current", "true"),
+    );
+    expect(within(leftMain).getByRole("button", { name: /checkout/ })).toHaveAttribute("aria-current", "false");
   });
 });

@@ -150,4 +150,68 @@ describe("HistorySidebar", () => {
     await waitFor(() => expect(screen.getByText("Couldn't load history.")).toBeInTheDocument());
     expect(screen.queryByText("No requests fired in this session yet.")).not.toBeInTheDocument();
   });
+
+  // Task 13: Email's "Sent by" chip deep-links here via `focusId`.
+  it("selects the focused entry once it has loaded, mirroring a manual click", async () => {
+    const onSelect = vi.fn();
+    vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([entry({ id: "hist-1", url: "/api/checkout" })]);
+
+    render(<HistorySidebar onSelect={onSelect} focusId="hist-1" />);
+
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "hist-1" })));
+  });
+
+  it("highlights the focused row", async () => {
+    vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([entry({ id: "hist-1", url: "/api/checkout" })]);
+
+    render(<HistorySidebar onSelect={() => {}} focusId="hist-1" />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /checkout/ })).toHaveAttribute("aria-current", "true"),
+    );
+  });
+
+  // A focusId can arrive before the initial fetch resolves — the effect must
+  // retry once `entries` actually contains the match, not drop it silently.
+  it("selects the focused entry even if it arrives before the fetch resolves", async () => {
+    const pending = deferred<HistoryEntry[]>();
+    const onSelect = vi.fn();
+    vi.spyOn(tauriLib, "invokeListHistory").mockReturnValue(pending.promise);
+
+    render(<HistorySidebar onSelect={onSelect} focusId="hist-1" />);
+    expect(onSelect).not.toHaveBeenCalled();
+
+    await act(async () => {
+      pending.resolve([entry({ id: "hist-1", url: "/api/checkout" })]);
+      await pending.promise;
+    });
+
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "hist-1" }));
+  });
+
+  // Regression guard: firing a new request bumps `refreshKey`, which refetches
+  // and gives `entries` a brand-new array reference. Without the consumed-ref
+  // guard, that would re-run the focus effect and yank the user back to the
+  // OLD linked entry every single time — a much worse bug than a stale
+  // highlight, since it fights the user's current action.
+  it("does not re-select the focused entry after a later refetch", async () => {
+    const onSelect = vi.fn();
+    const list = vi
+      .spyOn(tauriLib, "invokeListHistory")
+      .mockResolvedValue([entry({ id: "hist-1", url: "/api/checkout" })]);
+
+    const { rerender } = render(<HistorySidebar onSelect={onSelect} focusId="hist-1" refreshKey={1} />);
+    await waitFor(() => expect(onSelect).toHaveBeenCalledTimes(1));
+
+    // Simulate firing a new request: refreshKey bumps and the refetch returns
+    // a fresh array (new reference, same focused entry still present).
+    list.mockResolvedValue([
+      entry({ id: "hist-2", url: "/api/new-request" }),
+      entry({ id: "hist-1", url: "/api/checkout" }),
+    ]);
+    rerender(<HistorySidebar onSelect={onSelect} focusId="hist-1" refreshKey={2} />);
+
+    await waitFor(() => expect(screen.getByText("/api/new-request")).toBeInTheDocument());
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
 });

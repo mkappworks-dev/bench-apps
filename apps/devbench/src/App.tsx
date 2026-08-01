@@ -35,6 +35,9 @@ export default function App() {
   // Ephemeral: never persisted to tab.state. Only the email deep link sets
   // it, and it targets one specific tab instance — see SplitContent.
   const [emailFocusRequest, setEmailFocusRequest] = useState<{ tabId: string; emailId: number | null } | null>(null);
+  // Mirrors emailFocusRequest for the reverse direction: Email's "Sent by"
+  // chip jumping to History. Same shape, same one-tab targeting.
+  const [historyFocusRequest, setHistoryFocusRequest] = useState<{ tabId: string; requestId: string } | null>(null);
 
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
 
@@ -113,6 +116,11 @@ export default function App() {
             setEmailFocusRequest({ tabId: targetId, emailId });
           }}
           emailFocusRequest={emailFocusRequest}
+          onOpenHistory={(requestId) => {
+            const targetId = tabController.focusOrCreateTab("api");
+            setHistoryFocusRequest({ tabId: targetId, requestId });
+          }}
+          historyFocusRequest={historyFocusRequest}
         />
         {chatOpen ? <ChatDock onClose={() => setChatOpen(false)} /> : null}
       </div>
