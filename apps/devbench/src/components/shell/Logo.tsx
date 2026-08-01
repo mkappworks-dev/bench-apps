@@ -18,12 +18,18 @@ export function Logo({ size = 20 }: { size?: number }) {
 /**
  * Shared by both routes' top strips so the brand holds the same pixels whether
  * the workspace or Settings is showing — duplicating the markup would let the
- * two drift and make the lockup jump on navigation. The left padding clears the
- * traffic lights.
+ * two drift and make the lockup jump on navigation.
+ *
+ * The left padding clears the traffic lights: buttons are 14px wide on a 23px
+ * pitch, so starting at tauri.conf.json's `trafficLightPosition.x` of 20 they
+ * end at x:80. 96px leaves a 16px gap. Their vertical centering is NOT set
+ * here — `trafficLightPosition.y` is a titlebar-container height, not an
+ * offset, and lands the button centers at `y - 2`; it is 24 to match this
+ * strip's 44px midpoint.
  */
 export function BrandLockup() {
   return (
-    <div data-tauri-drag-region className="flex select-none items-center gap-2 pl-22 text-text">
+    <div data-tauri-drag-region className="flex select-none items-center gap-2 pl-24 text-text">
       <Logo />
       <span className="text-[13px] font-semibold tracking-tight">Dev Bench</span>
     </div>
