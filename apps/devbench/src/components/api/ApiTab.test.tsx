@@ -17,7 +17,7 @@ function deferred<T>() {
 function sendResult(body: string): CorrelationResult {
   return {
     correlation_id: `corr-${body}`,
-    response: { status_code: 201, body, duration_ms: 142 },
+    response: { status_code: 201, headers: [], body, duration_ms: 142 },
     table_diffs: [],
     db_error: null,
   };
@@ -54,6 +54,9 @@ describe("ApiTab", () => {
         duration_ms: 142,
         fired_at: "2026-07-30T14:02:11Z",
         session_id: null,
+        request_headers: [],
+        request_body: null,
+        response_headers: [],
       },
     ]);
 

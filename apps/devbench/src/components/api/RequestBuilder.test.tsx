@@ -15,7 +15,7 @@ describe("RequestBuilder", () => {
     const onResult = vi.fn();
     vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
       correlation_id: "corr-1",
-      response: { status_code: 201, body: '{"id":8841}', duration_ms: 142 },
+      response: { status_code: 201, headers: [], body: '{"id":8841}', duration_ms: 142 },
       table_diffs: [{ table: "orders", inserted: 1, updated: 0, deleted: 0 }],
       db_error: null,
     });
@@ -31,11 +31,12 @@ describe("RequestBuilder", () => {
     await waitFor(() =>
       expect(onResult).toHaveBeenCalledWith({
         correlation_id: "corr-1",
-        response: { status_code: 201, body: '{"id":8841}', duration_ms: 142 },
+        response: { status_code: 201, headers: [], body: '{"id":8841}', duration_ms: 142 },
         table_diffs: [{ table: "orders", inserted: 1, updated: 0, deleted: 0 }],
         db_error: null,
       }),
     );
+    // No `headers` key: RequestBuilder.tsx doesn't send one until Task 10 rewrites it.
     expect(tauriLib.invokeRunCorrelatedRequest).toHaveBeenCalledWith({
       request: { method: "GET", url: "/api/orders", body: undefined },
       connection,
@@ -47,7 +48,7 @@ describe("RequestBuilder", () => {
   it("attributes the request to the active session", async () => {
     const invoked = vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
       correlation_id: "corr-3",
-      response: { status_code: 200, body: "{}", duration_ms: 5 },
+      response: { status_code: 200, headers: [], body: "{}", duration_ms: 5 },
       table_diffs: [],
       db_error: null,
     });
@@ -98,7 +99,7 @@ describe("RequestBuilder", () => {
 
     resolveRequest({
       correlation_id: "corr-2",
-      response: { status_code: 200, body: "{}", duration_ms: 5 },
+      response: { status_code: 200, headers: [], body: "{}", duration_ms: 5 },
       table_diffs: [],
       db_error: null,
     });

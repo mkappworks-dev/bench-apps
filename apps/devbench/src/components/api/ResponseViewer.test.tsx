@@ -11,7 +11,7 @@ describe("ResponseViewer", () => {
   it("shows status code, duration, and body after a response", () => {
     render(
       <ResponseViewer
-        result={{ status_code: 200, body: '{"id":8841}', duration_ms: 142 }}
+        result={{ status_code: 200, headers: [], body: '{"id":8841}', duration_ms: 142 }}
       />,
     );
     expect(screen.getByText("200")).toBeInTheDocument();

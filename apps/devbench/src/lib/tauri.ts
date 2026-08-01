@@ -1,13 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export interface HeaderPair {
+  key: string;
+  value: string;
+}
+
 export interface FireRequestInput {
   method: string;
   url: string;
+  headers: HeaderPair[];
   body?: string;
 }
 
 export interface FireRequestOutput {
   status_code: number;
+  headers: HeaderPair[];
   body: string;
   duration_ms: number;
 }
@@ -26,6 +33,10 @@ export interface HistoryEntry {
   fired_at: string;
   /** `null` = unattributed: fired with no active session, or predating session scoping. */
   session_id: string | null;
+  request_headers: HeaderPair[];
+  /** `null` = no body was sent. */
+  request_body: string | null;
+  response_headers: HeaderPair[];
 }
 
 /** `sessionId` omitted or null lists every request ever fired (the unscoped view). */
