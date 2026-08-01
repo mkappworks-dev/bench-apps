@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { invokeRunCorrelatedRequest, type CorrelationResult, type DbConnectInput } from "../../lib/tauri";
+import { invokeRunCorrelatedRequest, type CorrelationResult } from "../../lib/tauri";
 import { Menu, ChevronIcon } from "../ui/Menu";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"].map((m) => ({ value: m, label: m }));
 
 export function RequestBuilder({
-  connection,
+  connectionId,
   watchedTables,
   // `lib/tauri.ts` already normalises to `null`; this default only satisfies
   // the exact-payload assertion in RequestBuilder.test.tsx.
@@ -17,7 +17,8 @@ export function RequestBuilder({
   onSendStart,
   onError,
 }: {
-  connection: DbConnectInput;
+  /** `null` when no connection is selected yet — Send stays a no-op until one is. */
+  connectionId: string | null;
   watchedTables: Set<string>;
   /** Attributes the fired request's history entry to this session. `null` = unattributed. */
   sessionId?: string | null;
@@ -31,12 +32,13 @@ export function RequestBuilder({
   const [sending, setSending] = useState(false);
 
   async function handleSend() {
+    if (!connectionId) return;
     setSending(true);
     onSendStart?.();
     try {
       const result = await invokeRunCorrelatedRequest({
         request: { method, url, body: undefined },
-        connection,
+        connectionId,
         watchedTables: Array.from(watchedTables),
         sessionId,
       });
@@ -71,7 +73,8 @@ export function RequestBuilder({
       />
       <button
         onClick={handleSend}
-        disabled={sending}
+        disabled={sending || !connectionId}
+        title={!connectionId ? "Select a connection first" : undefined}
         className="min-w-21 rounded-sm bg-accent px-4 font-bold text-accent-on disabled:opacity-60"
       >
         {sending ? "Sending…" : "Send"}

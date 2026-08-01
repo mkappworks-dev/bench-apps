@@ -44,6 +44,9 @@ describe("ApiTab", () => {
     vi.restoreAllMocks();
     useAppStore.getState().setActiveSessionId(null);
     useAppStore.getState().setWatchedTables([]);
+    // Send is a no-op with no connection selected — every test here fires a
+    // real send, so a connection must already be active.
+    useAppStore.getState().setActiveConnectionId("c1");
   });
 
   it("forwards the Rollup's deep links to the received callbacks, not a local store call", async () => {

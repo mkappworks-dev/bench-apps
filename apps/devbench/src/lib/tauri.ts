@@ -48,23 +48,15 @@ export interface CorrelationResult {
   db_error: string | null;
 }
 
-export interface DbConnectInput {
-  host: string;
-  port: number;
-  database: string;
-  username: string;
-  password: string;
-}
-
 export function invokeRunCorrelatedRequest(args: {
   request: FireRequestInput;
-  connection: DbConnectInput;
+  connectionId: string;
   watchedTables: string[];
   sessionId?: string | null;
 }): Promise<CorrelationResult> {
   return invoke("run_correlated_request", {
     request: args.request,
-    connection: args.connection,
+    connectionId: args.connectionId,
     watchedTables: args.watchedTables,
     sessionId: args.sessionId ?? null,
   });
@@ -171,29 +163,37 @@ export interface TableInfo {
   name: string;
 }
 
-export function invokeDbConnectAndListTables(connection: DbConnectInput): Promise<TableInfo[]> {
-  return invoke("db_connect_and_list_tables", { input: connection });
+export function invokeDbConnectAndListTables(connectionId: string): Promise<TableInfo[]> {
+  return invoke("db_connect_and_list_tables", { connectionId });
 }
 
 export interface TableRows {
   columns: string[];
   rows: (string | null)[][];
+  pk_column: string | null;
 }
 
-export function invokeListTableRows(connection: DbConnectInput, table: string): Promise<TableRows> {
-  return invoke("list_table_rows", { input: connection, table });
-}
-
-export function invokeListWatchedTables(connection: DbConnectInput): Promise<string[]> {
-  return invoke("list_watched_tables", { connection });
-}
-
-export function invokeSetWatchedTable(
-  connection: DbConnectInput,
+export function invokeListTableRows(
+  connectionId: string,
   table: string,
-  watched: boolean,
-): Promise<void> {
-  return invoke("set_watched_table", { connection, table, watched });
+  options?: { orderByColumn?: string | null; orderByDesc?: boolean; limit?: number; offset?: number },
+): Promise<TableRows> {
+  return invoke("list_table_rows", {
+    connectionId,
+    table,
+    orderByColumn: options?.orderByColumn ?? null,
+    orderByDesc: options?.orderByDesc ?? false,
+    limit: options?.limit ?? 100,
+    offset: options?.offset ?? 0,
+  });
+}
+
+export function invokeListWatchedTables(connectionId: string): Promise<string[]> {
+  return invoke("list_watched_tables", { connectionId });
+}
+
+export function invokeSetWatchedTable(connectionId: string, table: string, watched: boolean): Promise<void> {
+  return invoke("set_watched_table", { connectionId, table, watched });
 }
 
 export interface Session {

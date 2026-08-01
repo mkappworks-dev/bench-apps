@@ -48,7 +48,10 @@ describe("App shell", () => {
   // this on mount so the default tab is never out of sync with storage.
   it("hydrates watched tables on mount even while the default api tab is active", async () => {
     vi.spyOn(tauriLib, "invokeGetSettings").mockResolvedValue(settings);
-    vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue(["orders", "users"]);
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([
+      { id: "c1", name: "Local Dev", engine: "postgres", host: "localhost", port: 5432, database: "devbench_test", username: "postgres", sslmode: "disable", has_password: true },
+    ]);
+    const listWatched = vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue(["orders", "users"]);
 
     render(<App />);
 
@@ -57,8 +60,10 @@ describe("App shell", () => {
       expect(watched.has("orders")).toBe(true);
       expect(watched.has("users")).toBe(true);
     });
+    expect(listWatched).toHaveBeenCalledWith("c1");
 
     useAppStore.getState().setWatchedTables([]);
+    useAppStore.getState().setActiveConnectionId(null);
   });
 
   // Bug: nothing at the app level ever called invokeGetSettings, so a

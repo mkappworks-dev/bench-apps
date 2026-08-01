@@ -25,8 +25,6 @@ function lastInvoke(): [string, Record<string, unknown>] {
   return [call[0] as string, call[1] as Record<string, unknown>];
 }
 
-const connection = { host: "localhost", port: 5432, database: "d", username: "u", password: "p" };
-
 describe("invokeListHistory", () => {
   beforeEach(() => {
     invoked.mockClear();
@@ -66,10 +64,10 @@ describe("invokeRunCorrelatedRequest", () => {
     invoked.mockClear();
   });
 
-  it("sends the session id alongside the request, connection, and watched tables", async () => {
+  it("sends the session id alongside the request, connection id, and watched tables", async () => {
     await invokeRunCorrelatedRequest({
       request: { method: "GET", url: "/api/orders" },
-      connection,
+      connectionId: "c1",
       watchedTables: ["orders"],
       sessionId: "sess-1",
     });
@@ -78,12 +76,12 @@ describe("invokeRunCorrelatedRequest", () => {
     expect(command).toBe("run_correlated_request");
     expect(payload).toStrictEqual({
       request: { method: "GET", url: "/api/orders" },
-      connection,
+      connectionId: "c1",
       watchedTables: ["orders"],
       sessionId: "sess-1",
     });
     expect(Object.keys(payload).sort()).toEqual([
-      "connection",
+      "connectionId",
       "request",
       "sessionId",
       "watchedTables",
@@ -93,14 +91,14 @@ describe("invokeRunCorrelatedRequest", () => {
   it("sends an explicit null session id when the send is unattributed", async () => {
     await invokeRunCorrelatedRequest({
       request: { method: "GET", url: "/api/orders" },
-      connection,
+      connectionId: "c1",
       watchedTables: [],
     });
 
     const [, payload] = lastInvoke();
     expect(payload).toStrictEqual({
       request: { method: "GET", url: "/api/orders" },
-      connection,
+      connectionId: "c1",
       watchedTables: [],
       sessionId: null,
     });

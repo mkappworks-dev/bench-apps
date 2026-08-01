@@ -5,8 +5,6 @@ import { RequestBuilder } from "./RequestBuilder";
 import * as tauriLib from "../../lib/tauri";
 import type { CorrelationResult } from "../../lib/tauri";
 
-const connection = { host: "localhost", port: 5432, database: "d", username: "u", password: "p" };
-
 describe("RequestBuilder", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -23,7 +21,7 @@ describe("RequestBuilder", () => {
 
     render(
       <RequestBuilder
-        connection={connection}
+        connectionId="c1"
         watchedTables={new Set(["orders"])}
         onResult={onResult}
         method="GET"
@@ -43,7 +41,7 @@ describe("RequestBuilder", () => {
     );
     expect(tauriLib.invokeRunCorrelatedRequest).toHaveBeenCalledWith({
       request: { method: "GET", url: "/api/orders", body: undefined },
-      connection,
+      connectionId: "c1",
       watchedTables: ["orders"],
       sessionId: null,
     });
@@ -59,7 +57,7 @@ describe("RequestBuilder", () => {
 
     render(
       <RequestBuilder
-        connection={connection}
+        connectionId="c1"
         watchedTables={new Set()}
         onResult={() => {}}
         sessionId="sess-1"
@@ -87,7 +85,7 @@ describe("RequestBuilder", () => {
 
     render(
       <RequestBuilder
-        connection={connection}
+        connectionId="c1"
         watchedTables={new Set(["orders"])}
         onResult={onResult}
         onSendStart={onSendStart}
@@ -113,7 +111,7 @@ describe("RequestBuilder", () => {
   it("uses the styled menu rather than a native select for the method", () => {
     const { container } = render(
       <RequestBuilder
-        connection={connection}
+        connectionId="c1"
         watchedTables={new Set()}
         onResult={() => {}}
         method="GET"
@@ -133,7 +131,7 @@ describe("RequestBuilder", () => {
       const [method, setMethod] = useState("GET");
       return (
         <RequestBuilder
-          connection={connection}
+          connectionId="c1"
           watchedTables={new Set()}
           onResult={() => {}}
           method={method}
@@ -153,7 +151,7 @@ describe("RequestBuilder", () => {
   it("shows the method and url from tab state, not local defaults", () => {
     render(
       <RequestBuilder
-        connection={connection}
+        connectionId="c1"
         watchedTables={new Set()}
         onResult={() => {}}
         method="POST"
@@ -168,7 +166,7 @@ describe("RequestBuilder", () => {
   it("patches state on every keystroke and every method change, rather than holding local state", () => {
     const onPatchState = vi.fn();
     render(
-      <RequestBuilder connection={connection} watchedTables={new Set()} onResult={() => {}} method="GET" url="" onPatchState={onPatchState} />,
+      <RequestBuilder connectionId="c1" watchedTables={new Set()} onResult={() => {}} method="GET" url="" onPatchState={onPatchState} />,
     );
 
     fireEvent.change(screen.getByPlaceholderText("/api/orders"), { target: { value: "/api/users" } });
@@ -177,5 +175,28 @@ describe("RequestBuilder", () => {
     fireEvent.click(screen.getByRole("button", { name: /method/i }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: "PUT" }));
     expect(onPatchState).toHaveBeenCalledWith({ method: "PUT" });
+  });
+
+  // Honest no-op: sending with `connectionId: null` would reach the backend
+  // with nothing to run the request against. The button reads as genuinely
+  // unavailable rather than merely doing nothing when clicked.
+  it("disables Send and never invokes the backend when no connection is selected", () => {
+    const invoked = vi.spyOn(tauriLib, "invokeRunCorrelatedRequest");
+    const onResult = vi.fn();
+    render(
+      <RequestBuilder
+        connectionId={null}
+        watchedTables={new Set()}
+        onResult={onResult}
+        method="GET"
+        url="/api/orders"
+        onPatchState={() => {}}
+      />,
+    );
+    const send = screen.getByRole("button", { name: "Send" });
+    expect(send).toBeDisabled();
+    fireEvent.click(send);
+    expect(invoked).not.toHaveBeenCalled();
+    expect(onResult).not.toHaveBeenCalled();
   });
 });

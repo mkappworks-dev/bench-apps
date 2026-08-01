@@ -6,21 +6,10 @@ import { SessionsSidebar } from "./components/shell/SessionsSidebar";
 import { ChatDock } from "./components/shell/ChatDock";
 import { SettingsScreen } from "./components/settings/SettingsScreen";
 import { SplitContent } from "./components/shell/SplitContent";
-import { invokeGetSettings, invokeListWatchedTables, type DbConnectInput } from "./lib/tauri";
+import { invokeGetSettings, invokeListConnections, invokeListWatchedTables } from "./lib/tauri";
 import { useTabController } from "./store/useTabController";
 
 export { TABS };
-
-// Same hardcoded dev connection duplicated in ApiTab.tsx and DbTab.tsx — the
-// app only ever talks to one Postgres instance today, so a shared config
-// module is out of scope until multi-connection support exists.
-const DEV_CONNECTION: DbConnectInput = {
-  host: "localhost",
-  port: 5432,
-  database: "devbench_test",
-  username: "postgres",
-  password: "postgres",
-};
 
 export default function App() {
   const chatOpen = useAppStore((s) => s.chatOpen);
@@ -37,6 +26,8 @@ export default function App() {
   const [emailFocusRequest, setEmailFocusRequest] = useState<{ tabId: string; emailId: number | null } | null>(null);
 
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
+  const activeConnectionId = useAppStore((s) => s.activeConnectionId);
+  const setActiveConnectionId = useAppStore((s) => s.setActiveConnectionId);
 
   function onAddTab(pane: Pane, kind: ToolKind) {
     tabController.addTab(kind, pane);
@@ -54,17 +45,31 @@ export default function App() {
       .catch(() => {});
   }, [setTheme]);
 
+  // Picks the connection this session works against. The natural
+  // single-connection case (today, just the seeded 'default' row) resolves
+  // to whichever connection list_connections returns first.
+  useEffect(() => {
+    invokeListConnections()
+      .then((connections) => {
+        if (connections.length > 0) setActiveConnectionId(connections[0].id);
+      })
+      .catch(() => {});
+  }, [setActiveConnectionId]);
+
   // Watch state lives in SQLite, keyed by connection. DbTab.tsx hydrates this
   // too, but only once it mounts — and it only mounts once the user visits
   // the DB tab. Since the default tab is "api", a request fired from there
   // before ever visiting DB would correlate against an empty watch set even
   // though real watched tables are persisted, falsely reporting "no tables
-  // are being watched". Hydrating here as well closes that gap.
+  // are being watched". Hydrating here as well closes that gap. Re-running
+  // whenever activeConnectionId changes also keeps it in sync with switches
+  // made later from the DB tab's picker.
   useEffect(() => {
-    invokeListWatchedTables(DEV_CONNECTION)
+    if (!activeConnectionId) return;
+    invokeListWatchedTables(activeConnectionId)
       .then(setWatchedTables)
       .catch(() => setWatchedTables([]));
-  }, [setWatchedTables]);
+  }, [activeConnectionId, setWatchedTables]);
 
   // DESIGN.md's token precedence: base `:root` is dark, a
   // `prefers-color-scheme: light` media query overrides it, and an explicit

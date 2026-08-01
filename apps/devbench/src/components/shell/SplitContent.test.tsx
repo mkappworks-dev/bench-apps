@@ -20,9 +20,10 @@ function renderSplit(overrides: Partial<Parameters<typeof SplitContent>[0]> = {}
 
 describe("SplitContent", () => {
   beforeEach(() => {
-    useAppStore.setState({ tabs: [], activeTabId: { left: null, right: null } });
+    useAppStore.setState({ tabs: [], activeTabId: { left: null, right: null }, activeConnectionId: "c1" });
     vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue([]);
-    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: [], rows: [] });
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: [], rows: [], pk_column: null });
     vi.spyOn(tauriLib, "invokeListLogSources").mockResolvedValue([]);
   });
 
@@ -102,6 +103,7 @@ describe("SplitContent", () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation(async (_conn, table: string) => ({
       columns: ["table"],
       rows: [[table]],
+      pk_column: null,
     }));
     useAppStore.setState({
       tabs: [

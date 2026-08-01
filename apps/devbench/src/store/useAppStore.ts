@@ -52,6 +52,8 @@ interface AppState {
   setRoute: (route: AppRoute) => void;
   activeSessionId: string | null;
   setActiveSessionId: (id: string | null) => void;
+  activeConnectionId: string | null;
+  setActiveConnectionId: (id: string | null) => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -127,4 +129,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setRoute: (route) => set({ route }),
   activeSessionId: null,
   setActiveSessionId: (id) => set({ activeSessionId: id }),
+  activeConnectionId: null,
+  setActiveConnectionId: (id) => set({ activeConnectionId: id }),
 }));
