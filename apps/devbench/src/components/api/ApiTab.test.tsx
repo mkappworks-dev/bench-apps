@@ -20,6 +20,7 @@ function sendResult(body: string): CorrelationResult {
     response: { status_code: 201, body, duration_ms: 142 },
     table_diffs: [],
     db_error: null,
+    history_id: `hist-${body}`,
   };
 }
 
@@ -96,6 +97,31 @@ describe("ApiTab", () => {
     expect(screen.queryByText('{"id":8841}')).not.toBeInTheDocument();
     // Not stuck mid-send either: the rollup shows only while sending or displayed.
     expect(screen.queryByText("What happened")).not.toBeInTheDocument();
+  });
+
+  // The link Task 9/10 built (stamping request_id onto observed emails) is
+  // dead unless the history id from the send actually reaches the window
+  // call — a wiring gap that types alone would not catch.
+  it("threads the send's history_id into the window collection call", async () => {
+    vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
+      correlation_id: "corr-1",
+      response: { status_code: 201, body: '{"id":8841}', duration_ms: 142 },
+      table_diffs: [],
+      db_error: null,
+      history_id: "hist-77",
+    });
+    const collectWindow = vi
+      .spyOn(tauriLib, "invokeCollectCorrelationWindow")
+      .mockResolvedValue({ log_lines: [], log_lines_truncated: false, emails: [], emails_truncated: false });
+
+    render(<ApiTab onOpenTableInDb={() => {}} onOpenEmail={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText("/api/orders"), {
+      target: { value: "/api/orders" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(collectWindow).toHaveBeenCalledWith("corr-1", "hist-77"));
   });
 
   // The window resolves long after the response, and unguarded would splice

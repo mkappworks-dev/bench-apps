@@ -41,6 +41,8 @@ const fullEmail: CapturedEmail = {
   text_body: "hi",
   raw: "Subject: A's message\r\n\r\nhi",
   request_id: null,
+  request_method: null,
+  request_url: null,
 };
 
 describe("EmailTab", () => {

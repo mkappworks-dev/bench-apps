@@ -14,6 +14,8 @@ const email: CapturedEmail = {
   text_body: "Thanks for your order.",
   raw: "Subject: Order confirmation #8841\r\nFrom: orders@shop.test\r\n\r\nThanks for your order.\r\n",
   request_id: null,
+  request_method: null,
+  request_url: null,
 };
 
 describe("EmailViewer", () => {

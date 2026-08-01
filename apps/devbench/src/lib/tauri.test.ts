@@ -1,6 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeClearEmails, invokeListEmails, invokeListHistory, invokeRunCorrelatedRequest } from "./tauri";
+import {
+  invokeClearEmails,
+  invokeCollectCorrelationWindow,
+  invokeListEmails,
+  invokeListHistory,
+  invokeRunCorrelatedRequest,
+} from "./tauri";
 
 /**
  * Asserts raw `invoke` payloads rather than spying on the wrappers, because
@@ -132,6 +138,34 @@ describe("invokeListEmails", () => {
     expect(payload).toStrictEqual({ sessionId: null, limit: 5_000 });
     expect(payload.sessionId).toBeNull();
     expect(JSON.stringify(payload)).toContain('"sessionId":null');
+  });
+});
+
+describe("invokeCollectCorrelationWindow", () => {
+  beforeEach(() => {
+    invoked.mockClear();
+  });
+
+  it("sends the history id under the camelCase key Tauri maps to `history_id`", async () => {
+    await invokeCollectCorrelationWindow("corr-1", "hist-1");
+
+    expect(invoked).toHaveBeenCalledWith("collect_correlation_window", {
+      correlationId: "corr-1",
+      historyId: "hist-1",
+    });
+    const [command, payload] = lastInvoke();
+    expect(command).toBe("collect_correlation_window");
+    expect(Object.keys(payload).sort()).toEqual(["correlationId", "historyId"]);
+    expect(payload).not.toHaveProperty("history_id");
+  });
+
+  it("sends an explicit null when no history row was saved", async () => {
+    await invokeCollectCorrelationWindow("corr-1", null);
+
+    const [, payload] = lastInvoke();
+    expect(payload).toStrictEqual({ correlationId: "corr-1", historyId: null });
+    expect(payload.historyId).toBeNull();
+    expect(JSON.stringify(payload)).toBe('{"correlationId":"corr-1","historyId":null}');
   });
 });
 
