@@ -106,6 +106,7 @@ async fn firing_a_request_against_a_seeded_postgres_produces_the_expected_rollup
         FireRequestInput {
             method: "POST".to_string(),
             url: format!("{}/orders", server.url()),
+            headers: vec![],
             body: None,
         },
         conn,
@@ -202,6 +203,7 @@ async fn firing_a_request_correlates_both_db_writes_and_log_lines() {
         FireRequestInput {
             method: "POST".to_string(),
             url: format!("{}/orders", server.url()),
+            headers: vec![],
             body: None,
         },
         conn,
@@ -371,6 +373,7 @@ async fn firing_a_request_correlates_db_writes_log_lines_and_sent_mail() {
         FireRequestInput {
             method: "POST".to_string(),
             url: format!("{}/orders", server.url()),
+            headers: vec![],
             body: None,
         },
         conn,
