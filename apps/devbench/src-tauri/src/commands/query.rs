@@ -20,6 +20,28 @@ pub struct QueryPreview {
     pub rows_affected: Option<u64>,
 }
 
+/// Whether `sql` has an output column list (a SELECT, or anything with
+/// RETURNING) and, if so, what it is. Runs on a throwaway connection
+/// borrowed from `pool`, never on the transaction the statement will
+/// actually execute in: `describe()`'s Parse step raises a genuine Postgres
+/// error for semantically invalid SQL (bad column/table/type), and that
+/// error aborts whatever transaction it runs in. If it ran on the preview's
+/// transaction, the real error would be lost — the follow-up `fetch_many()`
+/// on an already-aborted transaction reports only "current transaction is
+/// aborted, commands ignored until end of transaction block", masking the
+/// actual problem the user needs to see. A separate connection means a
+/// `describe()` failure here (for either reason — invalid SQL or a
+/// statement that just can't be introspected) only discards its own throwaway
+/// connection's aborted implicit transaction, and `fetch_many` goes on to
+/// hit the real error itself, on a still-healthy transaction.
+async fn describe_result_columns(pool: &sqlx::PgPool, sql: &str) -> Option<Vec<String>> {
+    sqlx::Executor::describe(pool, sql)
+        .await
+        .ok()
+        .filter(|d| !d.columns().is_empty())
+        .map(|d| d.columns().iter().map(|c| c.name().to_string()).collect())
+}
+
 /// The one place this codebase distinguishes "0 rows returned" from "N rows
 /// affected" for an arbitrary single statement. Plain `fetch_all` can't make
 /// this distinction — it silently discards the completion tag whenever any
@@ -27,20 +49,14 @@ pub struct QueryPreview {
 ///
 /// `fetch_many` alone can't tell a zero-row SELECT apart from a zero-row
 /// UPDATE either: both surface only a `Left(PgQueryResult)` with no `Right`
-/// rows. So before executing, `describe()` the statement — Postgres reports
-/// its output column list from the parsed statement alone (SELECT and
-/// RETURNING have one; a bare UPDATE/INSERT/DELETE doesn't), which tells us
-/// the statement's shape regardless of how many rows it ends up matching.
+/// rows. `described_columns` (from `describe_result_columns`, run ahead of
+/// this call) is what tells the two apart — it reflects the statement's
+/// shape regardless of how many rows it ends up matching.
 async fn execute_with_honest_result(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     sql: &str,
+    described_columns: Option<Vec<String>>,
 ) -> Result<(Vec<String>, Vec<Vec<Option<String>>>, Option<u64>), String> {
-    let described_columns: Option<Vec<String>> = sqlx::Executor::describe(&mut **tx, sql)
-        .await
-        .ok()
-        .filter(|d| !d.columns().is_empty())
-        .map(|d| d.columns().iter().map(|c| c.name().to_string()).collect());
-
     let mut rows: Vec<sqlx::postgres::PgRow> = Vec::new();
     let mut rows_affected: u64 = 0;
     {
@@ -78,8 +94,9 @@ pub async fn preview_query_impl(
     now_ms: i64,
 ) -> Result<QueryPreview, String> {
     let pool = registry.pool_for(connection_id, db, secrets).await?;
+    let described_columns = describe_result_columns(&pool, sql).await;
     let mut tx = pool.begin().await.map_err(|e| format!("failed to open a transaction: {e}"))?;
-    let (columns, rows, rows_affected) = execute_with_honest_result(&mut tx, sql).await?;
+    let (columns, rows, rows_affected) = execute_with_honest_result(&mut tx, sql, described_columns).await?;
     let preview_id = previews.hold(tx, now_ms, PREVIEW_TIMEOUT_MS);
     Ok(QueryPreview { preview_id, columns, rows, rows_affected })
 }
@@ -291,6 +308,55 @@ mod tests {
 
         rollback_preview_impl(&previews, &preview.preview_id).await.unwrap();
         sqlx::query("DROP TABLE zero_row_update_test").execute(&raw).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_zero_row_update_returning_still_reports_none_affected() {
+        let raw = raw_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS returning_zero_row_test").execute(&raw).await.unwrap();
+        sqlx::query("CREATE TABLE returning_zero_row_test (id serial PRIMARY KEY, status text)").execute(&raw).await.unwrap();
+
+        let (_dir, sqlite) = db().await;
+        let secrets = InMemorySecretStore::default();
+        let created = create_connection_impl(&sqlite.pool, &secrets, local_dev_input()).await.unwrap();
+        let registry = ConnectionRegistry::new();
+        let previews = PendingPreviewRegistry::new();
+
+        let preview = preview_query_impl(
+            &registry, &previews, &sqlite.pool, &secrets, &created.id,
+            "UPDATE returning_zero_row_test SET status = 'shipped' WHERE id = 999 RETURNING id, status", 0,
+        ).await.unwrap();
+
+        assert_eq!(preview.columns, vec!["id", "status"], "RETURNING's column list is real even with zero matches");
+        assert_eq!(preview.rows, Vec::<Vec<Option<String>>>::new());
+        assert_eq!(preview.rows_affected, None, "RETURNING makes this read-shaped, same as a bare SELECT matching nothing");
+
+        rollback_preview_impl(&previews, &preview.preview_id).await.unwrap();
+        sqlx::query("DROP TABLE returning_zero_row_test").execute(&raw).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_invalid_query_surfaces_the_real_postgres_error_not_a_poisoned_transaction_message() {
+        let (_dir, sqlite) = db().await;
+        let secrets = InMemorySecretStore::default();
+        let created = create_connection_impl(&sqlite.pool, &secrets, local_dev_input()).await.unwrap();
+        let registry = ConnectionRegistry::new();
+        let previews = PendingPreviewRegistry::new();
+
+        let result = preview_query_impl(
+            &registry, &previews, &sqlite.pool, &secrets, &created.id,
+            "SELECT nonexistent_column_xyz FROM pg_catalog.pg_type", 0,
+        ).await;
+
+        let err = result.expect_err("invalid SQL must be an error, not a silently-empty result");
+        assert!(
+            err.contains("nonexistent_column_xyz") || err.contains("does not exist"),
+            "error must be Postgres's real complaint about the bad column, not a generic aborted-transaction message: {err}"
+        );
+        assert!(
+            !err.contains("current transaction is aborted"),
+            "describe()'s Parse failure must not poison the transaction fetch_many runs against: {err}"
+        );
     }
 
     #[tokio::test]
