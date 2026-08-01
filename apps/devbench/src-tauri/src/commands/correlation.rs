@@ -7,7 +7,7 @@ use tauri::State;
 
 use super::db::{connection_string, validate_identifier, DbConnectInput};
 use super::history::{save_history_entry_impl, HistoryEntryInput};
-use super::request::{fire_request_impl, FireRequestInput, FireRequestOutput};
+use super::request::{fire_request_impl, FireRequestInput, FireRequestOutput, HeaderPair};
 use crate::local_db::LocalDb;
 
 #[derive(Debug, Clone)]
@@ -188,6 +188,8 @@ async fn save_correlation_history(
     pool: &sqlx::SqlitePool,
     method: &str,
     url: &str,
+    request_headers: &[HeaderPair],
+    request_body: Option<&str>,
     response: &FireRequestOutput,
     session_id: Option<&str>,
 ) {
@@ -198,9 +200,9 @@ async fn save_correlation_history(
         response_body: response.body.clone(),
         duration_ms: response.duration_ms,
         session_id: session_id.map(str::to_string),
-        request_headers: vec![],
-        request_body: None,
-        response_headers: vec![],
+        request_headers: request_headers.to_vec(),
+        request_body: request_body.map(str::to_string),
+        response_headers: response.headers.clone(),
     };
     if let Err(e) = save_history_entry_impl(pool, entry).await {
         eprintln!("failed to save request history entry after a successful correlated request: {e}");
@@ -344,6 +346,8 @@ pub async fn run_correlated_request(
 ) -> Result<CorrelationResult, String> {
     let method = request.method.clone();
     let url = request.url.clone();
+    let request_headers = request.headers.clone();
+    let request_body = request.body.clone();
     let window_ms = crate::commands::settings::get_settings_impl(&db.pool)
         .await
         .map(|s| s.correlation_window_ms)
@@ -359,7 +363,16 @@ pub async fn run_correlated_request(
         window_ms,
     )
     .await?;
-    save_correlation_history(&db.pool, &method, &url, &result.response, session_id.as_deref()).await;
+    save_correlation_history(
+        &db.pool,
+        &method,
+        &url,
+        &request_headers,
+        request_body.as_deref(),
+        &result.response,
+        session_id.as_deref(),
+    )
+    .await;
     Ok(result)
 }
 
@@ -638,6 +651,8 @@ mod tests {
             &db.pool,
             "POST",
             "/orders",
+            &[],
+            None,
             &FireRequestOutput { status_code: 201, headers: vec![], body: "{\"id\":1}".to_string(), duration_ms: 42 },
             None,
         )
@@ -674,7 +689,7 @@ mod tests {
         let method = request.method.clone();
 
         let result = run_correlated_request_impl(request, conn, vec![], &crate::log_state::LogState::new()).await.unwrap();
-        save_correlation_history(&db.pool, &method, &url, &result.response, None).await;
+        save_correlation_history(&db.pool, &method, &url, &[], None, &result.response, None).await;
 
         mock.assert_async().await;
 
@@ -684,6 +699,58 @@ mod tests {
         assert_eq!(entries[0].url, url);
         assert_eq!(entries[0].status_code, 200);
         assert_eq!(entries[0].response_body, "pong");
+    }
+
+    #[tokio::test]
+    async fn a_correlated_request_persists_its_headers_and_body_in_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        let conn = test_connection();
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/orders")
+            .with_status(201)
+            .with_header("x-request-id", "req_1")
+            .with_body("{\"id\":1}")
+            .create_async()
+            .await;
+
+        let url = format!("{}/orders", server.url());
+        let request = FireRequestInput {
+            method: "POST".to_string(),
+            url: url.clone(),
+            headers: vec![HeaderPair { key: "Content-Type".to_string(), value: "application/json".to_string() }],
+            body: Some("{\"sku\":\"WIDGET-1\"}".to_string()),
+        };
+        let method = request.method.clone();
+        let request_headers = request.headers.clone();
+        let request_body = request.body.clone();
+
+        let result = run_correlated_request_impl(request, conn, vec![], &crate::log_state::LogState::new())
+            .await
+            .unwrap();
+        save_correlation_history(
+            &db.pool,
+            &method,
+            &url,
+            &request_headers,
+            request_body.as_deref(),
+            &result.response,
+            None,
+        )
+        .await;
+
+        mock.assert_async().await;
+
+        let entries = crate::commands::history::list_history_impl(&db.pool, None).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].request_headers,
+            vec![HeaderPair { key: "Content-Type".to_string(), value: "application/json".to_string() }]
+        );
+        assert_eq!(entries[0].request_body.as_deref(), Some("{\"sku\":\"WIDGET-1\"}"));
+        assert!(entries[0].response_headers.iter().any(|h| h.key.eq_ignore_ascii_case("x-request-id")));
     }
 
     #[tokio::test]
@@ -698,6 +765,8 @@ mod tests {
             &db.pool,
             "POST",
             "/orders",
+            &[],
+            None,
             &FireRequestOutput { status_code: 201, headers: vec![], body: "{}".to_string(), duration_ms: 42 },
             Some(&session.id),
         )
@@ -722,6 +791,8 @@ mod tests {
             &db.pool,
             "GET",
             "/ping",
+            &[],
+            None,
             &FireRequestOutput { status_code: 200, headers: vec![], body: "pong".to_string(), duration_ms: 3 },
             None,
         )
