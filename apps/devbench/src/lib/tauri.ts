@@ -1,5 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export interface DbInitError {
+  db_path: string;
+  error: string;
+}
+
+export interface StartupStatus {
+  db_error: DbInitError | null;
+}
+
+export function invokeGetStartupStatus(): Promise<StartupStatus> {
+  return invoke("get_startup_status");
+}
+
 export interface FireRequestInput {
   method: string;
   url: string;

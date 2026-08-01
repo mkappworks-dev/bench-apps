@@ -5,6 +5,7 @@ use devbench::email_state::{EmailState, SmtpStatus, DEFAULT_SMTP_PORT};
 use devbench::local_db::LocalDb;
 use devbench::log_state::LogState;
 use devbench::smtp_catcher;
+use devbench::startup_state::{format_db_init_error, DbInitError, StartupStatus};
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -39,18 +40,35 @@ fn main() {
                 .path()
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
-            let (db, smtp_port) = tauri::async_runtime::block_on(async move {
-                let db = LocalDb::connect(data_dir)
-                    .await
-                    .expect("failed to initialize local database");
+            let db_path = data_dir.join("devbench.db");
+            let init_result: Result<(LocalDb, u16), String> = tauri::async_runtime::block_on(async move {
+                let db = LocalDb::connect(data_dir).await?;
                 let port = devbench::commands::settings::get_settings_impl(&db.pool)
                     .await
                     .map(|s| s.smtp_port)
                     .unwrap_or(DEFAULT_SMTP_PORT);
-                (db, port)
+                Ok((db, port))
             });
-            let smtp_pool = db.pool.clone();
-            handle.manage(db);
+
+            // On success this is what the SMTP catcher binds below; on
+            // failure there's no pool to persist captured mail into, so the
+            // catcher never starts and the frontend shows a blocking error
+            // screen instead (via `StartupStatus`, always managed either way).
+            let smtp_target = match init_result {
+                Ok((db, smtp_port)) => {
+                    let smtp_pool = db.pool.clone();
+                    handle.manage(db);
+                    handle.manage(StartupStatus { db_error: None });
+                    Some((smtp_pool, smtp_port))
+                }
+                Err(error) => {
+                    eprintln!("{}", format_db_init_error(&db_path.display().to_string(), &error));
+                    handle.manage(StartupStatus {
+                        db_error: Some(DbInitError { db_path: db_path.display().to_string(), error }),
+                    });
+                    None
+                }
+            };
 
             let logs = Arc::new(LogState::new());
             app.manage(Arc::clone(&logs));
@@ -71,39 +89,41 @@ fn main() {
             app.manage(Arc::new(devbench::correlation_state::CorrelationRegistry::new()));
 
             let emails = Arc::new(EmailState::new());
-            // Bind BEFORE spawning: `serve()` blocks forever and can only
-            // report a bind failure by returning, so a port conflict would
-            // otherwise be invisible. Binding here turns it into a status the
-            // Email tab can show — and deliberately does NOT abort startup,
-            // because an app that refuses to launch cannot offer the "change
-            // the port in Settings" shortcut the spec asks for.
-            match smtp_catcher::bind(smtp_port) {
-                Ok(listener) => {
-                    emails.set_status(SmtpStatus {
-                        listening: true,
-                        port: smtp_port,
-                        error: None,
-                    });
-                    let emails_for_thread = Arc::clone(&emails);
-                    // A dedicated OS thread, not a tokio task: mailin-embedded
-                    // is blocking and runs its own scoped threadpool.
-                    std::thread::spawn(move || {
-                        if let Err(e) = smtp_catcher::serve(listener, smtp_pool) {
-                            emails_for_thread.set_status(SmtpStatus {
-                                listening: false,
-                                port: smtp_port,
-                                error: Some(e),
-                            });
-                        }
-                    });
-                }
-                Err(e) => {
-                    eprintln!("SMTP catcher did not start: {e}");
-                    emails.set_status(SmtpStatus {
-                        listening: false,
-                        port: smtp_port,
-                        error: Some(e),
-                    });
+            if let Some((smtp_pool, smtp_port)) = smtp_target {
+                // Bind BEFORE spawning: `serve()` blocks forever and can only
+                // report a bind failure by returning, so a port conflict would
+                // otherwise be invisible. Binding here turns it into a status the
+                // Email tab can show — and deliberately does NOT abort startup,
+                // because an app that refuses to launch cannot offer the "change
+                // the port in Settings" shortcut the spec asks for.
+                match smtp_catcher::bind(smtp_port) {
+                    Ok(listener) => {
+                        emails.set_status(SmtpStatus {
+                            listening: true,
+                            port: smtp_port,
+                            error: None,
+                        });
+                        let emails_for_thread = Arc::clone(&emails);
+                        // A dedicated OS thread, not a tokio task: mailin-embedded
+                        // is blocking and runs its own scoped threadpool.
+                        std::thread::spawn(move || {
+                            if let Err(e) = smtp_catcher::serve(listener, smtp_pool) {
+                                emails_for_thread.set_status(SmtpStatus {
+                                    listening: false,
+                                    port: smtp_port,
+                                    error: Some(e),
+                                });
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("SMTP catcher did not start: {e}");
+                        emails.set_status(SmtpStatus {
+                            listening: false,
+                            port: smtp_port,
+                            error: Some(e),
+                        });
+                    }
                 }
             }
             app.manage(emails);
@@ -113,6 +133,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::startup::get_startup_status,
             commands::db::db_connect_and_list_tables,
             commands::db::list_table_rows,
             commands::request::fire_request,

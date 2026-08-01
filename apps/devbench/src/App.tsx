@@ -6,7 +6,14 @@ import { SessionsSidebar } from "./components/shell/SessionsSidebar";
 import { ChatDock } from "./components/shell/ChatDock";
 import { SettingsScreen } from "./components/settings/SettingsScreen";
 import { SplitContent } from "./components/shell/SplitContent";
-import { invokeGetSettings, invokeListWatchedTables, type DbConnectInput } from "./lib/tauri";
+import { StartupErrorScreen } from "./components/shell/StartupErrorScreen";
+import {
+  invokeGetSettings,
+  invokeGetStartupStatus,
+  invokeListWatchedTables,
+  type DbConnectInput,
+  type DbInitError,
+} from "./lib/tauri";
 import { useTabController } from "./store/useTabController";
 
 export { TABS };
@@ -40,12 +47,23 @@ export default function App() {
 
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
 
+  const [dbError, setDbError] = useState<DbInitError | null>(null);
+
   function onAddTab(pane: Pane, kind: ToolKind) {
     tabController.addTab(kind, pane);
   }
   function onToggleSplit(): boolean {
     return tabController.splitActiveTab();
   }
+
+  // Fire-and-forget, checked once on mount: the normal (no `db_error`) case
+  // never touches this state after the initial render, so a healthy startup
+  // renders the workspace immediately with no wait and no flash.
+  useEffect(() => {
+    invokeGetStartupStatus()
+      .then((status) => setDbError(status.db_error))
+      .catch(() => {});
+  }, []);
 
   // Restore the persisted theme at launch — otherwise it stays invisible
   // until the user happens to open Settings > Appearance. A failed read
@@ -78,6 +96,10 @@ export default function App() {
     if (theme === "system") root.removeAttribute("data-theme");
     else root.setAttribute("data-theme", theme);
   }, [theme]);
+
+  if (dbError) {
+    return <StartupErrorScreen error={dbError} />;
+  }
 
   if (route === "settings") {
     return (
