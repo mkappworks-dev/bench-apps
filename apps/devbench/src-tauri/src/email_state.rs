@@ -24,6 +24,10 @@ pub struct CapturedEmail {
     pub size_bytes: usize,
     /// `None` unless a correlated request's window observed this email.
     pub request_id: Option<String>,
+    /// Populated by a `LEFT JOIN request_history` in `get_captured_email` —
+    /// `None` whenever `request_id` is `None`.
+    pub request_method: Option<String>,
+    pub request_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -197,8 +201,11 @@ pub async fn list_captured_emails(
 
 pub async fn get_captured_email(pool: &SqlitePool, id: u64) -> Result<Option<CapturedEmail>, String> {
     let row = sqlx::query(
-        "SELECT id, captured_at, from_addr, to_addrs, subject, html_body, text_body, raw, size_bytes, request_id \
-         FROM captured_emails WHERE id = ?",
+        "SELECT ce.id, ce.captured_at, ce.from_addr, ce.to_addrs, ce.subject, ce.html_body, ce.text_body, \
+                ce.raw, ce.size_bytes, ce.request_id, rh.method AS request_method, rh.url AS request_url \
+         FROM captured_emails ce \
+         LEFT JOIN request_history rh ON rh.id = ce.request_id \
+         WHERE ce.id = ?",
     )
     .bind(id as i64)
     .fetch_optional(pool)
@@ -216,6 +223,8 @@ pub async fn get_captured_email(pool: &SqlitePool, id: u64) -> Result<Option<Cap
         raw: r.get("raw"),
         size_bytes: r.get::<i64, _>("size_bytes") as usize,
         request_id: r.get("request_id"),
+        request_method: r.get("request_method"),
+        request_url: r.get("request_url"),
     }))
 }
 
@@ -402,6 +411,51 @@ mod tests {
         insert_captured_email(&db.pool, "a@x.test", &["b@y.test".into()], SIMPLE, 1_000).await.unwrap();
         let id = list_captured_emails(&db.pool, None, 10).await.unwrap().emails[0].id;
         assert_eq!(get_captured_email(&db.pool, id).await.unwrap().unwrap().request_id, None);
+    }
+
+    #[tokio::test]
+    async fn a_captured_email_linked_to_a_request_carries_its_method_and_url() {
+        use crate::commands::history::{save_history_entry_impl, HistoryEntryInput};
+
+        let (_dir, db) = db().await;
+        let history_id = save_history_entry_impl(
+            &db.pool,
+            HistoryEntryInput {
+                method: "POST".to_string(),
+                url: "/api/checkout".to_string(),
+                status_code: 201,
+                response_body: "{}".to_string(),
+                duration_ms: 12,
+                session_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        insert_captured_email(&db.pool, "a@x.test", &["b@y.test".into()], SIMPLE, 1_000).await.unwrap();
+        let id = list_captured_emails(&db.pool, None, 10).await.unwrap().emails[0].id;
+        sqlx::query("UPDATE captured_emails SET request_id = ? WHERE id = ?")
+            .bind(&history_id)
+            .bind(id as i64)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let full = get_captured_email(&db.pool, id).await.unwrap().unwrap();
+        assert_eq!(full.request_id.as_deref(), Some(history_id.as_str()));
+        assert_eq!(full.request_method.as_deref(), Some("POST"));
+        assert_eq!(full.request_url.as_deref(), Some("/api/checkout"));
+    }
+
+    #[tokio::test]
+    async fn an_unlinked_captured_email_has_no_request_method_or_url() {
+        let (_dir, db) = db().await;
+        insert_captured_email(&db.pool, "a@x.test", &["b@y.test".into()], SIMPLE, 1_000).await.unwrap();
+        let id = list_captured_emails(&db.pool, None, 10).await.unwrap().emails[0].id;
+
+        let full = get_captured_email(&db.pool, id).await.unwrap().unwrap();
+        assert_eq!(full.request_method, None);
+        assert_eq!(full.request_url, None);
     }
 
     #[tokio::test]
