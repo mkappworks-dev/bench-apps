@@ -127,8 +127,8 @@ describe("SplitContent", () => {
 
     await waitFor(() => expect(screen.getByText("orders")).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText("payments")).toBeInTheDocument());
-    expect(listRows).toHaveBeenCalledWith(expect.anything(), "orders");
-    expect(listRows).toHaveBeenCalledWith(expect.anything(), "payments");
+    expect(listRows).toHaveBeenCalledWith(expect.anything(), "orders", expect.anything());
+    expect(listRows).toHaveBeenCalledWith(expect.anything(), "payments", expect.anything());
 
     // Switching which tab is active only flips the CSS class — DbTab's fetch
     // effect keys on its `table` prop, which does not change on an active-tab

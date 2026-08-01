@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SchemaTree } from "./SchemaTree";
 import { DataGrid } from "./DataGrid";
 import { invokeListTableRows, invokeListWatchedTables, invokeSetWatchedTable, type TableRows } from "../../lib/tauri";
 import { useAppStore } from "../../store/useAppStore";
+
+const PAGE_SIZE = 100;
 
 export function DbTab({
   watchedTables,
@@ -17,28 +19,89 @@ export function DbTab({
 }) {
   const activeConnectionId = useAppStore((s) => s.activeConnectionId);
   const setActiveConnectionId = useAppStore((s) => s.setActiveConnectionId);
-  const [tableRows, setTableRows] = useState<TableRows | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
 
-  async function fetchRows(t: string) {
-    if (!activeConnectionId) return;
+  const [tableRows, setTableRows] = useState<TableRows | null>(null);
+  const [hasNextPage, setHasNextPage] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [sortColumn, setSortColumn] = useState<string | null>(null);
+  const [sortDescending, setSortDescending] = useState(false);
+  const [page, setPage] = useState(0);
+
+  // Bumped on every fetch so a slow, superseded response (e.g. a sort click
+  // fired just before a faster one) can be told apart from the latest and
+  // discarded instead of clobbering it when it eventually resolves.
+  const requestIdRef = useRef(0);
+
+  async function fetchRows(t: string, connId: string, orderByColumn: string | null, orderByDesc: boolean, pageNum: number) {
+    const requestId = ++requestIdRef.current;
+    setLoading(true);
     setError(null);
     try {
-      setTableRows(await invokeListTableRows(activeConnectionId, t));
+      // The backend has no cheap COUNT(*); over-fetching by one row and
+      // trimming it is what lets hasNextPage be an honest fact instead of a
+      // guess from "this page happened to come back full."
+      const result = await invokeListTableRows(connId, t, {
+        orderByColumn,
+        orderByDesc,
+        limit: PAGE_SIZE + 1,
+        offset: pageNum * PAGE_SIZE,
+      });
+      if (requestId !== requestIdRef.current) return;
+      setTableRows({ ...result, rows: result.rows.slice(0, PAGE_SIZE) });
+      setHasNextPage(result.rows.length > PAGE_SIZE);
     } catch (err) {
+      if (requestId !== requestIdRef.current) return;
       setTableRows(null);
+      setHasNextPage(false);
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (requestId === requestIdRef.current) setLoading(false);
     }
   }
 
-  // Fires on mount if `table` arrives already set (a deep link creating this
-  // tab), again whenever the schema tree patches it, and again if the active
-  // connection changes underneath an already-selected table.
+  // A new table may not even have the old one's sort column, and its rows
+  // start over at offset 0 — same reasoning one level up for a connection
+  // switch underneath an already-open table.
   useEffect(() => {
-    if (table) void fetchRows(table);
+    setSortColumn(null);
+    setSortDescending(false);
+    setPage(0);
+    if (table && activeConnectionId) {
+      void fetchRows(table, activeConnectionId, null, false, 0);
+    } else {
+      requestIdRef.current++;
+      setTableRows(null);
+      setHasNextPage(false);
+      setError(null);
+      setLoading(false);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [table, activeConnectionId]);
+
+  function handleSort(column: string) {
+    if (!table || !activeConnectionId) return;
+    const descending = sortColumn === column ? !sortDescending : false;
+    setSortColumn(column);
+    setSortDescending(descending);
+    setPage(0);
+    void fetchRows(table, activeConnectionId, column, descending, 0);
+  }
+
+  function handlePrevPage() {
+    if (!table || !activeConnectionId) return;
+    const nextPage = Math.max(0, page - 1);
+    setPage(nextPage);
+    void fetchRows(table, activeConnectionId, sortColumn, sortDescending, nextPage);
+  }
+
+  function handleNextPage() {
+    if (!table || !activeConnectionId) return;
+    const nextPage = page + 1;
+    setPage(nextPage);
+    void fetchRows(table, activeConnectionId, sortColumn, sortDescending, nextPage);
+  }
 
   // Watch state is scoped per connection, not just per app. Re-hydrating
   // whenever activeConnectionId changes keeps it in sync with the picker.
@@ -77,7 +140,21 @@ export function DbTab({
         ) : error ? (
           <div className="rounded-lg border border-border bg-danger-bg p-3 text-sm text-danger">{error}</div>
         ) : tableRows ? (
-          <DataGrid columns={tableRows.columns} rows={tableRows.rows} />
+          <div className={loading ? "opacity-60 transition-opacity duration-200" : undefined}>
+            <DataGrid
+              columns={tableRows.columns}
+              rows={tableRows.rows}
+              sortColumn={sortColumn}
+              sortDescending={sortDescending}
+              onSort={handleSort}
+              hasPrevPage={page > 0}
+              hasNextPage={hasNextPage}
+              onPrevPage={handlePrevPage}
+              onNextPage={handleNextPage}
+            />
+          </div>
+        ) : loading ? (
+          <div className="text-sm text-text-faint">Loading…</div>
         ) : null}
       </div>
     </div>
