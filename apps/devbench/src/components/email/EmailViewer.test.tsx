@@ -102,4 +102,13 @@ describe("EmailViewer — Sent by link", () => {
     render(<EmailViewer email={unlinked} />);
     expect(screen.queryByText(/Sent by/)).not.toBeInTheDocument();
   });
+
+  // getByText only concatenates a node's direct text-node children, so it can't
+  // see whitespace dropped between the <b> and <span> siblings — check the full
+  // textContent instead, which is what a screen reader's accessible name reflects.
+  it("keeps a space between the request and the arrow in the chip text", () => {
+    render(<EmailViewer email={linkedEmail} />);
+    const chip = screen.getByRole("button", { name: /Sent by/ });
+    expect(chip.textContent).toBe("Sent by POST /api/checkout → view in History");
+  });
 });

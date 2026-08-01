@@ -44,7 +44,7 @@ export function EmailViewer({
             Sent by{" "}
             <b className="font-mono font-semibold text-text">
               {email.request_method} {email.request_url}
-            </b>
+            </b>{" "}
             <span className="text-text-faint">→ view in History</span>
           </button>
         ) : null}
