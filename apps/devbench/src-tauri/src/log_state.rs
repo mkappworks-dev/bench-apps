@@ -214,6 +214,10 @@ pub struct SourceTailer {
     offset: u64,
     pending: String,
     started: bool,
+    // Set once a single physical line has already exceeded MAX_LINE_BYTES and
+    // been flushed as a truncated line. While set, further bytes belonging to
+    // that same still-unterminated line are discarded rather than re-emitted
+    // as a second, unrelated line once its real newline eventually arrives.
     skipping_overlong_line: bool,
 }
 
@@ -286,10 +290,16 @@ impl SourceTailer {
             budget -= read as u64;
             self.offset += read as u64;
 
+            // Lossy conversion: a log file can contain a partial multi-byte
+            // sequence at a chunk boundary or genuinely invalid bytes. Dropping
+            // the whole chunk would be silent data loss; a replacement
+            // character is the honest rendering.
             self.pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
 
             loop {
                 if self.skipping_overlong_line {
+                    // Already emitted one truncated line for this physical
+                    // line; discard the rest of it until its real newline.
                     match self.pending.find('\n') {
                         Some(newline) => {
                             self.pending.drain(..=newline);
@@ -314,6 +324,10 @@ impl SourceTailer {
                 }
             }
 
+            // A single line longer than the cap will otherwise grow `pending`
+            // without bound while we wait for a newline that may never come.
+            // Flush it once as a truncated line, then discard the remainder
+            // of this same physical line instead of re-buffering it piecemeal.
             if !self.skipping_overlong_line && self.pending.len() > MAX_LINE_BYTES {
                 let flushed = std::mem::take(&mut self.pending);
                 let prepared = prepare_line(&flushed);
@@ -868,13 +882,20 @@ mod tests {
         state.poll_all(1_000);
 
         use std::io::Write as _;
-        let mut fa = std::fs::OpenOptions::new().append(true).open(&path_a).unwrap();
-        writeln!(fa, "from a").unwrap();
-        fa.flush().unwrap();
+        // B (added second, so later in `sources`) gets the lower id here and A
+        // (added first) gets the higher one — the opposite of vector order. A
+        // naive per-source concatenation without `read_since`'s sort by id
+        // would then yield A's higher-id line before B's lower-id one, so this
+        // only passes if the sort actually runs.
         let mut fb = std::fs::OpenOptions::new().append(true).open(&path_b).unwrap();
         writeln!(fb, "from b").unwrap();
         fb.flush().unwrap();
         state.poll_all(2_000);
+
+        let mut fa = std::fs::OpenOptions::new().append(true).open(&path_a).unwrap();
+        writeln!(fa, "from a").unwrap();
+        fa.flush().unwrap();
+        state.poll_all(3_000);
 
         let merged = state.read_since(0, None, 100);
         assert_eq!(merged.lines.len(), 2);
