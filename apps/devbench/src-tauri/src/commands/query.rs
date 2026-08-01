@@ -21,25 +21,36 @@ pub struct QueryPreview {
 }
 
 /// Whether `sql` has an output column list (a SELECT, or anything with
-/// RETURNING) and, if so, what it is. Runs on a throwaway connection
-/// borrowed from `pool`, never on the transaction the statement will
-/// actually execute in: `describe()`'s Parse step raises a genuine Postgres
-/// error for semantically invalid SQL (bad column/table/type), and that
-/// error aborts whatever transaction it runs in. If it ran on the preview's
-/// transaction, the real error would be lost — the follow-up `fetch_many()`
-/// on an already-aborted transaction reports only "current transaction is
-/// aborted, commands ignored until end of transaction block", masking the
-/// actual problem the user needs to see. A separate connection means a
-/// `describe()` failure here (for either reason — invalid SQL or a
-/// statement that just can't be introspected) only discards its own throwaway
-/// connection's aborted implicit transaction, and `fetch_many` goes on to
-/// hit the real error itself, on a still-healthy transaction.
-async fn describe_result_columns(pool: &sqlx::PgPool, sql: &str) -> Option<Vec<String>> {
-    sqlx::Executor::describe(pool, sql)
-        .await
-        .ok()
-        .filter(|d| !d.columns().is_empty())
-        .map(|d| d.columns().iter().map(|c| c.name().to_string()).collect())
+/// RETURNING) and, if so, what it is. Runs `describe()` on `tx` — the same
+/// connection the statement will actually execute on, wrapped in a
+/// SAVEPOINT — rather than either of the two approaches that came before:
+///
+///   - describing on `tx` directly (no savepoint) let a Parse failure on
+///     invalid SQL abort the whole transaction, so the follow-up execution
+///     saw only "current transaction is aborted" instead of the real error;
+///   - describing on a separate pooled connection avoided that, but meant
+///     `describe()` and the real execution could land on two different
+///     physical backends. Temp tables, `SET`/search_path, and other
+///     connection-scoped state can differ between them — reproduced
+///     empirically as a valid zero-row SELECT against a temp table getting
+///     misreported as a zero-row *write* when `describe()` drew a
+///     connection that had never seen the temp table.
+///
+/// A SAVEPOINT gets both properties at once: `describe()` runs on the exact
+/// connection/session the statement will execute in (so temp tables etc.
+/// are always visible to both), and a Parse failure only aborts the
+/// savepoint — `ROLLBACK TO SAVEPOINT` recovers `tx` to just before it, so
+/// the subsequent real execution still runs cleanly and surfaces Postgres's
+/// actual error for genuinely invalid SQL.
+async fn describe_result_columns(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, sql: &str) -> Option<Vec<String>> {
+    if sqlx::query("SAVEPOINT devbench_describe").execute(&mut **tx).await.is_err() {
+        return None;
+    }
+    let described = sqlx::Executor::describe(&mut **tx, sql).await.ok();
+    let recovery_sql =
+        if described.is_some() { "RELEASE SAVEPOINT devbench_describe" } else { "ROLLBACK TO SAVEPOINT devbench_describe" };
+    let _ = sqlx::query(recovery_sql).execute(&mut **tx).await;
+    described.filter(|d| !d.columns().is_empty()).map(|d| d.columns().iter().map(|c| c.name().to_string()).collect())
 }
 
 /// The one place this codebase distinguishes "0 rows returned" from "N rows
@@ -49,14 +60,15 @@ async fn describe_result_columns(pool: &sqlx::PgPool, sql: &str) -> Option<Vec<S
 ///
 /// `fetch_many` alone can't tell a zero-row SELECT apart from a zero-row
 /// UPDATE either: both surface only a `Left(PgQueryResult)` with no `Right`
-/// rows. `described_columns` (from `describe_result_columns`, run ahead of
-/// this call) is what tells the two apart — it reflects the statement's
-/// shape regardless of how many rows it ends up matching.
+/// rows. `describe_result_columns` is what tells the two apart — it
+/// reflects the statement's shape regardless of how many rows it ends up
+/// matching.
 async fn execute_with_honest_result(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     sql: &str,
-    described_columns: Option<Vec<String>>,
 ) -> Result<(Vec<String>, Vec<Vec<Option<String>>>, Option<u64>), String> {
+    let described_columns = describe_result_columns(tx, sql).await;
+
     let mut rows: Vec<sqlx::postgres::PgRow> = Vec::new();
     let mut rows_affected: u64 = 0;
     {
@@ -94,9 +106,8 @@ pub async fn preview_query_impl(
     now_ms: i64,
 ) -> Result<QueryPreview, String> {
     let pool = registry.pool_for(connection_id, db, secrets).await?;
-    let described_columns = describe_result_columns(&pool, sql).await;
     let mut tx = pool.begin().await.map_err(|e| format!("failed to open a transaction: {e}"))?;
-    let (columns, rows, rows_affected) = execute_with_honest_result(&mut tx, sql, described_columns).await?;
+    let (columns, rows, rows_affected) = execute_with_honest_result(&mut tx, sql).await?;
     let preview_id = previews.hold(tx, now_ms, PREVIEW_TIMEOUT_MS);
     Ok(QueryPreview { preview_id, columns, rows, rows_affected })
 }
@@ -357,6 +368,31 @@ mod tests {
             !err.contains("current transaction is aborted"),
             "describe()'s Parse failure must not poison the transaction fetch_many runs against: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_zero_row_select_against_a_temp_table_stays_a_read_on_the_same_connection() {
+        // Regression test for the round-2 finding: describe() must run on
+        // the exact same connection/session as the real execution, or a
+        // temp table visible to one but not the other can misclassify a
+        // valid zero-row SELECT as a zero-row write. Calls
+        // execute_with_honest_result directly (not preview_query_impl,
+        // which would acquire its own connection from a pool and can't
+        // guarantee it's the same one) so the temp table and the SELECT are
+        // certain to share one transaction — the same connection the
+        // SAVEPOINT-wrapped describe() and fetch_many both run on inside it.
+        let raw = raw_pool().await;
+        let mut tx = raw.begin().await.unwrap();
+        sqlx::query("CREATE TEMP TABLE scratch_temp (id int, status text)").execute(&mut *tx).await.unwrap();
+
+        let (columns, rows, rows_affected) =
+            execute_with_honest_result(&mut tx, "SELECT id, status FROM scratch_temp WHERE id = 999999").await.unwrap();
+
+        assert_eq!(columns, vec!["id", "status"], "describe() must see the temp table created earlier in this same transaction");
+        assert_eq!(rows, Vec::<Vec<Option<String>>>::new());
+        assert_eq!(rows_affected, None, "a zero-row SELECT against a temp table must not be misreported as a zero-row write");
+
+        tx.rollback().await.unwrap();
     }
 
     #[tokio::test]
