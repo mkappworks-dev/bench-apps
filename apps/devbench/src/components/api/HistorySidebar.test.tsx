@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { HistorySidebar } from "./HistorySidebar";
 import * as tauriLib from "../../lib/tauri";
@@ -213,5 +213,28 @@ describe("HistorySidebar", () => {
 
     await waitFor(() => expect(screen.getByText("/api/new-request")).toBeInTheDocument());
     expect(onSelect).toHaveBeenCalledTimes(1);
+    // Nothing on screen right now IS hist-1 (a live send is showing instead),
+    // so the refetch clearing the stale highlight is correct, not a loss.
+    expect(screen.getByRole("button", { name: /checkout/ })).toHaveAttribute("aria-current", "false");
+  });
+
+  // Reviewer finding: aria-current/highlight must track the actual selection,
+  // not stay pinned to whatever focusId originally pointed at — otherwise a
+  // manual click leaves the deep-linked row falsely marked "current".
+  it("moves the highlight to a manually-clicked row, off the deep-linked one", async () => {
+    vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([
+      entry({ id: "hist-1", url: "/api/checkout" }),
+      entry({ id: "hist-2", url: "/api/refunds" }),
+    ]);
+
+    render(<HistorySidebar onSelect={() => {}} focusId="hist-1" />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /checkout/ })).toHaveAttribute("aria-current", "true"),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /refunds/ }));
+
+    expect(screen.getByRole("button", { name: /refunds/ })).toHaveAttribute("aria-current", "true");
+    expect(screen.getByRole("button", { name: /checkout/ })).toHaveAttribute("aria-current", "false");
   });
 });

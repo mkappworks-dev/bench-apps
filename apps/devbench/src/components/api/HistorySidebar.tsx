@@ -17,11 +17,10 @@ export function HistorySidebar({
 }) {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [failed, setFailed] = useState(false);
-  // Tracks which focusId has already been acted on. Without this, firing a
-  // new request re-triggers this effect (entries gets a fresh array from the
-  // refetch) and would re-select the OLD linked entry over whatever the user
-  // is now looking at — the same class of bug the session guards elsewhere
-  // exist to prevent, just triggered by a refetch instead of a session switch.
+  // The actually-highlighted row: seeded from focusId once, then follows
+  // manual clicks — never re-read from focusId, which never clears.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Which focusId has already triggered onSelect — see the effect below.
   const consumedFocusId = useRef<string | null>(null);
 
   // `sessionId` is a dependency: switching sessions must refetch. `cancelled`
@@ -36,6 +35,7 @@ export function HistorySidebar({
     // genuine failure — this only clears a PREVIOUS failure's label.
     setEntries([]);
     setFailed(false);
+    setSelectedId(null);
 
     // Tracked separately from an empty list — collapsing them would render a
     // fetch failure as "No requests yet." (PRODUCT.md principle 4).
@@ -56,14 +56,17 @@ export function HistorySidebar({
     };
   }, [refreshKey, sessionId]);
 
-  // A focusId that arrives before the fetch resolves must not be silently
-  // dropped — depending on `entries` lets this retry once the fetch lands.
-  // The consumed-ref guard is what stops it from firing again afterward.
+  // onSelect is a fresh closure every render (ApiTab's handleHistorySelect
+  // isn't memoized), so without the ref guard this loops: onSelect ->
+  // ApiTab re-renders -> a new onSelect -> the effect fires again. The same
+  // guard also lets a focusId that arrives before the fetch resolves retry
+  // once `entries` updates, instead of being silently dropped.
   useEffect(() => {
     if (!focusId || consumedFocusId.current === focusId) return;
     const match = entries.find((e) => e.id === focusId);
     if (!match) return;
     consumedFocusId.current = focusId;
+    setSelectedId(match.id);
     onSelect(match);
   }, [focusId, entries, onSelect]);
 
@@ -85,10 +88,13 @@ export function HistorySidebar({
           entries.map((entry) => (
             <button
               key={entry.id}
-              onClick={() => onSelect(entry)}
-              aria-current={focusId === entry.id}
+              onClick={() => {
+                setSelectedId(entry.id);
+                onSelect(entry);
+              }}
+              aria-current={selectedId === entry.id}
               className={`flex flex-col gap-0.5 rounded-sm p-2 text-left hover:bg-surface-2 ${
-                focusId === entry.id ? "bg-surface-2" : ""
+                selectedId === entry.id ? "bg-surface-2" : ""
               }`}
             >
               <div className="flex items-center gap-1.5">
