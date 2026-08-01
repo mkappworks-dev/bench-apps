@@ -22,7 +22,6 @@ describe("App shell", () => {
     render(<App />);
     expect(screen.getByRole("complementary", { name: "Sessions" })).toBeInTheDocument();
     expect(screen.getByRole("complementary", { name: "AI Assistant" })).toBeInTheDocument();
-    // No tabs open yet — Task 5 covers the empty-state prompt this produces.
     expect(screen.queryAllByRole("tab")).toHaveLength(0);
   });
 

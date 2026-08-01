@@ -158,7 +158,7 @@ pub async fn run_correlated_request_impl(
         None => Err(Some("connection failed".to_string())),
     };
 
-    let _ = logs; // used from Task 6 onward
+    let _ = logs;
 
     let response = fire_request_impl(request).await?;
 
