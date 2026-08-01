@@ -1,18 +1,23 @@
 use devbench::commands::correlation::run_correlated_request_impl;
-use devbench::commands::db::{connection_string, DbConnectInput};
 use devbench::commands::request::FireRequestInput;
+use devbench::connection_registry::postgres_connection_string;
 use devbench::email_state::EmailState;
 use devbench::log_state::LogState;
 use sqlx::postgres::PgPoolOptions;
 
-fn test_connection() -> DbConnectInput {
-    DbConnectInput {
-        host: std::env::var("PGHOST").unwrap_or_else(|_| "localhost".into()),
-        port: 5432,
-        database: std::env::var("PGDATABASE").unwrap_or_else(|_| "devbench_test".into()),
-        username: std::env::var("PGUSER").unwrap_or_else(|_| "postgres".into()),
-        password: std::env::var("PGPASSWORD").unwrap_or_else(|_| "postgres".into()),
-    }
+fn test_connection_string() -> String {
+    let host = std::env::var("PGHOST").unwrap_or_else(|_| "localhost".into());
+    let database = std::env::var("PGDATABASE").unwrap_or_else(|_| "devbench_test".into());
+    let username = std::env::var("PGUSER").unwrap_or_else(|_| "postgres".into());
+    let password = std::env::var("PGPASSWORD").unwrap_or_else(|_| "postgres".into());
+    postgres_connection_string(&host, 5432, &database, &username, Some(&password), "disable")
+}
+
+async fn test_pool() -> sqlx::PgPool {
+    PgPoolOptions::new()
+        .connect(&test_connection_string())
+        .await
+        .expect("requires a real local Postgres — see CONTRIBUTING for setup")
 }
 
 // NOTE: this deliberately does NOT insert the "side effect" row before calling
@@ -30,11 +35,7 @@ fn test_connection() -> DbConnectInput {
 // after-snapshot — see comment below.
 #[tokio::test]
 async fn firing_a_request_against_a_seeded_postgres_produces_the_expected_rollup() {
-    let conn = test_connection();
-    let pool = PgPoolOptions::new()
-        .connect(&connection_string(&conn))
-        .await
-        .expect("requires a real local Postgres");
+    let pool = test_pool().await;
 
     sqlx::query("DROP TABLE IF EXISTS smoke_orders")
         .execute(&pool)
@@ -46,7 +47,7 @@ async fn firing_a_request_against_a_seeded_postgres_produces_the_expected_rollup
         .unwrap();
 
     let mut server = mockito::Server::new_async().await;
-    let insert_conn_str = connection_string(&conn);
+    let insert_conn_str = test_connection_string();
     let mock = server
         .mock("POST", "/orders")
         .with_status(201)
@@ -108,7 +109,7 @@ async fn firing_a_request_against_a_seeded_postgres_produces_the_expected_rollup
             url: format!("{}/orders", server.url()),
             body: None,
         },
-        conn,
+        Some(pool.clone()),
         vec!["smoke_orders".to_string()],
         &LogState::new(),
     )
@@ -135,14 +136,7 @@ use devbench::correlation_state::{CorrelationRegistry, DEFAULT_CORRELATION_WINDO
 
 #[tokio::test]
 async fn firing_a_request_correlates_both_db_writes_and_log_lines() {
-    let conn = test_connection();
-    let pool = PgPoolOptions::new()
-        .connect(&format!(
-            "postgres://{}:{}@{}:{}/{}",
-            conn.username, conn.password, conn.host, conn.port, conn.database
-        ))
-        .await
-        .expect("requires a real local Postgres");
+    let pool = test_pool().await;
 
     sqlx::query("DROP TABLE IF EXISTS smoke_log_orders").execute(&pool).await.unwrap();
     sqlx::query("CREATE TABLE smoke_log_orders (id serial PRIMARY KEY, status text)")
@@ -164,10 +158,7 @@ async fn firing_a_request_correlates_both_db_writes_and_log_lines() {
     // The mocked backend does both things a real one would during the request:
     // writes a row and writes a log line.
     let mut server = mockito::Server::new_async().await;
-    let insert_conn = format!(
-        "postgres://{}:{}@{}:{}/{}",
-        conn.username, conn.password, conn.host, conn.port, conn.database
-    );
+    let insert_conn = test_connection_string();
     let log_for_mock = log_path.clone();
     let mock = server
         .mock("POST", "/orders")
@@ -204,7 +195,7 @@ async fn firing_a_request_correlates_both_db_writes_and_log_lines() {
             url: format!("{}/orders", server.url()),
             body: None,
         },
-        conn,
+        Some(pool.clone()),
         vec!["smoke_log_orders".to_string()],
         &logs,
         &emails,
@@ -285,14 +276,7 @@ fn send_test_mail(port: u16, subject: &str) {
 
 #[tokio::test]
 async fn firing_a_request_correlates_db_writes_log_lines_and_sent_mail() {
-    let conn = test_connection();
-    let pool = PgPoolOptions::new()
-        .connect(&format!(
-            "postgres://{}:{}@{}:{}/{}",
-            conn.username, conn.password, conn.host, conn.port, conn.database
-        ))
-        .await
-        .expect("requires a real local Postgres");
+    let pool = test_pool().await;
 
     sqlx::query("DROP TABLE IF EXISTS smoke_full_orders").execute(&pool).await.unwrap();
     sqlx::query("CREATE TABLE smoke_full_orders (id serial PRIMARY KEY, status text)")
@@ -324,10 +308,7 @@ async fn firing_a_request_correlates_db_writes_log_lines_and_sent_mail() {
     // The mocked backend does all three things a real one would during the
     // request: writes a row, writes a log line, and sends mail.
     let mut server = mockito::Server::new_async().await;
-    let insert_conn = format!(
-        "postgres://{}:{}@{}:{}/{}",
-        conn.username, conn.password, conn.host, conn.port, conn.database
-    );
+    let insert_conn = test_connection_string();
     let log_for_mock = log_path.clone();
     let mock = server
         .mock("POST", "/orders")
@@ -373,7 +354,7 @@ async fn firing_a_request_correlates_db_writes_log_lines_and_sent_mail() {
             url: format!("{}/orders", server.url()),
             body: None,
         },
-        conn,
+        Some(pool.clone()),
         vec!["smoke_full_orders".to_string()],
         &logs,
         &emails,
