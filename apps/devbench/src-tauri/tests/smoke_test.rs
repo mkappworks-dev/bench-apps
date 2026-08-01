@@ -443,3 +443,170 @@ async fn firing_a_request_correlates_db_writes_log_lines_and_sent_mail() {
 
     sqlx::query("DROP TABLE smoke_full_orders").execute(&pool).await.unwrap();
 }
+
+use devbench::commands::history::{save_history_entry_impl, HistoryEntryInput};
+use devbench::commands::sessions::create_session_impl;
+use devbench::commands::settings::set_setting_impl;
+use devbench::email_state::{get_captured_email, list_captured_emails};
+
+async fn wait_for_captured_count(pool: &sqlx::SqlitePool, want: usize) {
+    for _ in 0..100 {
+        if list_captured_emails(pool, None, 10).await.unwrap().emails.len() >= want {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("timed out waiting for {want} captured email(s)");
+}
+
+// The rewrite's whole point was moving capture off the in-memory ring buffer
+// and onto disk; only a fresh `LocalDb::connect` against the same directory
+// proves that, as opposed to just re-reading the same live pool.
+#[tokio::test]
+async fn captured_mail_survives_dropping_and_reconnecting_the_local_db() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+
+    let listener = smtp_catcher::bind(0).unwrap();
+    let smtp_port = listener.local_addr().unwrap().port();
+    let catcher_pool = db.pool.clone();
+    std::thread::spawn(move || {
+        let _ = smtp_catcher::serve(listener, catcher_pool);
+    });
+
+    send_test_mail(smtp_port, "Receipt #4471");
+    wait_for_captured_count(&db.pool, 1).await;
+
+    let dir_path = dir.path().to_path_buf();
+    drop(db);
+
+    let reconnected = LocalDb::connect(dir_path).await.unwrap();
+    let after = list_captured_emails(&reconnected.pool, None, 10).await.unwrap();
+    assert_eq!(after.emails.len(), 1);
+    assert_eq!(after.emails[0].subject, "Receipt #4471");
+    assert_eq!(after.emails[0].from, "orders@shop.test");
+    assert_eq!(after.emails[0].to, vec!["customer@example.com".to_string()]);
+
+    let full = get_captured_email(&reconnected.pool, after.emails[0].id).await.unwrap().unwrap();
+    assert!(full.raw.contains("Receipt #4471"));
+}
+
+#[tokio::test]
+async fn mail_captured_through_the_real_catcher_is_scoped_to_the_active_session() {
+    let (_edb_dir, edb) = local_db().await;
+
+    let listener = smtp_catcher::bind(0).unwrap();
+    let smtp_port = listener.local_addr().unwrap().port();
+    let catcher_pool = edb.pool.clone();
+    std::thread::spawn(move || {
+        let _ = smtp_catcher::serve(listener, catcher_pool);
+    });
+
+    let session_a = create_session_impl(&edb.pool, "Order flow", None).await.unwrap();
+    let session_b = create_session_impl(&edb.pool, "Checkout", None).await.unwrap();
+
+    set_setting_impl(&edb.pool, "active_session_id", &session_a.id).await.unwrap();
+    send_test_mail(smtp_port, "Order flow receipt");
+    wait_for_captured_count(&edb.pool, 1).await;
+
+    set_setting_impl(&edb.pool, "active_session_id", &session_b.id).await.unwrap();
+    send_test_mail(smtp_port, "Checkout receipt");
+    wait_for_captured_count(&edb.pool, 2).await;
+
+    let in_a = list_captured_emails(&edb.pool, Some(&session_a.id), 10).await.unwrap();
+    assert_eq!(in_a.emails.len(), 1);
+    assert_eq!(in_a.emails[0].subject, "Order flow receipt");
+
+    let in_b = list_captured_emails(&edb.pool, Some(&session_b.id), 10).await.unwrap();
+    assert_eq!(in_b.emails.len(), 1);
+    assert_eq!(in_b.emails[0].subject, "Checkout receipt");
+}
+
+// `run_correlated_request_impl_with_registry` requires a `DbConnectInput`, but
+// with `watched_tables` empty it never touches `table_diffs`/`db_error` either
+// way, so unlike this file's other tests, this one does not actually need a
+// reachable Postgres to pass — `test_connection()` is used only for the type,
+// not for anything it connects to.
+#[tokio::test]
+async fn a_correlated_requests_captured_mail_is_linked_to_the_request_end_to_end() {
+    let conn = test_connection();
+    let emails = EmailState::new();
+    let (_edb_dir, edb) = local_db().await;
+    let listener = smtp_catcher::bind(0).unwrap();
+    let smtp_port = listener.local_addr().unwrap().port();
+    let catcher_pool = edb.pool.clone();
+    std::thread::spawn(move || {
+        let _ = smtp_catcher::serve(listener, catcher_pool);
+    });
+    emails.set_status(SmtpStatus { listening: true, port: smtp_port, error: None });
+
+    let registry = CorrelationRegistry::new();
+    let logs = LogState::new();
+
+    // `send_test_mail` is plain blocking `std::net` I/O, not tokio, so unlike
+    // the DB-writing mocks elsewhere in this file it can run directly inside
+    // mockito's callback with no OS-thread bridge needed.
+    let mut server = mockito::Server::new_async().await;
+    let mock = server
+        .mock("POST", "/checkout")
+        .with_status(201)
+        .with_body_from_request(move |_req| {
+            send_test_mail(smtp_port, "Checkout receipt #9001");
+            br#"{"id":9001}"#.to_vec()
+        })
+        .create_async()
+        .await;
+
+    let started_at_ms = chrono::Utc::now().timestamp_millis();
+    let result = run_correlated_request_impl_with_registry(
+        FireRequestInput { method: "POST".to_string(), url: format!("{}/checkout", server.url()), body: None },
+        conn,
+        vec![],
+        &logs,
+        &emails,
+        &edb.pool,
+        &registry,
+        started_at_ms,
+        DEFAULT_CORRELATION_WINDOW_MS,
+    )
+    .await
+    .expect("correlated request should succeed");
+    mock.assert_async().await;
+
+    let history_id = save_history_entry_impl(
+        &edb.pool,
+        HistoryEntryInput {
+            method: "POST".to_string(),
+            url: "/checkout".to_string(),
+            status_code: result.response.status_code,
+            response_body: result.response.body.clone(),
+            duration_ms: result.response.duration_ms,
+            session_id: None,
+        },
+    )
+    .await
+    .expect("history save should succeed");
+
+    wait_for_captured_count(&edb.pool, 1).await;
+
+    let window = collect_correlation_window_impl(
+        &registry,
+        &logs,
+        &emails,
+        &edb.pool,
+        result.correlation_id,
+        Some(history_id.as_str()),
+        chrono::Utc::now().timestamp_millis() + DEFAULT_CORRELATION_WINDOW_MS + 1,
+    )
+    .await
+    .unwrap();
+
+    let captured = window.emails.expect("the catcher is listening, so emails must be Some");
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].subject, "Checkout receipt #9001");
+
+    let linked = get_captured_email(&edb.pool, captured[0].id).await.unwrap().unwrap();
+    assert_eq!(linked.request_id.as_deref(), Some(history_id.as_str()));
+    assert_eq!(linked.request_method.as_deref(), Some("POST"));
+    assert_eq!(linked.request_url.as_deref(), Some("/checkout"));
+}
