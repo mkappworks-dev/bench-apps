@@ -1,8 +1,19 @@
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, beforeAll } from "vitest";
 import { SplitContent } from "./SplitContent";
 import { useAppStore } from "../../store/useAppStore";
 import * as tauriLib from "../../lib/tauri";
+
+// DbTab renders DataGrid, which virtualizes rows via TanStack Virtual. jsdom
+// gives every element a height of 0, which makes the virtualizer compute a
+// zero-row viewport (see LogStream.test.tsx for the same fix).
+beforeAll(() => {
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: 600 });
+  Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, value: 800 });
+  Element.prototype.getBoundingClientRect = function () {
+    return { width: 800, height: 600, top: 0, left: 0, bottom: 600, right: 800, x: 0, y: 0, toJSON: () => {} };
+  };
+});
 
 function renderSplit(overrides: Partial<Parameters<typeof SplitContent>[0]> = {}) {
   return render(
