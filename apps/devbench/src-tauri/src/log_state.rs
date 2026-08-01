@@ -90,10 +90,14 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
+use std::sync::Mutex;
+use uuid::Uuid;
 
-/// How many parsed lines are kept in memory across all sources. Old lines are
-/// evicted; `evicted_through_id` lets a caller detect that it lost some.
-pub const MAX_BUFFERED_LINES: usize = 5_000;
+/// How many parsed lines are kept in memory PER SOURCE. Old lines are
+/// evicted from that source's own buffer only — a chatty source can no
+/// longer push a quiet source's lines out. SQLite (Task 4) is the durable,
+/// unbounded-by-comparison tier; this is just the hot live-tail cache.
+pub const SOURCE_BUFFER_CAPACITY: usize = 1_000;
 
 /// Ceiling on bytes read from one source in one poll. Checked INSIDE the read
 /// loop so a source that grows by a gigabyte between polls neither stalls the
@@ -109,99 +113,74 @@ pub const MAX_LINE_BYTES: usize = 64 * 1024;
 /// read again, rather than reading the whole appended region at once.
 const READ_CHUNK_BYTES: usize = 32 * 1024;
 
+/// The result of truncating (if needed) and parsing one raw line, ready to
+/// be handed to `LogBuffer::insert` once the caller has allocated an id.
+struct PreparedLine {
+    raw: String,
+    timestamp: Option<String>,
+    level: Option<String>,
+    message: String,
+}
+
+fn prepare_line(raw: &str) -> PreparedLine {
+    let (raw, truncated) = if raw.len() > MAX_LINE_BYTES {
+        // Cut on a char boundary so the String stays valid UTF-8.
+        let mut end = MAX_LINE_BYTES;
+        while end > 0 && !raw.is_char_boundary(end) {
+            end -= 1;
+        }
+        (&raw[..end], true)
+    } else {
+        (raw, false)
+    };
+
+    let mut parsed = parse_log_line(raw);
+    if truncated {
+        parsed.message.push_str("… (line truncated)");
+    }
+    PreparedLine { raw: raw.to_string(), timestamp: parsed.timestamp, level: parsed.level, message: parsed.message }
+}
+
 pub struct LogBuffer {
     lines: VecDeque<LogLine>,
     capacity: usize,
-    next_id: u64,
     evicted_through_id: u64,
 }
 
 impl LogBuffer {
     pub fn new(capacity: usize) -> Self {
-        Self {
-            lines: VecDeque::with_capacity(capacity.min(1024)),
-            capacity,
-            next_id: 1,
-            evicted_through_id: 0,
-        }
+        Self { lines: VecDeque::with_capacity(capacity.min(1024)), capacity, evicted_through_id: 0 }
     }
 
-    /// The id the NEXT pushed line will receive. Correlation snapshots this
-    /// before firing a request, then selects ids strictly greater than it.
-    pub fn next_id(&self) -> u64 {
-        self.next_id
-    }
-
-    /// The highest id that has been dropped from the buffer. A caller whose
-    /// `from_id` is at or below this knows its view is incomplete.
+    /// The highest id that has been dropped from this buffer. A caller
+    /// whose `from_id` is at or below this knows its view is incomplete.
     pub fn evicted_through_id(&self) -> u64 {
         self.evicted_through_id
     }
 
-    pub fn push(&mut self, source_id: &str, raw: &str, captured_at_ms: i64) -> u64 {
-        let (raw, truncated) = if raw.len() > MAX_LINE_BYTES {
-            // Cut on a char boundary so the String stays valid UTF-8.
-            let mut end = MAX_LINE_BYTES;
-            while end > 0 && !raw.is_char_boundary(end) {
-                end -= 1;
-            }
-            (&raw[..end], true)
-        } else {
-            (raw, false)
-        };
-
-        let mut parsed = parse_log_line(raw);
-        if truncated {
-            parsed.message.push_str("… (line truncated)");
-        }
-
-        self.insert(source_id, captured_at_ms, parsed.timestamp, parsed.level, parsed.message, raw.to_string())
-    }
-
-    /// Inserts a synthetic operational note (e.g. a rotation warning) whose
-    /// level is asserted directly rather than guessed from content: it is
-    /// DevBench's own annotation, not a line read from the target, so running
-    /// it through `parse_log_line` would leave it with no level at all.
-    fn push_note(&mut self, source_id: &str, level: &str, message: &str, captured_at_ms: i64) -> u64 {
-        self.insert(source_id, captured_at_ms, None, Some(level.to_string()), message.to_string(), message.to_string())
-    }
-
-    fn insert(
+    /// Inserts one line under an id the caller already allocated from
+    /// LogState's single shared counter — this buffer never assigns ids
+    /// itself, so two different sources' buffers can never collide.
+    pub fn insert(
         &mut self,
+        id: u64,
         source_id: &str,
         captured_at_ms: i64,
         timestamp: Option<String>,
         level: Option<String>,
         message: String,
         raw: String,
-    ) -> u64 {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.lines.push_back(LogLine {
-            id,
-            source_id: source_id.to_string(),
-            captured_at_ms,
-            timestamp,
-            level,
-            message,
-            raw,
-        });
+    ) {
+        self.lines.push_back(LogLine { id, source_id: source_id.to_string(), captured_at_ms, timestamp, level, message, raw });
         while self.lines.len() > self.capacity {
             if let Some(dropped) = self.lines.pop_front() {
                 self.evicted_through_id = dropped.id;
             }
         }
-        id
     }
 
-    pub fn since(&self, after_id: u64, source_id: Option<&str>, limit: usize) -> Vec<LogLine> {
-        self.lines
-            .iter()
-            .filter(|l| l.id > after_id)
-            .filter(|l| source_id.is_none_or(|s| l.source_id == s))
-            .take(limit)
-            .cloned()
-            .collect()
+    pub fn since(&self, after_id: u64, limit: usize) -> Vec<LogLine> {
+        self.lines.iter().filter(|l| l.id > after_id).take(limit).cloned().collect()
     }
 
     /// Lines captured strictly after `after_id` and no later than
@@ -213,6 +192,18 @@ impl LogBuffer {
             .cloned()
             .collect()
     }
+
+    /// Lines with id greater than `flushed_through_id` — used by the
+    /// persistence sweep (Task 5). Read-only; does not touch eviction.
+    pub fn unflushed_since(&self, flushed_through_id: u64) -> Vec<LogLine> {
+        self.lines.iter().filter(|l| l.id > flushed_through_id).cloned().collect()
+    }
+}
+
+/// What a source captures from. `Command` is added in Task 3.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SourceKind {
+    File { path: PathBuf },
 }
 
 /// Tails one regular file. Holds the byte offset it has consumed and the
@@ -223,23 +214,12 @@ pub struct SourceTailer {
     offset: u64,
     pending: String,
     started: bool,
-    // Set once a single physical line has already exceeded MAX_LINE_BYTES and
-    // been flushed as a truncated line. While set, further bytes belonging to
-    // that same still-unterminated line are discarded rather than re-emitted
-    // as a second, unrelated line once its real newline eventually arrives.
     skipping_overlong_line: bool,
 }
 
 impl SourceTailer {
     pub fn new(source_id: String, path: PathBuf) -> Self {
-        Self {
-            source_id,
-            path,
-            offset: 0,
-            pending: String::new(),
-            started: false,
-            skipping_overlong_line: false,
-        }
+        Self { source_id, path, offset: 0, pending: String::new(), started: false, skipping_overlong_line: false }
     }
 
     pub fn path(&self) -> &PathBuf {
@@ -247,12 +227,13 @@ impl SourceTailer {
     }
 
     /// Reads whatever has been appended since the last call, bounded by
-    /// `MAX_BYTES_PER_POLL`, and pushes complete lines into `buffer`.
+    /// `MAX_BYTES_PER_POLL`, and pushes complete lines into `buffer`, each
+    /// under an id allocated from `next_id` (LogState's shared counter).
     ///
     /// On the very first call the tailer seeks to EOF instead of reading the
     /// file's history — pointing DevBench at an existing multi-gigabyte log
     /// must not replay it.
-    pub fn poll_once(&mut self, buffer: &mut LogBuffer, now_ms: i64) -> Result<(), String> {
+    pub fn poll_once(&mut self, buffer: &mut LogBuffer, next_id: &mut u64, now_ms: i64) -> Result<(), String> {
         let metadata = std::fs::metadata(&self.path)
             .map_err(|e| format!("cannot read log source {}: {e}", self.path.display()))?;
         let len = metadata.len();
@@ -264,14 +245,18 @@ impl SourceTailer {
         }
 
         if len < self.offset {
-            // Rotated or truncated. Never silently resync: the v1 spec requires
-            // a visible warning, because a silent reset looks identical to
-            // "the backend went quiet".
-            buffer.push_note(
+            // Rotated or truncated. Never silently resync: a silent reset
+            // looks identical to "the backend went quiet."
+            let id = *next_id;
+            *next_id += 1;
+            buffer.insert(
+                id,
                 &self.source_id,
-                "WARN",
-                "log source rotated or truncated — resuming from the start of the file",
                 now_ms,
+                None,
+                Some("WARN".to_string()),
+                "log source rotated or truncated — resuming from the start of the file".to_string(),
+                "log source rotated or truncated — resuming from the start of the file".to_string(),
             );
             self.offset = 0;
             self.pending.clear();
@@ -301,16 +286,10 @@ impl SourceTailer {
             budget -= read as u64;
             self.offset += read as u64;
 
-            // Lossy conversion: a log file can contain a partial multi-byte
-            // sequence at a chunk boundary or genuinely invalid bytes. Dropping
-            // the whole chunk would be a silent data loss, which principle 4
-            // forbids; a replacement character is the honest rendering.
             self.pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
 
             loop {
                 if self.skipping_overlong_line {
-                    // Already emitted one truncated line for this physical
-                    // line; discard the rest of it until its real newline.
                     match self.pending.find('\n') {
                         Some(newline) => {
                             self.pending.drain(..=newline);
@@ -325,20 +304,22 @@ impl SourceTailer {
                     let line: String = self.pending.drain(..=newline).collect();
                     let line = line.trim_end_matches(['\n', '\r']);
                     if !line.is_empty() {
-                        buffer.push(&self.source_id, line, now_ms);
+                        let prepared = prepare_line(line);
+                        let id = *next_id;
+                        *next_id += 1;
+                        buffer.insert(id, &self.source_id, now_ms, prepared.timestamp, prepared.level, prepared.message, prepared.raw);
                     }
                 } else {
                     break;
                 }
             }
 
-            // A single line longer than the cap will otherwise grow `pending`
-            // without bound while we wait for a newline that may never come.
-            // Flush it once as a truncated line, then discard the remainder
-            // of this same physical line instead of re-buffering it piecemeal.
             if !self.skipping_overlong_line && self.pending.len() > MAX_LINE_BYTES {
                 let flushed = std::mem::take(&mut self.pending);
-                buffer.push(&self.source_id, &flushed, now_ms);
+                let prepared = prepare_line(&flushed);
+                let id = *next_id;
+                *next_id += 1;
+                buffer.insert(id, &self.source_id, now_ms, prepared.timestamp, prepared.level, prepared.message, prepared.raw);
                 self.skipping_overlong_line = true;
             }
         }
@@ -347,17 +328,21 @@ impl SourceTailer {
     }
 }
 
-use std::sync::Mutex;
-use uuid::Uuid;
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LogSourceStatus {
     pub id: String,
     pub label: String,
+    /// Human-readable location: the file path for a file source, or the
+    /// invocation (`program` + `args` joined) for a command source.
     pub path: String,
-    /// "live" while the last poll succeeded, "error" once one failed.
+    /// "file" | "command"
+    pub kind: String,
+    /// "live" while the last poll/read succeeded, "error" once one failed,
+    /// "exited" once a command source's process ended on its own.
     pub state: String,
     pub error: Option<String>,
+    /// Set only when `state == "exited"`.
+    pub exit_code: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -370,57 +355,92 @@ pub struct LogPage {
     pub dropped: u64,
 }
 
-struct Source {
-    status: LogSourceStatus,
-    tailer: SourceTailer,
+/// What actually pulls bytes in for one source. `Command` is fully wired up
+/// in Task 3 — the running child process and its reader tasks are tracked
+/// separately (see `LogState::commands`), not inside this enum, because a
+/// `tokio::process::Child` needs to be shared with async reader tasks in a
+/// way a value living behind a `std::sync::Mutex` can't be.
+enum Ingestor {
+    File(SourceTailer),
+    Command,
 }
 
-/// Shared, Tauri-managed log observation state. Interior mutability behind one
-/// `Mutex` because every operation is short (a metadata call plus a bounded
-/// read) and the alternative — a lock per source plus one for the buffer —
-/// buys nothing at the handful-of-sources scale this tool operates at.
+struct SourceEntry {
+    status: LogSourceStatus,
+    ingestor: Ingestor,
+    buffer: LogBuffer,
+    /// High-water mark for the periodic persistence sweep (Task 5) — the id
+    /// through which this source's lines have already been written to SQLite.
+    flushed_through_id: u64,
+}
+
+/// Shared, Tauri-managed log observation state. `inner` is one `Mutex`
+/// because every operation on it is short (a metadata call plus a bounded
+/// read, or a buffer insert) and the alternative — a lock per source plus
+/// one for bookkeeping — buys nothing at the handful-of-sources scale this
+/// tool operates at.
 pub struct LogState {
     inner: Mutex<Inner>,
+    source_buffer_capacity: usize,
 }
 
 struct Inner {
-    buffer: LogBuffer,
-    sources: Vec<Source>,
+    sources: Vec<SourceEntry>,
+    /// ONE counter shared across every source's buffer, so ids stay globally
+    /// monotonic and ordering/`after_id` cursors work the same whether a
+    /// caller is looking at one source or the merged view of all of them.
+    next_id: u64,
 }
 
 impl LogState {
     pub fn new() -> Self {
-        Self::with_capacity(MAX_BUFFERED_LINES)
+        Self::with_capacity(SOURCE_BUFFER_CAPACITY)
     }
 
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub fn with_capacity(source_buffer_capacity: usize) -> Self {
         Self {
-            inner: Mutex::new(Inner { buffer: LogBuffer::new(capacity), sources: Vec::new() }),
+            inner: Mutex::new(Inner { sources: Vec::new(), next_id: 1 }),
+            source_buffer_capacity,
         }
     }
 
-    pub fn add_source(&self, label: String, path: PathBuf) -> Result<LogSourceStatus, String> {
-        let metadata = std::fs::metadata(&path)
-            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        if !metadata.is_file() {
-            return Err(format!(
-                "{} is not a regular file — DevBench v1 tails regular files only; \
-                 pipe stdout with `yourapp 2>&1 | tee /tmp/devbench.log` and point at that file",
-                path.display()
-            ));
-        }
-
+    pub fn add_source(&self, label: String, kind: SourceKind) -> Result<LogSourceStatus, String> {
+        let display_path = match &kind {
+            SourceKind::File { path } => {
+                let metadata = std::fs::metadata(path)
+                    .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+                if !metadata.is_file() {
+                    return Err(format!(
+                        "{} is not a regular file — DevBench tails regular files or spawns \
+                         commands; pipe stdout with `yourapp 2>&1 | tee /tmp/devbench.log` and \
+                         point at that file, or add a Command source instead",
+                        path.display()
+                    ));
+                }
+                path.display().to_string()
+            }
+        };
         let status = LogSourceStatus {
             id: Uuid::new_v4().to_string(),
             label,
-            path: path.display().to_string(),
+            path: display_path,
+            kind: "file".to_string(),
             state: "live".to_string(),
             error: None,
+            exit_code: None,
         };
-        let tailer = SourceTailer::new(status.id.clone(), path);
+        let ingestor = match &kind {
+            SourceKind::File { path } => Ingestor::File(SourceTailer::new(status.id.clone(), path.clone())),
+        };
+        let entry = SourceEntry {
+            status: status.clone(),
+            ingestor,
+            buffer: LogBuffer::new(self.source_buffer_capacity),
+            flushed_through_id: 0,
+        };
 
         let mut inner = self.inner.lock().map_err(|_| "log state poisoned".to_string())?;
-        inner.sources.push(Source { status: status.clone(), tailer });
+        inner.sources.push(entry);
         Ok(status)
     }
 
@@ -442,20 +462,41 @@ impl LogState {
     }
 
     pub fn read_since(&self, after_id: u64, source_id: Option<&str>, limit: usize) -> LogPage {
-        match self.inner.lock() {
-            Ok(inner) => {
-                let lines = inner.buffer.since(after_id, source_id, limit);
-                let next_id = lines.last().map(|l| l.id).unwrap_or(after_id);
-                let dropped = inner.buffer.evicted_through_id().saturating_sub(after_id);
-                LogPage { lines, next_id, dropped }
+        let inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(_) => return LogPage { lines: Vec::new(), next_id: after_id, dropped: 0 },
+        };
+        let lines = match source_id {
+            Some(sid) => inner
+                .sources
+                .iter()
+                .find(|e| e.status.id == sid)
+                .map(|e| e.buffer.since(after_id, limit))
+                .unwrap_or_default(),
+            None => {
+                let mut merged: Vec<LogLine> =
+                    inner.sources.iter().flat_map(|e| e.buffer.since(after_id, usize::MAX)).collect();
+                merged.sort_by_key(|l| l.id);
+                merged.truncate(limit);
+                merged
             }
-            Err(_) => LogPage { lines: Vec::new(), next_id: after_id, dropped: 0 },
-        }
+        };
+        let dropped: u64 = match source_id {
+            Some(sid) => inner
+                .sources
+                .iter()
+                .find(|e| e.status.id == sid)
+                .map(|e| e.buffer.evicted_through_id().saturating_sub(after_id))
+                .unwrap_or(0),
+            None => inner.sources.iter().map(|e| e.buffer.evicted_through_id().saturating_sub(after_id)).sum(),
+        };
+        let next_id = lines.last().map(|l| l.id).unwrap_or(after_id);
+        LogPage { lines, next_id, dropped }
     }
 
     pub fn next_line_id(&self) -> u64 {
         match self.inner.lock() {
-            Ok(inner) => inner.buffer.next_id(),
+            Ok(inner) => inner.next_id,
             Err(_) => 0,
         }
     }
@@ -468,32 +509,38 @@ impl LogState {
         if inner.sources.is_empty() {
             return None;
         }
-        Some(inner.buffer.between(after_id, until_ms))
+        let mut merged: Vec<LogLine> = inner.sources.iter().flat_map(|e| e.buffer.between(after_id, until_ms)).collect();
+        merged.sort_by_key(|l| l.id);
+        Some(merged)
     }
 
-    /// Polls every configured source once. Errors are recorded on the source's
-    /// status rather than propagated — one broken source must not stop the
-    /// others, and the Log tab surfaces the error next to that source.
+    /// Polls every FILE source once. Command sources capture via their own
+    /// background reader tasks (Task 3) and are skipped here. Errors are
+    /// recorded on the source's status rather than propagated — one broken
+    /// source must not stop the others.
     pub fn poll_all(&self, now_ms: i64) {
         let mut inner = match self.inner.lock() {
             Ok(i) => i,
             Err(_) => return,
         };
-        let Inner { buffer, sources } = &mut *inner;
-        for source in sources.iter_mut() {
-            match source.tailer.poll_once(buffer, now_ms) {
+        let Inner { sources, next_id } = &mut *inner;
+        for entry in sources.iter_mut() {
+            let Ingestor::File(tailer) = &mut entry.ingestor else { continue };
+            match tailer.poll_once(&mut entry.buffer, next_id, now_ms) {
                 Ok(()) => {
-                    source.status.state = "live".to_string();
-                    source.status.error = None;
+                    entry.status.state = "live".to_string();
+                    entry.status.error = None;
                 }
                 Err(e) => {
-                    // Push a synthetic warning only on the transition into the
-                    // error state, not on every 250 ms poll.
-                    if source.status.state != "error" {
-                        buffer.push_note(&source.status.id, "WARN", &format!("log source unreadable: {e}"), now_ms);
+                    if entry.status.state != "error" {
+                        let source_id = entry.status.id.clone();
+                        let id = *next_id;
+                        *next_id += 1;
+                        let note = format!("log source unreadable: {e}");
+                        entry.buffer.insert(id, &source_id, now_ms, None, Some("WARN".to_string()), note.clone(), note);
                     }
-                    source.status.state = "error".to_string();
-                    source.status.error = Some(e);
+                    entry.status.state = "error".to_string();
+                    entry.status.error = Some(e);
                 }
             }
         }
@@ -551,6 +598,44 @@ mod tests {
         assert_eq!(parsed.message, raw);
     }
 
+    #[test]
+    fn buffer_evicts_oldest_lines_and_records_how_far_it_evicted() {
+        let mut buffer = LogBuffer::new(3);
+        for i in 0..5u64 {
+            buffer.insert(i + 1, "src1", 1_000 + i as i64, None, None, format!("line {i}"), format!("line {i}"));
+        }
+        let lines = buffer.since(0, 100);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].message, "line 2");
+        // ids 1 and 2 are gone; a caller holding from_id = 0 must be able to tell.
+        assert_eq!(buffer.evicted_through_id(), 2);
+    }
+
+    #[test]
+    fn buffer_between_selects_by_id_lower_bound_and_capture_time_upper_bound() {
+        let mut buffer = LogBuffer::new(100);
+        buffer.insert(1, "src1", 1_000, None, None, "before".into(), "before".into());
+        buffer.insert(2, "src1", 1_500, None, None, "inside".into(), "inside".into());
+        buffer.insert(3, "src1", 9_999, None, None, "after the window".into(), "after the window".into());
+
+        let selected = buffer.between(1, 2_000);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].message, "inside");
+    }
+
+    #[test]
+    fn buffer_unflushed_since_returns_only_lines_after_the_flush_cursor() {
+        let mut buffer = LogBuffer::new(100);
+        buffer.insert(1, "src1", 1_000, None, None, "a".into(), "a".into());
+        buffer.insert(2, "src1", 1_001, None, None, "b".into(), "b".into());
+        buffer.insert(3, "src1", 1_002, None, None, "c".into(), "c".into());
+
+        let unflushed = buffer.unflushed_since(1);
+        assert_eq!(unflushed.len(), 2);
+        assert_eq!(unflushed[0].message, "b");
+        assert_eq!(unflushed[1].message, "c");
+    }
+
     use std::io::Write as _;
 
     fn write_and_flush(path: &std::path::Path, contents: &str) {
@@ -565,24 +650,22 @@ mod tests {
         let path = dir.path().join("app.log");
         std::fs::write(&path, "first line\n").unwrap();
 
-        let mut buffer = LogBuffer::new(MAX_BUFFERED_LINES);
+        let mut buffer = LogBuffer::new(SOURCE_BUFFER_CAPACITY);
+        let mut next_id = 1u64;
         let mut tailer = SourceTailer::new("src1".to_string(), path.clone());
 
-        // A brand-new tailer starts at the END of the file: a developer who
-        // points DevBench at a 2 GB log does not want 2 GB of history.
-        tailer.poll_once(&mut buffer, 1_000).unwrap();
-        assert_eq!(buffer.since(0, None, 100).len(), 0);
+        tailer.poll_once(&mut buffer, &mut next_id, 1_000).unwrap();
+        assert_eq!(buffer.since(0, 100).len(), 0);
 
         write_and_flush(&path, "second line\n");
-        tailer.poll_once(&mut buffer, 2_000).unwrap();
-        let lines = buffer.since(0, None, 100);
+        tailer.poll_once(&mut buffer, &mut next_id, 2_000).unwrap();
+        let lines = buffer.since(0, 100);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].message, "second line");
         assert_eq!(lines[0].captured_at_ms, 2_000);
 
-        // No new bytes -> no new lines, and no re-reading of what we already read.
-        tailer.poll_once(&mut buffer, 3_000).unwrap();
-        assert_eq!(buffer.since(0, None, 100).len(), 1);
+        tailer.poll_once(&mut buffer, &mut next_id, 3_000).unwrap();
+        assert_eq!(buffer.since(0, 100).len(), 1);
     }
 
     #[test]
@@ -591,15 +674,15 @@ mod tests {
         let path = dir.path().join("app.log");
         std::fs::write(&path, "aaaa\nbbbb\n").unwrap();
 
-        let mut buffer = LogBuffer::new(MAX_BUFFERED_LINES);
+        let mut buffer = LogBuffer::new(SOURCE_BUFFER_CAPACITY);
+        let mut next_id = 1u64;
         let mut tailer = SourceTailer::new("src1".to_string(), path.clone());
-        tailer.poll_once(&mut buffer, 1_000).unwrap();
+        tailer.poll_once(&mut buffer, &mut next_id, 1_000).unwrap();
 
-        // logrotate-style: file replaced with a shorter one.
         std::fs::write(&path, "cccc\n").unwrap();
-        tailer.poll_once(&mut buffer, 2_000).unwrap();
+        tailer.poll_once(&mut buffer, &mut next_id, 2_000).unwrap();
 
-        let lines = buffer.since(0, None, 100);
+        let lines = buffer.since(0, 100);
         assert_eq!(lines.len(), 2, "expected a warning line plus the new content");
         assert_eq!(lines[0].level.as_deref(), Some("WARN"));
         assert!(lines[0].message.contains("rotated or truncated"));
@@ -612,11 +695,14 @@ mod tests {
         let path = dir.path().join("app.log");
         std::fs::write(&path, "").unwrap();
 
-        let mut buffer = LogBuffer::new(MAX_BUFFERED_LINES);
+        // Capacity well above the 2,000 lines below: this test is about the
+        // tailer's per-poll byte budget, not buffer eviction (SOURCE_BUFFER_CAPACITY
+        // is too small here and would cap both polls at the same count).
+        let mut buffer = LogBuffer::new(3_000);
+        let mut next_id = 1u64;
         let mut tailer = SourceTailer::new("src1".to_string(), path.clone());
-        tailer.poll_once(&mut buffer, 1_000).unwrap();
+        tailer.poll_once(&mut buffer, &mut next_id, 1_000).unwrap();
 
-        // Write comfortably more than one poll's byte budget.
         let line = "x".repeat(1023);
         let mut blob = String::new();
         for _ in 0..2_000 {
@@ -625,13 +711,13 @@ mod tests {
         }
         write_and_flush(&path, &blob);
 
-        tailer.poll_once(&mut buffer, 2_000).unwrap();
-        let after_first = buffer.since(0, None, 10_000).len();
+        tailer.poll_once(&mut buffer, &mut next_id, 2_000).unwrap();
+        let after_first = buffer.since(0, 10_000).len();
         assert!(after_first > 0, "first poll should have read something");
         assert!(after_first < 2_000, "first poll must stop at the per-poll byte budget");
 
-        tailer.poll_once(&mut buffer, 3_000).unwrap();
-        assert!(buffer.since(0, None, 10_000).len() > after_first, "next poll resumes from the saved offset");
+        tailer.poll_once(&mut buffer, &mut next_id, 3_000).unwrap();
+        assert!(buffer.since(0, 10_000).len() > after_first, "next poll resumes from the saved offset");
     }
 
     #[test]
@@ -640,14 +726,15 @@ mod tests {
         let path = dir.path().join("app.log");
         std::fs::write(&path, "").unwrap();
 
-        let mut buffer = LogBuffer::new(MAX_BUFFERED_LINES);
+        let mut buffer = LogBuffer::new(SOURCE_BUFFER_CAPACITY);
+        let mut next_id = 1u64;
         let mut tailer = SourceTailer::new("src1".to_string(), path.clone());
-        tailer.poll_once(&mut buffer, 1_000).unwrap();
+        tailer.poll_once(&mut buffer, &mut next_id, 1_000).unwrap();
 
         write_and_flush(&path, &format!("{}\n", "y".repeat(MAX_LINE_BYTES * 2)));
-        tailer.poll_once(&mut buffer, 2_000).unwrap();
+        tailer.poll_once(&mut buffer, &mut next_id, 2_000).unwrap();
 
-        let lines = buffer.since(0, None, 100);
+        let lines = buffer.since(0, 100);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].raw.len() <= MAX_LINE_BYTES + 32);
         assert!(lines[0].message.ends_with("… (line truncated)"));
@@ -657,49 +744,12 @@ mod tests {
     fn tailer_reports_an_unreadable_source_as_an_error_not_as_silence() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("does-not-exist.log");
-        let mut buffer = LogBuffer::new(MAX_BUFFERED_LINES);
+        let mut buffer = LogBuffer::new(SOURCE_BUFFER_CAPACITY);
+        let mut next_id = 1u64;
         let mut tailer = SourceTailer::new("src1".to_string(), path);
-        let result = tailer.poll_once(&mut buffer, 1_000);
+        let result = tailer.poll_once(&mut buffer, &mut next_id, 1_000);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("does-not-exist.log"));
-    }
-
-    #[test]
-    fn buffer_evicts_oldest_lines_and_records_how_far_it_evicted() {
-        let mut buffer = LogBuffer::new(3);
-        for i in 0..5 {
-            buffer.push("src1", &format!("line {i}"), 1_000 + i as i64);
-        }
-        let lines = buffer.since(0, None, 100);
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0].message, "line 2");
-        // ids 1 and 2 are gone; a caller holding from_id = 0 must be able to tell.
-        assert_eq!(buffer.evicted_through_id(), 2);
-    }
-
-    #[test]
-    fn buffer_between_selects_by_id_lower_bound_and_capture_time_upper_bound() {
-        let mut buffer = LogBuffer::new(MAX_BUFFERED_LINES);
-        buffer.push("src1", "before", 1_000);
-        let from_id = buffer.next_id() - 1;
-        buffer.push("src1", "inside", 1_500);
-        buffer.push("src1", "after the window", 9_999);
-
-        let selected = buffer.between(from_id, 2_000);
-        assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].message, "inside");
-    }
-
-    #[test]
-    fn buffer_since_can_filter_to_a_single_source() {
-        let mut buffer = LogBuffer::new(MAX_BUFFERED_LINES);
-        buffer.push("server", "a", 1_000);
-        buffer.push("worker", "b", 1_001);
-        buffer.push("server", "c", 1_002);
-
-        let only_server = buffer.since(0, Some("server"), 100);
-        assert_eq!(only_server.len(), 2);
-        assert!(only_server.iter().all(|l| l.source_id == "server"));
     }
 
     #[test]
@@ -715,7 +765,7 @@ mod tests {
         std::fs::write(&path, "").unwrap();
 
         let state = LogState::new();
-        state.add_source("server.log".into(), path).unwrap();
+        state.add_source("server.log".into(), SourceKind::File { path }).unwrap();
 
         assert_eq!(state.collect_window(0, 10_000), Some(vec![]));
     }
@@ -726,7 +776,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("gone.log");
         std::fs::write(&path, "").unwrap();
-        let source = state.add_source("gone.log".into(), path.clone()).unwrap();
+        let source = state.add_source("gone.log".into(), SourceKind::File { path: path.clone() }).unwrap();
 
         std::fs::remove_file(&path).unwrap();
         state.poll_all(1_000);
@@ -743,7 +793,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("app.log");
         std::fs::write(&path, "").unwrap();
-        state.add_source("app.log".into(), path.clone()).unwrap();
+        state.add_source("app.log".into(), SourceKind::File { path: path.clone() }).unwrap();
         state.poll_all(1_000);
 
         let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
@@ -763,8 +813,97 @@ mod tests {
     fn add_source_rejects_a_path_that_is_not_a_regular_file() {
         let dir = tempfile::tempdir().unwrap();
         let state = LogState::new();
-        let result = state.add_source("a directory".into(), dir.path().to_path_buf());
+        let result = state.add_source("a directory".into(), SourceKind::File { path: dir.path().to_path_buf() });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("regular file"));
+    }
+
+    // --- New: this is the whole point of the per-source-buffer refactor ---
+
+    #[test]
+    fn a_chatty_source_does_not_evict_a_quiet_sources_lines() {
+        let state = LogState::with_capacity(3);
+        let dir = tempfile::tempdir().unwrap();
+        let quiet_path = dir.path().join("quiet.log");
+        let chatty_path = dir.path().join("chatty.log");
+        std::fs::write(&quiet_path, "").unwrap();
+        std::fs::write(&chatty_path, "").unwrap();
+
+        let quiet = state.add_source("quiet".into(), SourceKind::File { path: quiet_path.clone() }).unwrap();
+        let chatty = state.add_source("chatty".into(), SourceKind::File { path: chatty_path.clone() }).unwrap();
+        state.poll_all(1_000);
+
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&quiet_path).unwrap();
+        writeln!(f, "the one line the quiet source will ever write").unwrap();
+        f.flush().unwrap();
+
+        let mut f = std::fs::OpenOptions::new().append(true).open(&chatty_path).unwrap();
+        for i in 0..10 {
+            writeln!(f, "chatty line {i}").unwrap();
+        }
+        f.flush().unwrap();
+
+        state.poll_all(2_000);
+
+        let quiet_page = state.read_since(0, Some(&quiet.id), 100);
+        assert_eq!(quiet_page.lines.len(), 1, "the chatty source's 10 lines (against a capacity-3 buffer) must not evict the quiet source's one line");
+        assert_eq!(quiet_page.dropped, 0);
+
+        let chatty_page = state.read_since(0, Some(&chatty.id), 100);
+        assert_eq!(chatty_page.lines.len(), 3, "the chatty source's own buffer, capacity 3, evicts its own oldest lines");
+        assert!(chatty_page.dropped > 0);
+    }
+
+    #[test]
+    fn read_since_with_no_source_id_merges_every_sources_lines_in_id_order() {
+        let state = LogState::new();
+        let dir = tempfile::tempdir().unwrap();
+        let path_a = dir.path().join("a.log");
+        let path_b = dir.path().join("b.log");
+        std::fs::write(&path_a, "").unwrap();
+        std::fs::write(&path_b, "").unwrap();
+        state.add_source("a".into(), SourceKind::File { path: path_a.clone() }).unwrap();
+        state.add_source("b".into(), SourceKind::File { path: path_b.clone() }).unwrap();
+        state.poll_all(1_000);
+
+        use std::io::Write as _;
+        let mut fa = std::fs::OpenOptions::new().append(true).open(&path_a).unwrap();
+        writeln!(fa, "from a").unwrap();
+        fa.flush().unwrap();
+        let mut fb = std::fs::OpenOptions::new().append(true).open(&path_b).unwrap();
+        writeln!(fb, "from b").unwrap();
+        fb.flush().unwrap();
+        state.poll_all(2_000);
+
+        let merged = state.read_since(0, None, 100);
+        assert_eq!(merged.lines.len(), 2);
+        let ids: Vec<u64> = merged.lines.iter().map(|l| l.id).collect();
+        assert!(ids[0] < ids[1], "merged view must stay in id order across sources");
+    }
+
+    #[test]
+    fn collect_window_merges_lines_from_every_source() {
+        let state = LogState::new();
+        let dir = tempfile::tempdir().unwrap();
+        let path_a = dir.path().join("a.log");
+        let path_b = dir.path().join("b.log");
+        std::fs::write(&path_a, "").unwrap();
+        std::fs::write(&path_b, "").unwrap();
+        state.add_source("a".into(), SourceKind::File { path: path_a.clone() }).unwrap();
+        state.add_source("b".into(), SourceKind::File { path: path_b.clone() }).unwrap();
+        state.poll_all(1_000);
+
+        use std::io::Write as _;
+        let mut fa = std::fs::OpenOptions::new().append(true).open(&path_a).unwrap();
+        writeln!(fa, "from a").unwrap();
+        fa.flush().unwrap();
+        let mut fb = std::fs::OpenOptions::new().append(true).open(&path_b).unwrap();
+        writeln!(fb, "from b").unwrap();
+        fb.flush().unwrap();
+        state.poll_all(1_500);
+
+        let window = state.collect_window(0, 2_000).expect("sources are running");
+        assert_eq!(window.len(), 2);
     }
 }

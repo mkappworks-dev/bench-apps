@@ -788,7 +788,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("app.log");
         std::fs::write(&log_path, "").unwrap();
-        logs.add_source("app.log".into(), log_path.clone()).unwrap();
+        logs.add_source("app.log".into(), crate::log_state::SourceKind::File { path: log_path.clone() }).unwrap();
         logs.poll_all(1_000);
 
         let mut server = mockito::Server::new_async().await;
