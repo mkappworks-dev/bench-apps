@@ -109,6 +109,23 @@ pub async fn get_primary_key_column(pool: &PgPool, table: &str) -> Result<String
     }
 }
 
+/// The Postgres physical type name (`pg_catalog.pg_type.typname`, e.g.
+/// `int4`, `text`, `uuid`) for a column — used by query.rs's cell-edit path
+/// to cast a bound PK value to the PK column's real type (`$2::{pk_type}`)
+/// so the WHERE clause stays sargable instead of casting the column itself.
+pub(crate) async fn get_column_type(pool: &PgPool, table: &str, column: &str) -> Result<String, String> {
+    let row = sqlx::query(
+        "SELECT udt_name FROM information_schema.columns WHERE table_name = $1 AND column_name = $2",
+    )
+    .bind(table)
+    .bind(column)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("failed to look up type for {table}.{column}: {e}"))?
+    .ok_or_else(|| format!("no such column {column} on table {table}"))?;
+    Ok(row.get::<String, _>("udt_name"))
+}
+
 pub async fn list_table_rows_impl(
     pool: &PgPool,
     table: &str,

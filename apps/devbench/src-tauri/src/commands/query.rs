@@ -4,7 +4,7 @@ use sqlx::{Column, Either, Row};
 use std::sync::Arc;
 use tauri::State;
 
-use crate::commands::db::{cell_to_string, validate_identifier};
+use crate::commands::db::{cell_to_string, get_column_type, validate_identifier};
 use crate::connection_registry::ConnectionRegistry;
 use crate::local_db::LocalDb;
 use crate::preview_state::{PendingPreviewRegistry, PREVIEW_TIMEOUT_MS};
@@ -24,10 +24,23 @@ pub struct QueryPreview {
 /// affected" for an arbitrary single statement. Plain `fetch_all` can't make
 /// this distinction — it silently discards the completion tag whenever any
 /// rows come back, and reports nothing useful when none do.
+///
+/// `fetch_many` alone can't tell a zero-row SELECT apart from a zero-row
+/// UPDATE either: both surface only a `Left(PgQueryResult)` with no `Right`
+/// rows. So before executing, `describe()` the statement — Postgres reports
+/// its output column list from the parsed statement alone (SELECT and
+/// RETURNING have one; a bare UPDATE/INSERT/DELETE doesn't), which tells us
+/// the statement's shape regardless of how many rows it ends up matching.
 async fn execute_with_honest_result(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     sql: &str,
 ) -> Result<(Vec<String>, Vec<Vec<Option<String>>>, Option<u64>), String> {
+    let described_columns: Option<Vec<String>> = sqlx::Executor::describe(&mut **tx, sql)
+        .await
+        .ok()
+        .filter(|d| !d.columns().is_empty())
+        .map(|d| d.columns().iter().map(|c| c.name().to_string()).collect());
+
     let mut rows: Vec<sqlx::postgres::PgRow> = Vec::new();
     let mut rows_affected: u64 = 0;
     {
@@ -40,16 +53,19 @@ async fn execute_with_honest_result(
         }
     }
 
-    if rows.is_empty() {
-        Ok((Vec::new(), Vec::new(), Some(rows_affected)))
-    } else {
-        let columns: Vec<String> = rows[0].columns().iter().map(|c| c.name().to_string()).collect();
-        let out_rows = rows
-            .iter()
-            .map(|row| (0..columns.len()).map(|i| cell_to_string(row, i)).collect())
-            .collect();
-        Ok((columns, out_rows, None))
-    }
+    let columns = match described_columns {
+        Some(columns) => columns,
+        // describe() couldn't tell us the shape up front (some statements
+        // can't be introspected), but rows actually came back — so this was
+        // read-shaped after all. Fall back to the row's own columns.
+        None if !rows.is_empty() => rows[0].columns().iter().map(|c| c.name().to_string()).collect(),
+        None => return Ok((Vec::new(), Vec::new(), Some(rows_affected))),
+    };
+    let out_rows = rows
+        .iter()
+        .map(|row| (0..columns.len()).map(|i| cell_to_string(row, i)).collect())
+        .collect();
+    Ok((columns, out_rows, None))
 }
 
 pub async fn preview_query_impl(
@@ -87,13 +103,20 @@ pub async fn preview_cell_edit_impl(
     validate_identifier(column)?;
 
     let pool = registry.pool_for(connection_id, db, secrets).await?;
+
+    // Cast the bound value to the PK column's own type ($2::{pk_type}) rather
+    // than casting the column to text: sqlx binds &str parameters as text,
+    // and comparing an untouched integer column against a text parameter has
+    // no operator — but casting the *column* instead (`"{pk_column}"::text`)
+    // is non-sargable and forces a seq scan even on an indexed PK. pk_type
+    // comes from the catalog, not user input, but it's still validated below
+    // before interpolation, matching this file's identifier discipline.
+    let pk_type = get_column_type(&pool, table, pk_column).await?;
+    validate_identifier(&pk_type)?;
+
     let mut tx = pool.begin().await.map_err(|e| format!("failed to open a transaction: {e}"))?;
 
-    // Cast pk_column to text in SQL (matching correlation.rs's snapshot_table)
-    // rather than relying on Postgres to infer $2's type from pk_column: sqlx
-    // binds &str parameters as text, and comparing text = integer with no cast
-    // has no operator, regardless of what the actual PK value looks like.
-    let sql = format!("UPDATE \"{table}\" SET \"{column}\" = $1 WHERE \"{pk_column}\"::text = $2");
+    let sql = format!("UPDATE \"{table}\" SET \"{column}\" = $1 WHERE \"{pk_column}\" = $2::{pk_type}");
     let result = sqlx::query(&sql)
         .bind(value)
         .bind(pk_value)
@@ -227,6 +250,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_zero_row_select_is_still_a_read_not_a_write_that_touched_nothing() {
+        let (_dir, sqlite) = db().await;
+        let secrets = InMemorySecretStore::default();
+        let created = create_connection_impl(&sqlite.pool, &secrets, local_dev_input()).await.unwrap();
+        let registry = ConnectionRegistry::new();
+        let previews = PendingPreviewRegistry::new();
+
+        let preview = preview_query_impl(
+            &registry, &previews, &sqlite.pool, &secrets, &created.id,
+            "SELECT 1 as n WHERE false", 0,
+        ).await.unwrap();
+
+        assert_eq!(preview.columns, vec!["n"], "describe() reports the column list even when no rows match");
+        assert_eq!(preview.rows, Vec::<Vec<Option<String>>>::new());
+        assert_eq!(preview.rows_affected, None, "a SELECT matching nothing is not the same as a write matching nothing");
+
+        rollback_preview_impl(&previews, &preview.preview_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_zero_row_update_reports_some_zero_not_none() {
+        let raw = raw_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS zero_row_update_test").execute(&raw).await.unwrap();
+        sqlx::query("CREATE TABLE zero_row_update_test (id serial PRIMARY KEY, status text)").execute(&raw).await.unwrap();
+
+        let (_dir, sqlite) = db().await;
+        let secrets = InMemorySecretStore::default();
+        let created = create_connection_impl(&sqlite.pool, &secrets, local_dev_input()).await.unwrap();
+        let registry = ConnectionRegistry::new();
+        let previews = PendingPreviewRegistry::new();
+
+        let preview = preview_query_impl(
+            &registry, &previews, &sqlite.pool, &secrets, &created.id,
+            "UPDATE zero_row_update_test SET status = 'shipped' WHERE id = 999", 0,
+        ).await.unwrap();
+
+        assert_eq!(preview.rows, Vec::<Vec<Option<String>>>::new());
+        assert_eq!(preview.rows_affected, Some(0), "a write that matched nothing is Some(0), distinct from a SELECT's None");
+
+        rollback_preview_impl(&previews, &preview.preview_id).await.unwrap();
+        sqlx::query("DROP TABLE zero_row_update_test").execute(&raw).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn a_write_preview_is_not_visible_until_commit() {
         let raw = raw_pool().await;
         sqlx::query("DROP TABLE IF EXISTS preview_write_test").execute(&raw).await.unwrap();
@@ -335,6 +402,34 @@ mod tests {
         assert_eq!(status, "shipped");
 
         sqlx::query("DROP TABLE cell_edit_test").execute(&raw).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn preview_cell_edit_updates_a_text_primary_key_row() {
+        let raw = raw_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS cell_edit_text_pk_test").execute(&raw).await.unwrap();
+        sqlx::query("CREATE TABLE cell_edit_text_pk_test (code text PRIMARY KEY, status text)").execute(&raw).await.unwrap();
+        sqlx::query("INSERT INTO cell_edit_text_pk_test (code, status) VALUES ('abc', 'pending')").execute(&raw).await.unwrap();
+
+        let (_dir, sqlite) = db().await;
+        let secrets = InMemorySecretStore::default();
+        let created = create_connection_impl(&sqlite.pool, &secrets, local_dev_input()).await.unwrap();
+        let registry = ConnectionRegistry::new();
+        let previews = PendingPreviewRegistry::new();
+
+        let preview = preview_cell_edit_impl(
+            &registry, &previews, &sqlite.pool, &secrets, &created.id,
+            "cell_edit_text_pk_test", "code", "abc", "status", Some("shipped"), 0,
+        ).await.unwrap();
+        assert_eq!(preview.rows_affected, Some(1));
+
+        commit_preview_impl(&previews, &preview.preview_id).await.unwrap();
+
+        let status: String = sqlx::query("SELECT status FROM cell_edit_text_pk_test WHERE code = 'abc'")
+            .fetch_one(&raw).await.unwrap().get("status");
+        assert_eq!(status, "shipped");
+
+        sqlx::query("DROP TABLE cell_edit_text_pk_test").execute(&raw).await.unwrap();
     }
 
     #[tokio::test]
