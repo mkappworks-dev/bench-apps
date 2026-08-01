@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { RequestBuilder } from "./RequestBuilder";
@@ -22,11 +23,15 @@ describe("RequestBuilder", () => {
     });
 
     render(
-      <RequestBuilder connection={connection} watchedTables={new Set(["orders"])} onResult={onResult} />,
+      <RequestBuilder
+        connection={connection}
+        watchedTables={new Set(["orders"])}
+        onResult={onResult}
+        method="GET"
+        url="/api/orders"
+        onPatchState={() => {}}
+      />,
     );
-    fireEvent.change(screen.getByPlaceholderText("/api/orders"), {
-      target: { value: "/api/orders" },
-    });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() =>
@@ -61,11 +66,11 @@ describe("RequestBuilder", () => {
         watchedTables={new Set()}
         onResult={() => {}}
         sessionId="sess-1"
+        method="GET"
+        url="/api/orders"
+        onPatchState={() => {}}
       />,
     );
-    fireEvent.change(screen.getByPlaceholderText("/api/orders"), {
-      target: { value: "/api/orders" },
-    });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() =>
@@ -89,11 +94,11 @@ describe("RequestBuilder", () => {
         watchedTables={new Set(["orders"])}
         onResult={onResult}
         onSendStart={onSendStart}
+        method="GET"
+        url="/api/orders"
+        onPatchState={() => {}}
       />,
     );
-    fireEvent.change(screen.getByPlaceholderText("/api/orders"), {
-      target: { value: "/api/orders" },
-    });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(onSendStart).toHaveBeenCalledTimes(1);
@@ -107,5 +112,74 @@ describe("RequestBuilder", () => {
       history_id: "hist-2",
     });
     await waitFor(() => expect(onResult).toHaveBeenCalledTimes(1));
+  });
+
+  it("uses the styled menu rather than a native select for the method", () => {
+    const { container } = render(
+      <RequestBuilder
+        connection={connection}
+        watchedTables={new Set()}
+        onResult={() => {}}
+        method="GET"
+        url=""
+        onPatchState={() => {}}
+      />,
+    );
+    expect(container.querySelector("select")).toBeNull();
+    expect(screen.getByRole("button", { name: /method/i })).toBeInTheDocument();
+  });
+
+  it("changes the method through the menu, including PATCH", () => {
+    // RequestBuilder is now a controlled component (no local method state), so
+    // this needs a stateful wrapper — same shape ApiTab uses via onPatchState —
+    // to see the menu selection reflected back in the display.
+    function Wrapper() {
+      const [method, setMethod] = useState("GET");
+      return (
+        <RequestBuilder
+          connection={connection}
+          watchedTables={new Set()}
+          onResult={() => {}}
+          method={method}
+          url=""
+          onPatchState={(patch) => {
+            if (patch.method !== undefined) setMethod(patch.method);
+          }}
+        />
+      );
+    }
+    render(<Wrapper />);
+    fireEvent.click(screen.getByRole("button", { name: /method/i }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "PATCH" }));
+    expect(screen.getByRole("button", { name: /method/i })).toHaveTextContent("PATCH");
+  });
+
+  it("shows the method and url from tab state, not local defaults", () => {
+    render(
+      <RequestBuilder
+        connection={connection}
+        watchedTables={new Set()}
+        onResult={() => {}}
+        method="POST"
+        url="/api/orders"
+        onPatchState={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /method/i })).toHaveTextContent("POST");
+    expect(screen.getByPlaceholderText("/api/orders")).toHaveValue("/api/orders");
+  });
+
+  it("patches state on every keystroke and every method change, rather than holding local state", () => {
+    const onPatchState = vi.fn();
+    render(
+      <RequestBuilder connection={connection} watchedTables={new Set()} onResult={() => {}} method="GET" url="" onPatchState={onPatchState} />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("/api/orders"), { target: { value: "/api/users" } });
+    expect(onPatchState).toHaveBeenCalledWith({ url: "/api/users" });
+
+    fireEvent.click(screen.getByRole("button", { name: /method/i }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "PUT" }));
+    expect(onPatchState).toHaveBeenCalledWith({ method: "PUT" });
   });
 });

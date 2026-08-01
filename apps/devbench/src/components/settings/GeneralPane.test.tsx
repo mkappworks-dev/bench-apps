@@ -1,7 +1,6 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { GeneralPane } from "./GeneralPane";
-import { useAppStore } from "../../store/useAppStore";
 import * as tauriLib from "../../lib/tauri";
 
 const settings = {
@@ -24,16 +23,6 @@ describe("GeneralPane", () => {
     render(<GeneralPane />);
     await waitFor(() => expect(screen.getByLabelText(/correlation window/i)).toHaveValue(5));
     expect(screen.getByLabelText(/smtp port/i)).toHaveValue(1025);
-  });
-
-  // A radiogroup, not a multi-select toggle group: exactly one theme applies.
-  it("offers theme as a single-select radiogroup and persists the choice", async () => {
-    render(<GeneralPane />);
-    await waitFor(() => screen.getByRole("radiogroup", { name: /theme/i }));
-    fireEvent.click(screen.getByRole("radio", { name: "Light" }));
-    await waitFor(() => expect(tauriLib.invokeSetSetting).toHaveBeenCalledWith("theme", "light"));
-    expect(useAppStore.getState().theme).toBe("light");
-    useAppStore.getState().setTheme("dark");
   });
 
   it("persists the correlation window in milliseconds while showing seconds", async () => {

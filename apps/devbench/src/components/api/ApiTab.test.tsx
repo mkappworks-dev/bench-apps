@@ -36,10 +36,55 @@ function logLine(id: number) {
   };
 }
 
+function tab(state: Record<string, unknown> = {}) {
+  return { id: "t-1", kind: "api" as const, pane: "left" as const, ordinal: 0, state };
+}
+
 describe("ApiTab", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     useAppStore.getState().setActiveSessionId(null);
+    useAppStore.getState().setWatchedTables([]);
+  });
+
+  it("forwards the Rollup's deep links to the received callbacks, not a local store call", async () => {
+    // Regression guard for the bug this migration fixed: ApiTab used to call
+    // the store's setActiveTab directly, which stopped existing when tabs
+    // became instances. This drives a real send through to a rendered DB
+    // chip and clicks it — if ApiTab regressed to calling a nonexistent
+    // store action instead of forwarding to the onOpenDb prop, either the
+    // store call would throw (no such action) or onOpenDb would never fire.
+    useAppStore.getState().setWatchedTables(["orders"]);
+    vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
+      correlation_id: "corr-1",
+      response: { status_code: 201, body: '{"id":1}', duration_ms: 10 },
+      table_diffs: [{ table: "orders", inserted: 1, updated: 0, deleted: 0 }],
+      db_error: null,
+    });
+    // Left pending: the DB chip is filled in from Phase 1 data, before the
+    // correlation window closes, so this test never needs to resolve it.
+    vi.spyOn(tauriLib, "invokeCollectCorrelationWindow").mockReturnValue(
+      deferred<tauriLib.CorrelationWindowResult>().promise,
+    );
+
+    const onOpenDb = vi.fn();
+    render(
+      <ApiTab
+        tab={tab()}
+        onPatchState={() => {}}
+        onOpenDb={onOpenDb}
+        onOpenLog={() => {}}
+        onOpenEmail={() => {}}
+      />,
+    );
+    fireEvent.change(screen.getByPlaceholderText("/api/orders"), { target: { value: "/api/orders" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    const dbChip = await screen.findByRole("button", { name: /DB.*1 write/ });
+    fireEvent.click(dbChip);
+
+    expect(onOpenDb).toHaveBeenCalledWith("orders");
   });
 
   // Leaving the rollup up after a switch attributes one investigation's
@@ -58,7 +103,7 @@ describe("ApiTab", () => {
       },
     ]);
 
-    render(<ApiTab onOpenTableInDb={() => {}} onOpenEmail={() => {}} />);
+    render(<ApiTab tab={tab()} onPatchState={() => {}} onOpenDb={() => {}} onOpenLog={() => {}} onOpenEmail={() => {}} />);
 
     // ResponseViewer renders the body verbatim inside a <pre>.
     const historyButton = await screen.findByRole("button", { name: /\/api\/orders/ });
@@ -81,7 +126,7 @@ describe("ApiTab", () => {
       deferred<tauriLib.CorrelationWindowResult>().promise,
     );
 
-    render(<ApiTab onOpenTableInDb={() => {}} onOpenEmail={() => {}} />);
+    render(<ApiTab tab={tab()} onPatchState={() => {}} onOpenDb={() => {}} onOpenLog={() => {}} onOpenEmail={() => {}} />);
     fireEvent.change(screen.getByPlaceholderText("/api/orders"), {
       target: { value: "/api/orders" },
     });
@@ -138,7 +183,7 @@ describe("ApiTab", () => {
       .mockReturnValueOnce(windowA.promise)
       .mockReturnValueOnce(windowB.promise);
 
-    render(<ApiTab onOpenTableInDb={() => {}} onOpenEmail={() => {}} />);
+    render(<ApiTab tab={tab()} onPatchState={() => {}} onOpenDb={() => {}} onOpenLog={() => {}} onOpenEmail={() => {}} />);
     const url = screen.getByPlaceholderText("/api/orders");
 
     // Send one in the unscoped view; its window stays open.
@@ -183,7 +228,7 @@ describe("ApiTab", () => {
       .mockReturnValueOnce(windowA.promise)
       .mockReturnValueOnce(windowB.promise);
 
-    render(<ApiTab onOpenTableInDb={() => {}} onOpenEmail={() => {}} />);
+    render(<ApiTab tab={tab()} onPatchState={() => {}} onOpenDb={() => {}} onOpenLog={() => {}} onOpenEmail={() => {}} />);
     const url = screen.getByPlaceholderText("/api/orders");
 
     fireEvent.change(url, { target: { value: "/api/orders" } });

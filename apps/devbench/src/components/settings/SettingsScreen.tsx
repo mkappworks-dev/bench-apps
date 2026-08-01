@@ -1,21 +1,23 @@
 import { useState } from "react";
-import { Tabs } from "@base-ui-components/react/tabs";
+import { Tabs } from "../ui/Tabs";
 import { GeneralPane } from "./GeneralPane";
+import { AppearancePane } from "./AppearancePane";
 import { ProviderPane } from "./ProviderPane";
 import { McpPane } from "./McpPane";
 import { ArchivePane } from "./ArchivePane";
 
-type PaneId = "general" | "provider" | "mcp" | "archive";
+type PaneId = "general" | "appearance" | "provider" | "mcp" | "archive";
 
 const PANES: { id: PaneId; label: string }[] = [
   { id: "general", label: "General" },
+  { id: "appearance", label: "Appearance" },
   { id: "provider", label: "Provider" },
   { id: "mcp", label: "MCP" },
   { id: "archive", label: "Archive" },
 ];
 
 /**
- * A full navigated screen, not an overlay: a 4-section surface does not fit a
+ * A full navigated screen, not an overlay: a 5-section surface does not fit a
  * compact modal, and app-wide config is not scoped to any session the way the
  * four tools are (v1 spec, Components). Because it is persistent rather than
  * transient, it is ghosty — no blur. That is the same DESIGN.md rule the New
@@ -37,7 +39,7 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
             onClick={onBack}
             className="mb-2 rounded-sm p-2 text-left text-xs font-medium text-text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-text"
           >
-            ← Back to DevBench
+            ← Back to workspace
           </button>
           <Tabs.List className="flex flex-col gap-0.5" aria-label="Settings sections">
             {PANES.map((p) => (
@@ -45,10 +47,10 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
                 key={p.id}
                 value={p.id}
                 // Base UI 1.0.0-rc.0 renamed `[data-selected]` to `[data-active]`
-                // on `<Tabs.Tab>` — see ToolTabs.tsx's identical fix (Task 4/6).
+                // on `<Tabs.Tab>` — see AppStrip.tsx's identical fix.
                 // Without this, the selected-pane highlight is dead CSS.
                 data-selected={p.id === pane ? "" : undefined}
-                className="rounded-sm p-2 text-left text-sm text-text-muted transition-colors duration-150 hover:bg-surface-2 data-[selected]:bg-surface-2 data-[selected]:text-text"
+                className="rounded-sm p-2 text-left text-sm text-text-muted transition-colors duration-150 hover:bg-surface-2 data-selected:bg-surface-2 data-selected:text-text"
               >
                 {p.label}
               </Tabs.Tab>
@@ -59,6 +61,9 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
         <div className="min-h-0 flex-1 overflow-y-auto">
           <Tabs.Panel value="general" className="p-6">
             <GeneralPane />
+          </Tabs.Panel>
+          <Tabs.Panel value="appearance" className="p-6">
+            <AppearancePane />
           </Tabs.Panel>
           <Tabs.Panel value="provider" className="p-6">
             <ProviderPane />

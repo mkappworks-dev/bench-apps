@@ -318,3 +318,39 @@ export interface ChatReply {
 export function invokeSendChatMessage(messages: ChatMessage[]): Promise<ChatReply> {
   return invoke("send_chat_message", { messages });
 }
+
+export interface TabRow {
+  id: string;
+  session_id: string | null;
+  kind: string;
+  pane: string;
+  ordinal: number;
+  state: string | null;
+}
+
+export function invokeListTabs(sessionId: string | null): Promise<TabRow[]> {
+  return invoke("list_tabs", { sessionId });
+}
+
+export function invokeCreateTab(input: {
+  id: string;
+  sessionId: string | null;
+  kind: string;
+  pane: string;
+  ordinal: number;
+  state: string;
+}): Promise<void> {
+  return invoke("create_tab", input);
+}
+
+export function invokeCloseTab(id: string): Promise<void> {
+  return invoke("close_tab", { id });
+}
+
+export function invokeSetTabState(id: string, state: string): Promise<void> {
+  return invoke("set_tab_state", { id, state });
+}
+
+export function invokeMoveTab(id: string, pane: string, ordinal: number): Promise<void> {
+  return invoke("move_tab", { id, pane, ordinal });
+}

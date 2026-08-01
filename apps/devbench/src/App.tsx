@@ -1,16 +1,15 @@
 import { useEffect, useState } from "react";
-import { useAppStore, type ThemePref } from "./store/useAppStore";
-import { TopBar } from "./components/shell/TopBar";
-import { TABS } from "./components/shell/ToolTabs";
+import { useAppStore, type Pane, type ThemePref, type ToolKind } from "./store/useAppStore";
+import { AppStrip } from "./components/shell/AppStrip";
+import { TABS } from "./components/shell/tools";
 import { SessionsSidebar } from "./components/shell/SessionsSidebar";
 import { ChatDock } from "./components/shell/ChatDock";
 import { SettingsScreen } from "./components/settings/SettingsScreen";
 import { SplitContent } from "./components/shell/SplitContent";
-import { invokeGetSettings, invokeListWatchedTables, invokeSetSetting, type DbConnectInput } from "./lib/tauri";
+import { invokeGetSettings, invokeListWatchedTables, type DbConnectInput } from "./lib/tauri";
+import { useTabController } from "./store/useTabController";
 
 export { TABS };
-
-const THEME_CYCLE: ThemePref[] = ["system", "dark", "light"];
 
 // Same hardcoded dev connection duplicated in ApiTab.tsx and DbTab.tsx — the
 // app only ever talks to one Postgres instance today, so a shared config
@@ -30,16 +29,25 @@ export default function App() {
   const setRoute = useAppStore((s) => s.setRoute);
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
+  const tabs = useAppStore((s) => s.tabs);
+  const activeTabId = useAppStore((s) => s.activeTabId);
+  const tabController = useTabController();
+  // Ephemeral: never persisted to tab.state. Only the email deep link sets
+  // it, and it targets one specific tab instance — see SplitContent.
+  const [emailFocusRequest, setEmailFocusRequest] = useState<{ tabId: string; emailId: number | null } | null>(null);
 
-  const [dbFocusTable, setDbFocusTable] = useState<string | null>(null);
-  const [emailFocusId, setEmailFocusId] = useState<number | null>(null);
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
 
-  // Restore the persisted theme at launch. DbTab and GeneralPane both read
-  // settings on their own mount, but neither is guaranteed to mount before
-  // the user starts interacting with the app — so App itself must hydrate
-  // this too, or a saved theme stays invisible until the user happens to
-  // open Settings. A failed read just leaves the "dark" default in place.
+  function onAddTab(pane: Pane, kind: ToolKind) {
+    tabController.addTab(kind, pane);
+  }
+  function onToggleSplit(): boolean {
+    return tabController.splitActiveTab();
+  }
+
+  // Restore the persisted theme at launch — otherwise it stays invisible
+  // until the user happens to open Settings > Appearance. A failed read
+  // just leaves the "dark" default in place.
   useEffect(() => {
     invokeGetSettings()
       .then((settings) => setTheme(settings.theme as ThemePref))
@@ -69,16 +77,10 @@ export default function App() {
     else root.setAttribute("data-theme", theme);
   }, [theme]);
 
-  function cycleTheme() {
-    const next = THEME_CYCLE[(THEME_CYCLE.indexOf(theme) + 1) % THEME_CYCLE.length];
-    setTheme(next);
-    void invokeSetSetting("theme", next).catch(() => {});
-  }
-
   if (route === "settings") {
     return (
       <div className="flex h-screen flex-col">
-        <TopBar chatOpen={chatOpen} theme={theme} onToggleChat={() => setChatOpen(!chatOpen)} onCycleTheme={cycleTheme} />
+        <div data-tauri-drag-region aria-hidden="true" className="h-11 shrink-0 border-b border-border" />
         <SettingsScreen onBack={() => setRoute("workspace")} />
       </div>
     );
@@ -86,16 +88,31 @@ export default function App() {
 
   return (
     <div className="flex h-screen flex-col">
-      <TopBar chatOpen={chatOpen} theme={theme} onToggleChat={() => setChatOpen(!chatOpen)} onCycleTheme={cycleTheme} />
+      <AppStrip
+        tabs={tabs}
+        activeTabId={activeTabId}
+        chatOpen={chatOpen}
+        onSetActiveTab={tabController.setActiveTabId}
+        onAddTab={onAddTab}
+        onCloseTab={tabController.closeTab}
+        onToggleSplit={onToggleSplit}
+        onCloseSplitPane={tabController.closeSplit}
+        onToggleChat={() => setChatOpen(!chatOpen)}
+      />
       {/* Three columns. The chat dock RESIZES this row rather than overlaying
           it — it is a grid track, not a fixed-position panel (DESIGN.md). */}
       <div className="flex min-h-0 flex-1">
         <SessionsSidebar onOpenSettings={() => setRoute("settings")} />
         <SplitContent
-          dbFocusTable={dbFocusTable}
-          emailFocusId={emailFocusId}
-          onOpenTableInDb={setDbFocusTable}
-          onOpenEmail={setEmailFocusId}
+          onAddTab={onAddTab}
+          onPatchState={tabController.patchTabState}
+          onOpenDb={(table) => tabController.focusOrCreateTab("db", { table })}
+          onOpenLog={() => tabController.focusOrCreateTab("log")}
+          onOpenEmail={(emailId) => {
+            const targetId = tabController.focusOrCreateTab("email");
+            setEmailFocusRequest({ tabId: targetId, emailId });
+          }}
+          emailFocusRequest={emailFocusRequest}
         />
         {chatOpen ? <ChatDock onClose={() => setChatOpen(false)} /> : null}
       </div>
