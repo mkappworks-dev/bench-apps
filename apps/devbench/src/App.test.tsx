@@ -41,6 +41,19 @@ describe("App shell", () => {
     useAppStore.getState().setRoute("workspace");
   });
 
+  // The brand sits in both routes' top strips at the same offset, so navigating
+  // into Settings must not drop it — that would read as the lockup flickering.
+  it("keeps the brand lockup in the top strip on both routes", () => {
+    const { unmount } = render(<App />);
+    expect(screen.getByText("Dev Bench")).toBeInTheDocument();
+    unmount();
+
+    useAppStore.getState().setRoute("settings");
+    render(<App />);
+    expect(screen.getByText("Dev Bench")).toBeInTheDocument();
+    useAppStore.getState().setRoute("workspace");
+  });
+
   // Bug: watchedTables only ever hydrated inside DbTab, which only mounts
   // once the user visits the DB tab. A request fired from the default "api"
   // tab before that would correlate against an empty watch set even though
