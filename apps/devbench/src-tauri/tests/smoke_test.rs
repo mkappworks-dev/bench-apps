@@ -2,6 +2,7 @@ use devbench::commands::correlation::run_correlated_request_impl;
 use devbench::commands::db::{connection_string, DbConnectInput};
 use devbench::commands::request::FireRequestInput;
 use devbench::email_state::EmailState;
+use devbench::local_db::LocalDb;
 use devbench::log_state::LogState;
 use sqlx::postgres::PgPoolOptions;
 
@@ -13,6 +14,17 @@ fn test_connection() -> DbConnectInput {
         username: std::env::var("PGUSER").unwrap_or_else(|_| "postgres".into()),
         password: std::env::var("PGPASSWORD").unwrap_or_else(|_| "postgres".into()),
     }
+}
+
+// Task 4 (v2 plan) threaded a `db: &sqlx::SqlitePool` parameter through
+// `run_correlated_request_impl_with_registry` and `collect_correlation_window_impl`
+// so correlation reads captured emails from SQLite instead of `EmailState`'s
+// removed in-memory store. This file predates that plan and isn't listed in
+// it, so it needs the same local SQLite pool the plan's own tests use.
+async fn local_db() -> (tempfile::TempDir, LocalDb) {
+    let dir = tempfile::tempdir().unwrap();
+    let db = LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+    (dir, db)
 }
 
 // NOTE: this deliberately does NOT insert the "side effect" row before calling
@@ -160,6 +172,7 @@ async fn firing_a_request_correlates_both_db_writes_and_log_lines() {
 
     let emails = EmailState::new();
     let registry = CorrelationRegistry::new();
+    let (_edb_dir, edb) = local_db().await;
 
     // The mocked backend does both things a real one would during the request:
     // writes a row and writes a log line.
@@ -208,6 +221,7 @@ async fn firing_a_request_correlates_both_db_writes_and_log_lines() {
         vec!["smoke_log_orders".to_string()],
         &logs,
         &emails,
+        &edb.pool,
         &registry,
         50_000,
         DEFAULT_CORRELATION_WINDOW_MS,
@@ -229,6 +243,7 @@ async fn firing_a_request_correlates_both_db_writes_and_log_lines() {
         &registry,
         &logs,
         &emails,
+        &edb.pool,
         result.correlation_id,
         50_000 + DEFAULT_CORRELATION_WINDOW_MS + 1,
     )
@@ -311,11 +326,12 @@ async fn firing_a_request_correlates_db_writes_log_lines_and_sent_mail() {
     // --- SMTP catcher on an OS-assigned port, so the test never collides
     //     with a real Mailhog on 1025 ---
     let emails = EmailState::new();
+    let (_edb_dir, edb) = local_db().await;
     let listener = smtp_catcher::bind(0).unwrap();
     let smtp_port = listener.local_addr().unwrap().port();
-    let store = emails.store();
+    let catcher_pool = edb.pool.clone();
     std::thread::spawn(move || {
-        let _ = smtp_catcher::serve(listener, store);
+        let _ = smtp_catcher::serve(listener, catcher_pool);
     });
     emails.set_status(SmtpStatus { listening: true, port: smtp_port, error: None });
 
@@ -377,6 +393,7 @@ async fn firing_a_request_correlates_db_writes_log_lines_and_sent_mail() {
         vec!["smoke_full_orders".to_string()],
         &logs,
         &emails,
+        &edb.pool,
         &registry,
         started_at_ms,
         DEFAULT_CORRELATION_WINDOW_MS,
@@ -396,7 +413,7 @@ async fn firing_a_request_correlates_db_writes_log_lines_and_sent_mail() {
     // tailer explicitly and give the catcher thread a moment to finish DATA.
     for _ in 0..100 {
         logs.poll_all(chrono::Utc::now().timestamp_millis());
-        if emails.store().lock().unwrap().list(10).len() == 1 {
+        if devbench::email_state::list_captured_emails(&edb.pool, None, 10).await.unwrap().emails.len() == 1 {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -406,6 +423,7 @@ async fn firing_a_request_correlates_db_writes_log_lines_and_sent_mail() {
         &registry,
         &logs,
         &emails,
+        &edb.pool,
         result.correlation_id,
         chrono::Utc::now().timestamp_millis() + DEFAULT_CORRELATION_WINDOW_MS + 1,
     )
