@@ -31,14 +31,16 @@ fn main() {
                     .unwrap_or(DEFAULT_SMTP_PORT);
                 (db, port)
             });
-            handle.manage(db);
-
             let logs = Arc::new(LogState::new());
             app.manage(Arc::clone(&logs));
 
-            // One background task polls every source. It outlives every
-            // request; correlation windows read from the buffer it fills,
-            // which is why no lines are lost between the two correlation calls.
+            tauri::async_runtime::block_on(devbench::commands::logs::restore_persisted_sources(&db.pool, &logs));
+
+            handle.manage(db);
+
+            // One background task polls every FILE source. Command sources
+            // capture via their own reader tasks, started when they're
+            // spawned (restore, above, or add_log_source later).
             tauri::async_runtime::spawn(async move {
                 let mut ticker =
                     tokio::time::interval(std::time::Duration::from_millis(LOG_POLL_INTERVAL_MS));
