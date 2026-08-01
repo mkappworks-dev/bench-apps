@@ -1,0 +1,665 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DevBench — DB connections, query runner, grid redesign</title>
+<style>
+  /* Tokens copied verbatim from devbench-v2-shell.html / DESIGN.md so this
+     reads as the same app, not a different visual language. */
+  :root {
+    --bg: #08090c; --surface: #121419; --surface-2: #191c22; --border: #24262e;
+    --text: #ecedf2; --text-muted: #999fac; --text-faint: #666d7a;
+    --accent: #f2f3f5; --accent-strong: #ffffff; --accent-on: #0a0b0e;
+    --page-glow: rgba(255, 255, 255, 0.07);
+    --success: #3fce85; --success-bg: #12271c;
+    --warning: #e3a438; --warning-bg: #2b2210;
+    --danger: #e5695f; --danger-bg: #2b1514;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.5);
+    --glass-bg: rgba(18,20,25,.72); --glass-border: rgba(255,255,255,.08);
+    --glass-hi: inset 0 1px 0 rgba(255,255,255,.06);
+    --radius-sm: 6px; --radius-lg: 12px;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+    --fs-xs: 10.5px; --fs-sm: 12px; --fs-md: 13.5px; --fs-h: 16px;
+  }
+  :root[data-theme="light"] {
+    --bg:#f5f7fa; --surface:#ffffff; --surface-2:#eef1f6; --border:#dde3ec;
+    --text:#10151f; --text-muted:#5b6472; --text-faint:#8a92a1;
+    --accent:#10151f; --accent-strong:#000000; --accent-on:#ffffff;
+    --page-glow: rgba(16,21,31,.025);
+    --success:#167a45; --success-bg:#e3f5eb; --warning:#a3660a; --warning-bg:#faf0dc;
+    --danger:#b93a3a; --danger-bg:#fbe9e9;
+    --shadow:0 1px 2px rgba(16,21,31,.05), 0 10px 28px rgba(16,21,31,.09);
+    --glass-bg: rgba(255,255,255,.78); --glass-border: rgba(16,21,31,.07);
+    --glass-hi: inset 0 1px 0 rgba(255,255,255,.6);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; font-family: var(--font-sans); font-size: var(--fs-md); line-height: 1.5;
+    background: radial-gradient(1000px 520px at 8% -12%, var(--page-glow), transparent 60%), var(--bg);
+    color: var(--text); -webkit-font-smoothing: antialiased;
+    font-variant-numeric: tabular-nums;
+  }
+  button, input, textarea, select { font-family: inherit; font-size: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  svg { display: block; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; border: 3px solid transparent; background-clip: padding-box; }
+
+  .app { display: flex; flex-direction: column; height: 100vh; min-height: 560px; }
+
+  .strip { display: grid; grid-template-columns: 218px 1fr auto; height: 44px; min-height: 44px; border-bottom: 1px solid var(--border); -webkit-app-region: drag; position: relative; }
+  .strip button, .strip .tab { -webkit-app-region: no-drag; }
+  .strip-col { display: flex; align-items: center; min-width: 0; }
+  .tabs-col { padding: 0 0 0 8px; }
+  .actions-col { justify-content: flex-end; gap: 2px; padding: 0 10px; }
+  .lights { display: flex; gap: 8px; align-items: center; padding: 0 0 0 14px; }
+  .light { width: 12px; height: 12px; border-radius: 50%; }
+  .light.r { background: #ff5f57; } .light.y { background: #febc2e; } .light.g { background: #28c840; }
+
+  .tabs { display: flex; align-items: center; gap: 2px; min-width: 0; }
+  .tab { appearance: none; border: 1px solid transparent; background: transparent; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 8px 0 9px; border-radius: var(--radius-sm); color: var(--text-muted); font-size: var(--fs-sm); font-weight: 500; }
+  .tab[aria-selected="true"] { background: var(--surface-2); color: var(--text); font-weight: 600; }
+  .tab .sub { color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-sm); }
+  .tab[aria-selected="true"] .sub { color: var(--text-muted); }
+
+  .ghost-btn { appearance: none; border: 1px solid transparent; background: transparent; cursor: pointer; height: 30px; padding: 0 9px; border-radius: var(--radius-sm); display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: var(--fs-sm); font-weight: 500; }
+  .ghost-btn:hover { background: var(--surface-2); color: var(--text); }
+  .ghost-btn.icon-only { width: 26px; height: 26px; padding: 0; justify-content: center; }
+  .divider { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; margin: 0 4px; }
+
+  /* Popup primitive — same shape as the v2 shell's `.menu` */
+  .menu { position: absolute; z-index: 50; min-width: 220px; padding: 5px; background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: var(--radius-lg); box-shadow: var(--shadow), var(--glass-hi); backdrop-filter: blur(22px) saturate(155%); -webkit-backdrop-filter: blur(22px) saturate(155%); }
+  .menu-label { padding: 6px 9px 5px; font-size: var(--fs-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-faint); }
+  .menu-item { appearance: none; width: 100%; border: 0; background: transparent; cursor: pointer; text-align: left; display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: var(--radius-sm); color: var(--text-muted); font-size: var(--fs-md); }
+  .menu-item:hover, .menu-item.hi { background: var(--surface-2); color: var(--text); }
+  .menu-item .desc { display: block; font-size: var(--fs-sm); color: var(--text-faint); font-weight: 400; }
+  .menu-item strong { font-weight: 600; font-size: var(--fs-md); }
+  .menu-item .k { margin-left: auto; color: var(--text-faint); }
+  .menu-sep { height: 1px; background: var(--border); margin: 5px 3px; }
+  .scrim { position: fixed; inset: 0; z-index: 40; }
+
+  .select-trigger { appearance: none; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius-sm); padding: 0 8px 0 11px; height: 30px; color: var(--text); font-size: var(--fs-sm); font-weight: 600; }
+  .select-trigger:hover { border-color: var(--text-faint); background: var(--surface-2); }
+  .select-trigger .chev { color: var(--text-faint); margin-left: auto; }
+
+  .body-grid { flex: 1; display: flex; min-height: 0; }
+  .sidebar { width: 218px; min-width: 218px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+  .side-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 10px 10px 12px; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+  .side-list { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+  .side-item { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: var(--radius-sm); cursor: pointer; color: var(--text-muted); font-size: var(--fs-sm); border: 0; background: transparent; width: 100%; text-align: left; }
+  .side-item:hover { background: var(--surface-2); }
+  .side-item[aria-current="true"] { background: var(--surface-2); color: var(--text); font-weight: 600; }
+  .side-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .side-foot { border-top: 1px solid var(--border); padding: 6px; }
+
+  .panes { flex: 1; display: flex; min-width: 0; }
+  .pane { flex: 1; min-width: 0; display: flex; }
+
+  .card { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); overflow: hidden; }
+  .card-head { padding: 9px 12px; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); display: flex; align-items: center; gap: 8px; }
+  .pill { font-size: var(--fs-xs); font-weight: 700; padding: 2px 7px; border-radius: 20px; font-family: var(--font-mono); }
+  .pill.ok { background: var(--success-bg); color: var(--success); }
+  .pill.warn { background: var(--warning-bg); color: var(--warning); }
+  .pill.err { background: var(--danger-bg); color: var(--danger); }
+  .pill.muted { background: var(--surface-2); color: var(--text-faint); }
+
+  .field { height: 34px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); padding: 0 11px; display: flex; align-items: center; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text); }
+  input.field, select.field, textarea.field { width: 100%; outline: none; }
+  textarea.field { padding: 9px 11px; height: auto; min-height: 74px; resize: vertical; line-height: 1.6; }
+  .primary { appearance: none; border: 0; cursor: pointer; height: 34px; padding: 0 16px; border-radius: var(--radius-sm); background: var(--accent); color: var(--accent-on); font-size: var(--fs-md); font-weight: 700; }
+  .primary:hover { background: var(--accent-strong); }
+
+  .tree-item { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border-radius: var(--radius-sm); cursor: pointer; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-muted); border: 0; background: transparent; width: 100%; text-align: left; }
+  .tree-item:hover { background: var(--surface-2); }
+  .tree-item[aria-current="true"] { background: var(--surface-2); color: var(--text); }
+  .tree-item .eye { margin-left: auto; color: var(--text-faint); }
+  .tree-item.watched .eye { color: var(--success); }
+
+  .settings { flex: 1; display: flex; min-height: 0; }
+  .settings-nav { width: 190px; min-width: 190px; border-right: 1px solid var(--border); padding: 10px 8px; display: flex; flex-direction: column; gap: 2px; }
+  .settings-body { flex: 1; overflow-y: auto; padding: 26px 32px; }
+  .settings-body .inner { max-width: 680px; }
+
+  .empty { display: grid; place-items: center; height: 100%; text-align: center; color: var(--text-faint); }
+
+  /* ===================== new for this mockup ===================== */
+
+  /* DB tab left rail: connection picker replaces the plain "devbench_test" label */
+  .rail { width: 210px; min-width: 210px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+  .rail-head { padding: 8px; border-bottom: 1px solid var(--border); }
+  .rail-list { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+
+  .db-content { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+  .pane-strip { display: flex; align-items: center; gap: 8px; height: 44px; min-height: 44px; padding: 0 14px; border-bottom: 1px solid var(--border); }
+
+  .db-body { flex: 1; overflow: auto; padding: 16px 18px; min-height: 0; }
+
+  /* Query console — a resizable bottom drawer, not a mode swap. Browse stays
+     visible above it at all times, so you can watch a table while querying
+     another one (or the same one). */
+  .query-drawer { display: flex; flex-direction: column; flex-shrink: 0; border-top: 1px solid var(--border); background: var(--surface); }
+  /* Full-width hit zone for easy grabbing, but the visible grip is a small
+     centered pill — the drag affordance reads as "top middle", not a bar
+     spanning the whole panel. */
+  .drawer-handle { height: 14px; cursor: row-resize; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+  .drawer-handle::after { content: ''; width: 36px; height: 4px; border-radius: 2px; background: var(--border); transition: background-color 150ms ease; }
+  .drawer-handle:hover::after, .drawer-handle.dragging::after { background: var(--text-faint); }
+  .drawer-head { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .drawer-body { flex: 1; overflow: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  .sql-meta { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--text-faint); }
+  .sql-meta b { color: var(--text); font-family: var(--font-mono); }
+
+  /* Grid */
+  .grid-wrap { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+  table.data { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: var(--fs-sm); }
+  table.data th { position: relative; text-align: left; padding: 0; color: var(--text-faint); font-weight: 600; border-bottom: 1px solid var(--border); background: var(--surface-2); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .04em; user-select: none; }
+  .th-btn { display: flex; align-items: center; gap: 5px; width: 100%; padding: 7px 14px 7px 12px; background: transparent; border: 0; cursor: pointer; color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit; text-align: left; }
+  .th-btn:hover { color: var(--text); }
+  .th-btn .chev { opacity: 0; color: var(--text-faint); }
+  th[data-sort]:not([data-sort="none"]) .chev, .th-btn:hover .chev { opacity: 1; }
+  th[data-sort="desc"] .chev { transform: rotate(180deg); }
+  .th-resize { position: absolute; top: 0; right: 0; bottom: 0; width: 5px; cursor: col-resize; }
+  .th-resize:hover { background: var(--accent); opacity: .5; }
+  table.data td { padding: 7px 12px; border-bottom: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
+  table.data tr:last-child td { border-bottom: 0; }
+  table.data tr:hover td { background: var(--surface-2); }
+  .cell-num { text-align: right; font-variant-numeric: tabular-nums; }
+  .cell-null { color: var(--text-faint); font-style: italic; }
+  .cell-unsupported { color: var(--warning); font-style: italic; }
+  .cell-bool { display: inline-flex; padding: 1px 7px; border-radius: 20px; font-size: var(--fs-xs); font-weight: 700; }
+  .cell-bool.t { background: var(--success-bg); color: var(--success); }
+  .cell-bool.f { background: var(--surface); border: 1px solid var(--border); color: var(--text-faint); }
+  td.editable:hover { background: var(--surface-2); cursor: text; }
+  td.editable:hover::after { content: '✎'; float: right; color: var(--text-faint); font-size: var(--fs-xs); }
+  .cell-edit, .cell-diff-inline { display: flex; align-items: center; gap: 4px; }
+  .cell-edit input { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--accent); border-radius: 4px; padding: 3px 6px; color: var(--text); font: inherit; }
+  .cell-edit button, .cell-diff-inline button { appearance: none; border: 0; cursor: pointer; width: 20px; height: 20px; border-radius: 4px; display: grid; place-items: center; flex-shrink: 0; }
+  .cell-edit .save, .cell-diff-inline .save { background: var(--success-bg); color: var(--success); }
+  .cell-edit .cancel, .cell-diff-inline .cancel { background: var(--surface-2); color: var(--text-faint); }
+  .cell-diff-old { color: var(--danger); text-decoration: line-through; }
+  .cell-diff-new { color: var(--success); font-weight: 600; }
+  .diff-card { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; background: var(--surface); }
+  .diff-card .head { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-faint); margin-bottom: 6px; }
+  .diff-row { display: flex; gap: 10px; align-items: center; font-family: var(--font-mono); font-size: var(--fs-sm); padding: 3px 0; }
+  .diff-row .col { color: var(--text-faint); min-width: 70px; }
+
+  .grid-pager { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); font-size: var(--fs-sm); color: var(--text-faint); }
+  .grid-pager .btns { display: flex; gap: 6px; }
+  .grid-note { margin-top: 10px; font-size: var(--fs-sm); color: var(--text-faint); }
+
+  /* Settings > Connections */
+  .conn-list { display: flex; flex-direction: column; gap: 8px; margin: 18px 0; }
+  .conn-card { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 12px 14px; display: flex; align-items: center; gap: 12px; }
+  .conn-card .name { font-weight: 600; font-size: var(--fs-md); }
+  .conn-card .meta { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-faint); }
+  .conn-card .actions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+  .form-grid .span-2 { grid-column: 1 / -1; }
+  .form-label { display: block; font-size: var(--fs-xs); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 5px; }
+  .form-help { font-size: var(--fs-sm); color: var(--text-faint); margin-top: 10px; }
+
+  /* Add/edit connection modal. Glass, matching the New Session picker
+     precedent for transient overlays (SettingsScreen.tsx's own comment notes
+     Settings itself is ghosty because it's persistent — a modal is not). */
+  .modal-scrim { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; }
+  .modal { width: 560px; max-width: calc(100vw - 40px); max-height: calc(100vh - 80px); overflow-y: auto; background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: var(--radius-lg); box-shadow: var(--shadow), var(--glass-hi); backdrop-filter: blur(22px) saturate(155%); -webkit-backdrop-filter: blur(22px) saturate(155%); }
+  @media (prefers-reduced-transparency: reduce) { .modal { background: var(--surface); backdrop-filter: none; } }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+  .modal-head h3 { margin: 0; font-size: var(--fs-md); font-weight: 700; }
+  .modal-body { padding: 18px 16px; }
+  .modal-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 14px 16px; border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<div id="root" class="app"></div>
+
+<script>
+const I = {
+  chev: '<svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
+  check: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
+  x: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  db: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><ellipse cx="12" cy="5.5" rx="7.5" ry="3"/><path d="M4.5 5.5v13c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-13"/><path d="M4.5 12c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3"/></svg>',
+  plug: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6M15 2v6M6 8h12l-1 5a5 5 0 0 1-10 0z"/><path d="M12 17v5"/></svg>',
+  gear: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M21.5 12h-3M5.5 12h-3M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1M18.7 18.7l-2.1-2.1M7.4 7.4L5.3 5.3"/></svg>',
+  back: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
+};
+
+/* ---------------------------------------------------------------- data */
+const CONNECTIONS = [
+  { id: 'c1', name: 'Local Dev', engine: 'postgres', host: 'localhost', port: 5432, database: 'devbench_test', username: 'postgres', sslmode: 'disable', hasPassword: true, status: 'ok' },
+  { id: 'c2', name: 'Staging',   engine: 'postgres', host: 'staging-db.internal', port: 5432, database: 'app', username: 'app_ro', sslmode: 'require', hasPassword: true, status: 'ok' },
+  { id: 'c3', name: 'Prod (read replica)', engine: 'postgres', host: 'prod-replica.internal', port: 5432, database: 'app', username: 'app_ro', sslmode: 'require', hasPassword: false, status: 'err' },
+];
+
+const TABLES = ['orders', 'payments', 'users'];
+const WATCHED = new Set(['orders', 'payments']);
+
+const SCHEMAS = {
+  orders:   { pk: 'id', cols: ['id','user_id','status','amount','paid','created_at','notes'] },
+  payments: { pk: null, cols: ['tenant_id','item_id','status','amount'] },
+  users:    { pk: 'id', cols: ['id','email','status'] },
+};
+
+const ROWS = {
+  orders: [
+    ['1041','usr_88','pending', {unsupported:true}, false, '2026-07-31 09:14:02', null],
+    ['1042','usr_12','paid',    {unsupported:true}, true,  '2026-07-31 09:15:10', 'rush order'],
+    ['1043','usr_88','failed',  {unsupported:true}, false, '2026-07-31 09:15:44', null],
+  ],
+  payments: [
+    ['t_1','item_9','succeeded', {unsupported:true}],
+    ['t_1','item_2','declined',  {unsupported:true}],
+  ],
+  users: [
+    ['usr_12','ada@example.com','active'],
+    ['usr_88','grace@example.com','active'],
+  ],
+};
+
+const QUERY_EXAMPLES = {
+  select: {
+    sql: "SELECT id, status, amount, paid\nFROM orders\nWHERE created_at > now() - interval '1 day';",
+    columns: ['id','status','amount','paid'],
+    rows: [
+      ['1041','pending', {unsupported:true}, false],
+      ['1042','paid',    {unsupported:true}, true],
+      ['1043','failed',  {unsupported:true}, false],
+    ],
+    meta: '3 rows · 84 ms',
+  },
+  update: {
+    sql: "UPDATE orders SET status = 'shipped' WHERE id = 1042;",
+    columns: [], rows: [],
+    rowsAffected: 1,
+    meta: '1 row affected · 12 ms',
+    diff: [{ table: 'orders', match: 'id = 1042', changes: [{ col: 'status', before: 'paid', after: 'shipped' }] }],
+  },
+};
+
+/* ---------------------------------------------------------------- state */
+const S = {
+  route: 'workspace',
+  activeConnectionId: 'c1',
+  activeTable: 'orders',
+  menu: null,
+  editingCell: null,     // {ri, ci, phase: 'editing'|'preview', draft}
+  queryExample: 'select',
+  queryPhase: 'idle',    // 'idle' | 'preview' | 'committed' — nothing runs for real until Commit
+  consoleOpen: false,
+  drawerHeight: 220,     // px; dragged via .drawer-handle
+  connectionModal: null, // null | {mode:'add'} | {mode:'edit', id}
+};
+
+const activeConnection = () => CONNECTIONS.find(c => c.id === S.activeConnectionId);
+
+/* ---------------------------------------------------------------- chrome */
+function strip() {
+  const back = S.route === 'settings';
+  return `<div class="strip">
+    <div class="strip-col"><div class="lights"><span class="light r"></span><span class="light y"></span><span class="light g"></span></div></div>
+    <div class="strip-col tabs-col">
+      ${back
+        ? `<button class="ghost-btn" data-act="workspace">${I.back}<span>Back to DevBench</span></button>`
+        : `<div class="tabs"><span class="tab" aria-selected="true">${I.db}<span>DB</span><span class="sub">${S.activeTable}</span></span></div>`}
+    </div>
+    <div class="strip-col actions-col">
+      ${back ? '<span style="font-size:var(--fs-sm);font-weight:600;color:var(--text-faint)">Settings</span>' : ''}
+    </div>
+  </div>`;
+}
+
+function sidebar() {
+  return `<aside class="sidebar">
+    <div class="side-head">Sessions</div>
+    <div class="side-list">
+      <button class="side-item" aria-current="true"><span class="name">slow orders query</span></button>
+      <button class="side-item"><span class="name">checkout 500s</span></button>
+    </div>
+    <div class="side-foot"><button class="side-item" data-act="settings">${I.gear}<span class="name">Settings</span></button></div>
+  </aside>`;
+}
+
+/* ---------------------------------------------------------------- DB tab */
+function dbTab() {
+  return `<div class="rail">
+    <div class="rail-head">
+      <button class="select-trigger" data-menu="connection" style="width:100%;justify-content:space-between">
+        <span>${activeConnection().name}</span>${I.chev}
+      </button>
+    </div>
+    <div class="rail-list">
+      ${TABLES.map(t => `<button class="tree-item ${WATCHED.has(t) ? 'watched' : ''}" aria-current="${t === S.activeTable}" data-table="${t}">
+        ${t}<span class="eye">${eyeIcon()}</span></button>`).join('')}
+    </div>
+  </div>
+  <div class="db-content">
+    <div class="pane-strip">
+      <span style="font-size:var(--fs-sm);font-weight:600;color:var(--text-muted)">${S.activeTable}</span>
+      <div style="margin-left:auto">
+        <button class="ghost-btn" data-act="toggle-console" aria-pressed="${S.consoleOpen}">
+          <span style="display:inline-flex;transform:rotate(${S.consoleOpen ? 180 : 0}deg)">${I.chev}</span>
+          <span>Query console</span>
+        </button>
+      </div>
+    </div>
+    <div class="db-body">${browseBody()}</div>
+    ${S.consoleOpen ? queryDrawer() : ''}
+  </div>`;
+}
+
+function eyeIcon() {
+  return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12s3.8-6.5 10-6.5S22 12 22 12s-3.8 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg>';
+}
+
+function browseBody() {
+  const schema = SCHEMAS[S.activeTable];
+  return `
+    <div class="grid-wrap">
+      ${grid(schema.cols, ROWS[S.activeTable], schema.pk)}
+      <div class="grid-pager">
+        <span>Showing 1–${ROWS[S.activeTable].length} · ${S.activeTable}</span>
+        <div class="btns">
+          <button class="ghost-btn" disabled style="opacity:.4">Prev</button>
+          <button class="ghost-btn">Next</button>
+        </div>
+      </div>
+    </div>
+    ${schema.pk ? '' : `<div class="grid-note">No single-column primary key on <b style="color:var(--text-muted)">${S.activeTable}</b> — cells are read-only (same rule correlation watching already uses).</div>`}
+  `;
+}
+
+/* Query console: a resizable bottom drawer, not a mode swap — Browse (above)
+   keeps rendering the currently selected table the whole time. */
+function queryDrawer() {
+  const ex = QUERY_EXAMPLES[S.queryExample];
+  return `<div class="query-drawer" style="height:${S.drawerHeight}px">
+    <div class="drawer-handle" title="Drag to resize"></div>
+    <div class="drawer-head">
+      <span style="font-size:var(--fs-xs);font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text-faint)">Query console</span>
+      <span style="font-size:var(--fs-xs);color:var(--text-faint)">— single statement per run, against ${activeConnection().name}</span>
+      <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
+        <button class="ghost-btn" data-act="ex-select" aria-pressed="${S.queryExample === 'select'}" style="height:24px;font-size:var(--fs-xs)">Example: SELECT</button>
+        <button class="ghost-btn" data-act="ex-update" aria-pressed="${S.queryExample === 'update'}" style="height:24px;font-size:var(--fs-xs)">Example: UPDATE</button>
+        <button class="primary" data-act="run-query" style="height:26px;padding:0 12px;font-size:var(--fs-sm)">Preview ⌘⏎</button>
+        <button class="ghost-btn icon-only" data-act="toggle-console" aria-label="Close console">${I.x}</button>
+      </div>
+    </div>
+    <div class="drawer-body">
+      <textarea class="field" style="min-height:56px" spellcheck="false">${ex.sql}</textarea>
+      ${renderQueryPhase(ex)}
+    </div>
+  </div>`;
+}
+
+function renderQueryPhase(ex) {
+  if (S.queryPhase === 'idle') {
+    return `<div class="grid-note" style="margin-top:0">Press Preview — this opens a transaction and shows you the effect. Nothing is permanent in ${activeConnection().name} until you Commit.</div>`;
+  }
+  if (S.queryPhase === 'preview') {
+    return `
+      <div class="sql-meta"><span class="pill muted">PREVIEW</span><span>held in an open transaction — not yet committed</span></div>
+      ${ex.diff ? ex.diff.map(diffCard).join('') : (ex.columns.length ? `<div class="grid-wrap">${grid(ex.columns, ex.rows, null)}</div>` : `<div class="grid-note" style="margin-top:0">No rows matched.</div>`)}
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="ghost-btn" data-act="rollback-query" style="border:1px solid var(--border)">Rollback</button>
+        <button class="primary" data-act="commit-query">Commit</button>
+      </div>
+    `;
+  }
+  // committed
+  return `
+    <div class="sql-meta">
+      <span class="pill ok">✓ COMMITTED</span>
+      ${'rowsAffected' in ex ? `<span><b>${ex.rowsAffected}</b> row affected</span>` : `<span><b>${ex.rows.length}</b> rows</span>`}
+      <span>·</span><span>${ex.meta.split('·')[1] || ''}</span>
+    </div>
+    ${!('rowsAffected' in ex) && ex.columns.length ? `<div class="grid-wrap">${grid(ex.columns, ex.rows, null)}</div>` : ''}
+  `;
+}
+
+function diffCard(d) {
+  return `<div class="diff-card">
+    <div class="head">${d.table} · ${d.match}</div>
+    ${d.changes.map(c => `<div class="diff-row"><span class="col">${c.col}</span><span class="cell-diff-old">${c.before}</span><span style="color:var(--text-faint)">→</span><span class="cell-diff-new">${c.after}</span></div>`).join('')}
+  </div>`;
+}
+
+function grid(cols, rows, pkCol) {
+  return `<table class="data">
+    <thead><tr>${cols.map(c => `<th data-sort="${c === pkCol ? 'asc' : 'none'}">
+      <button class="th-btn" data-sort-col="${c}">${c}${I.chev}</button>
+      <span class="th-resize"></span>
+    </th>`).join('')}</tr></thead>
+    <tbody>${rows.map((r, ri) => `<tr>${r.map((v, ci) => cell(v, cols[ci], pkCol, ri, ci, r)).join('')}</tr>`).join('')}</tbody>
+  </table>`;
+}
+
+function displayValue(v) {
+  if (v === null) return 'NULL';
+  if (v && v.unsupported) return '<unsupported type>';
+  return String(v);
+}
+
+function cell(v, col, pkCol, ri, ci, row) {
+  const editable = pkCol && col !== pkCol;
+  const editing = S.editingCell && S.editingCell.ri === ri && S.editingCell.ci === ci;
+  if (editing && S.editingCell.phase === 'preview') {
+    return `<td><div class="cell-diff-inline">
+      <span class="cell-diff-old">${displayValue(v)}</span><span style="color:var(--text-faint)">→</span><span class="cell-diff-new">${S.editingCell.draft}</span>
+      <button class="cancel" data-act="rollback-cell" title="Rollback">${I.x}</button>
+      <button class="save" data-act="commit-cell" title="Commit">${I.check}</button>
+    </div></td>`;
+  }
+  if (editing) {
+    return `<td><div class="cell-edit">
+      <input value="${v === null ? '' : (v && v.unsupported ? '' : v)}" autofocus />
+      <button class="save" data-act="preview-cell" title="Preview change">${I.check}</button>
+      <button class="cancel" data-act="cancel-cell" title="Cancel">${I.x}</button>
+    </div></td>`;
+  }
+  let inner;
+  if (v === null) inner = `<span class="cell-null">NULL</span>`;
+  else if (v && v.unsupported) inner = `<span class="cell-unsupported">&lt;unsupported type&gt;</span>`;
+  else if (v === true || v === false) inner = `<span class="cell-bool ${v ? 't' : 'f'}">${v}</span>`;
+  else if (/^-?\d+$/.test(String(v)) && col !== 'id') inner = `<span class="cell-num">${v}</span>`;
+  else inner = v;
+  return `<td class="${editable ? 'editable' : ''}" ${editable ? `data-edit-cell="${ri}:${ci}"` : ''}>${inner}</td>`;
+}
+
+/* ---------------------------------------------------------------- settings */
+function settingsScreen() {
+  const NAV = ['General', 'Appearance', 'Connections', 'Provider', 'MCP', 'Archive'];
+  return `<div class="settings">
+    <nav class="settings-nav">${NAV.map(n => `<button class="side-item" aria-current="${n === 'Connections'}"><span class="name">${n}</span></button>`).join('')}</nav>
+    <div class="settings-body"><div class="inner">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px">
+        <div>
+          <h2 style="margin:0 0 3px;font-size:var(--fs-h);font-weight:700">Connections</h2>
+          <p style="margin:0;font-size:var(--fs-sm);color:var(--text-faint)">Databases DevBench can browse, query, and watch. Passwords are stored in your OS keychain, never here.</p>
+        </div>
+        <button class="primary" data-act="add-connection" style="flex-shrink:0">+ Add connection</button>
+      </div>
+
+      <div class="conn-list">
+        ${CONNECTIONS.map(c => `<div class="conn-card">
+          <div style="min-width:0">
+            <div class="name">${c.name}</div>
+            <div class="meta">${c.engine} · ${c.host}:${c.port}/${c.database}</div>
+          </div>
+          <div class="actions">
+            <span class="pill ${c.status === 'ok' ? 'ok' : 'err'}">${c.status === 'ok' ? 'Connected' : 'Error'}</span>
+            <button class="ghost-btn" style="height:26px;font-size:var(--fs-xs)">Test</button>
+            <button class="ghost-btn icon-only" data-edit-connection="${c.id}">✎</button>
+            <button class="ghost-btn icon-only">${I.x}</button>
+          </div>
+        </div>`).join('')}
+      </div>
+    </div></div>
+  </div>`;
+}
+
+function connectionForm(existing) {
+  const c = existing || { name: '', engine: 'postgres', host: '', port: '', database: '', username: '', sslmode: 'disable' };
+  return `<div class="form-grid">
+    <div><span class="form-label">Name</span><input class="field" style="width:100%" placeholder="Local Dev" value="${c.name}" /></div>
+    <div><span class="form-label">Engine</span>
+      <select class="field" style="width:100%">
+        <option ${c.engine === 'postgres' ? 'selected' : ''}>postgres</option>
+        <option disabled>sqlite (reserved — not yet supported)</option>
+      </select>
+    </div>
+    <div><span class="form-label">Host</span><input class="field" style="width:100%" placeholder="localhost" value="${c.host}" /></div>
+    <div><span class="form-label">Port</span><input class="field" style="width:100%" placeholder="5432" value="${c.port}" /></div>
+    <div><span class="form-label">Database</span><input class="field" style="width:100%" placeholder="devbench_test" value="${c.database}" /></div>
+    <div><span class="form-label">Username</span><input class="field" style="width:100%" placeholder="postgres" value="${c.username}" /></div>
+    <div><span class="form-label">Password</span><input class="field" type="password" style="width:100%" placeholder="${existing && existing.hasPassword ? '•••••••• (stored)' : 'Enter a password'}" /></div>
+    <div><span class="form-label">SSL mode</span>
+      <select class="field" style="width:100%">
+        ${['disable', 'require', 'verify-full'].map(m => `<option ${c.sslmode === m ? 'selected' : ''}>${m}</option>`).join('')}
+      </select>
+    </div>
+  </div>
+  <div class="form-help">Password is written to your OS keychain only when Save succeeds; a failed test never touches storage.</div>`;
+}
+
+/* Rendered as directly-appended DOM (like renderMenu), not innerHTML — its
+   own onclick handlers, so a click inside the card can stop propagation
+   without also breaking this app's document-level delegated click handler. */
+function renderConnectionModal() {
+  const { mode, id } = S.connectionModal;
+  const existing = mode === 'edit' ? CONNECTIONS.find(c => c.id === id) : null;
+  const scrim = document.createElement('div');
+  scrim.className = 'modal-scrim';
+  scrim.onclick = () => { S.connectionModal = null; render(); };
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.onclick = (e) => e.stopPropagation();
+  modal.innerHTML = `
+    <div class="modal-head">
+      <h3>${mode === 'edit' ? `Edit connection — ${existing.name}` : 'Add a connection'}</h3>
+      <button class="ghost-btn icon-only" data-close>${I.x}</button>
+    </div>
+    <div class="modal-body">${connectionForm(existing)}</div>
+    <div class="modal-foot">
+      <button class="ghost-btn" style="border:1px solid var(--border)">Test connection</button>
+      <div style="display:flex;gap:8px">
+        <button class="ghost-btn" data-close>Cancel</button>
+        <button class="primary" data-close>Save connection</button>
+      </div>
+    </div>`;
+  scrim.appendChild(modal);
+  document.body.appendChild(scrim);
+  modal.querySelectorAll('[data-close]').forEach(b => b.onclick = () => { S.connectionModal = null; render(); });
+}
+
+/* ---------------------------------------------------------------- render */
+function render() {
+  document.querySelectorAll('.menu, .scrim, .modal-scrim').forEach(e => e.remove());
+  const root = document.getElementById('root');
+  root.innerHTML = `${strip()}<div class="body-grid">
+    ${S.route === 'settings' ? settingsScreen() : `${sidebar()}<div class="panes"><div class="pane">${dbTab()}</div></div>`}
+  </div>`;
+  if (S.menu) renderMenu();
+  if (S.connectionModal) renderConnectionModal();
+  wireDrawerDrag();
+}
+
+/* Direct DOM mutation during drag (no render() per mousemove) keeps the
+   resize smooth; S.drawerHeight is synced so the next full render agrees. */
+function wireDrawerDrag() {
+  const handle = document.querySelector('.drawer-handle');
+  const drawer = document.querySelector('.query-drawer');
+  if (!handle || !drawer) return;
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = S.drawerHeight;
+    handle.classList.add('dragging');
+    function onMove(ev) {
+      const dy = startY - ev.clientY;
+      S.drawerHeight = Math.min(560, Math.max(120, startH + dy));
+      drawer.style.height = S.drawerHeight + 'px';
+    }
+    function onUp() {
+      handle.classList.remove('dragging');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+function renderMenu() {
+  const { kind, rect } = S.menu;
+  const scrim = document.createElement('div');
+  scrim.className = 'scrim';
+  scrim.onclick = () => { S.menu = null; render(); };
+  const el = document.createElement('div');
+  el.className = 'menu';
+  if (kind === 'connection') {
+    el.innerHTML = `<div class="menu-label">Connection</div>
+      ${CONNECTIONS.map(c => `<button class="menu-item" data-pick-connection="${c.id}">
+        ${I.plug}<span><strong>${c.name}</strong><span class="desc">${c.host}:${c.port}/${c.database}</span></span>
+        ${c.id === S.activeConnectionId ? `<span class="k">${I.check}</span>` : ''}
+      </button>`).join('')}
+      <div class="menu-sep"></div>
+      <button class="menu-item" data-act="settings">${I.gear}<span>Manage connections…</span></button>`;
+  }
+  document.body.append(scrim, el);
+  const top = Math.min(rect.bottom + 6, window.innerHeight - 10);
+  const left = Math.min(rect.left, window.innerWidth - el.offsetWidth - 10);
+  el.style.top = top + 'px'; el.style.left = left + 'px';
+  el.querySelectorAll('[data-pick-connection]').forEach(b => b.onclick = () => {
+    S.activeConnectionId = b.dataset.pickConnection; S.menu = null; render();
+  });
+  el.querySelectorAll('[data-act]').forEach(b => b.onclick = () => { S.route = 'settings'; S.menu = null; render(); });
+}
+
+/* ------------------------------------------------------------ listeners */
+document.addEventListener('click', e => {
+  const menuBtn = e.target.closest('[data-menu]');
+  if (menuBtn) { S.menu = { kind: menuBtn.dataset.menu, rect: menuBtn.getBoundingClientRect() }; render(); return; }
+
+  const table = e.target.closest('[data-table]');
+  if (table) { S.activeTable = table.dataset.table; S.editingCell = null; render(); return; }
+
+  const editCell = e.target.closest('[data-edit-cell]');
+  if (editCell) { const [ri, ci] = editCell.dataset.editCell.split(':').map(Number); S.editingCell = { ri, ci, phase: 'editing' }; render(); return; }
+
+  const editConn = e.target.closest('[data-edit-connection]');
+  if (editConn) { S.connectionModal = { mode: 'edit', id: editConn.dataset.editConnection }; render(); return; }
+
+  const act = e.target.closest('[data-act]');
+  if (act) {
+    const a = act.dataset.act;
+    if (a === 'settings') S.route = 'settings';
+    if (a === 'workspace') S.route = 'workspace';
+    if (a === 'toggle-console') { S.consoleOpen = !S.consoleOpen; S.queryPhase = 'idle'; }
+    if (a === 'run-query') S.queryPhase = 'preview';
+    if (a === 'commit-query') S.queryPhase = 'committed';
+    if (a === 'rollback-query') S.queryPhase = 'idle';
+    if (a === 'ex-select') { S.queryExample = 'select'; S.queryPhase = 'idle'; }
+    if (a === 'ex-update') { S.queryExample = 'update'; S.queryPhase = 'idle'; }
+    if (a === 'cancel-cell' || a === 'rollback-cell') S.editingCell = null;
+    if (a === 'preview-cell') {
+      const input = act.closest('.cell-edit').querySelector('input');
+      S.editingCell = { ...S.editingCell, phase: 'preview', draft: input.value };
+    }
+    if (a === 'commit-cell') {
+      const { ri, ci, draft } = S.editingCell;
+      ROWS[S.activeTable][ri][ci] = draft;
+      S.editingCell = null;
+    }
+    if (a === 'add-connection') S.connectionModal = { mode: 'add' };
+    render(); return;
+  }
+});
+
+render();
+</script>
+</body>
+</html>
