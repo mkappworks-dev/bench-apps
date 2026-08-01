@@ -4,7 +4,7 @@ use devbench::commands::request::FireRequestInput;
 use devbench::connection_registry::postgres_connection_string;
 use devbench::email_state::EmailState;
 use devbench::local_db::LocalDb;
-use devbench::log_state::LogState;
+use devbench::log_state::{LogState, SourceKind};
 use sqlx::postgres::PgPoolOptions;
 
 fn test_connection_string() -> String {
@@ -136,7 +136,7 @@ async fn firing_a_request_correlates_both_db_writes_and_log_lines() {
     std::fs::write(&log_path, "").unwrap();
 
     let logs = LogState::new();
-    logs.add_source("backend.log".into(), log_path.clone()).unwrap();
+    logs.add_source("backend.log".into(), SourceKind::File { path: log_path.clone() }).unwrap();
     logs.poll_all(1_000);
 
     let emails = EmailState::new();
@@ -280,7 +280,7 @@ async fn firing_a_request_correlates_db_writes_log_lines_and_sent_mail() {
     let log_path = dir.path().join("backend.log");
     std::fs::write(&log_path, "").unwrap();
     let logs = LogState::new();
-    logs.add_source("backend.log".into(), log_path.clone()).unwrap();
+    logs.add_source("backend.log".into(), SourceKind::File { path: log_path.clone() }).unwrap();
     logs.poll_all(1_000);
 
     // --- SMTP catcher on an OS-assigned port, so the test never collides
