@@ -17,10 +17,19 @@ fn main() {
     tauri::Builder::default()
         .setup(|app| {
             let handle = app.handle().clone();
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("failed to resolve app data dir");
+            // Every git worktree shares one Tauri app data dir (keyed by the app
+            // identifier, not the checkout path), so their migrations collide in
+            // one sqlite file. This override lets each worktree point at its own.
+            let data_dir = match std::env::var("DEVBENCH_DATA_DIR") {
+                Ok(dir) if !dir.is_empty() => {
+                    eprintln!("DEVBENCH_DATA_DIR override active: using {dir}");
+                    std::path::PathBuf::from(dir)
+                }
+                _ => app
+                    .path()
+                    .app_data_dir()
+                    .expect("failed to resolve app data dir"),
+            };
             let (db, smtp_port) = tauri::async_runtime::block_on(async move {
                 let db = LocalDb::connect(data_dir)
                     .await
