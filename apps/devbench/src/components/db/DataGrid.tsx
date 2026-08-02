@@ -8,63 +8,24 @@ import {
   type ReactNode,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-
-const ROW_HEIGHT_PX = 33;
-/** Width an undragged column is guaranteed at least — the readable default. */
-const MIN_COLUMN_PX = 140;
-/** Floor for a column the user has actually dragged. Deliberately far below
- *  MIN_COLUMN_PX: sharing one constant meant the default width was also the
- *  smallest achievable one, so a drag could only ever widen a column. Still
- *  non-zero, so a column can't be collapsed to an unrecoverable sliver. */
-const MIN_RESIZED_COLUMN_PX = 56;
-const ACTIONS_COLUMN_PX = 90;
-const LAYOUT_STORAGE_PREFIX = "devbench.grid-layout.";
+import {
+  ACTIONS_COLUMN_PX,
+  EMPTY_LAYOUT,
+  MIN_COLUMN_PX,
+  MIN_RESIZED_COLUMN_PX,
+  ROW_HEIGHT_PX,
+  pinOffsets,
+  readLayout,
+  visualColumns,
+  widthOf,
+  writeLayout,
+  type GridLayout,
+} from "./grid/gridLayout";
 
 /** One `ORDER BY` term. A list of these is what lets a sort tie-break. */
 export interface SortTerm {
   column: string;
   descending: boolean;
-}
-
-/** Per-table view preferences. Deliberately only ever holds column *names*,
- *  never indices — a table whose shape changed underneath a stored layout
- *  then degrades to "that column is gone" rather than to a silent mis-mapping. */
-interface GridLayout {
-  widths: Record<string, number>;
-  order: string[];
-  pinned: string[];
-}
-
-const EMPTY_LAYOUT: GridLayout = { widths: {}, order: [], pinned: [] };
-
-function readLayout(key: string | undefined): GridLayout {
-  if (!key) return EMPTY_LAYOUT;
-  try {
-    const raw = localStorage.getItem(LAYOUT_STORAGE_PREFIX + key);
-    if (!raw) return EMPTY_LAYOUT;
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return EMPTY_LAYOUT;
-    const { widths, order, pinned } = parsed as Partial<GridLayout>;
-    return {
-      widths: typeof widths === "object" && widths !== null ? widths : {},
-      order: Array.isArray(order) ? order.filter((c): c is string => typeof c === "string") : [],
-      pinned: Array.isArray(pinned) ? pinned.filter((c): c is string => typeof c === "string") : [],
-    };
-  } catch {
-    // Unreadable or corrupt storage means "no saved layout", never a broken
-    // grid — this runs on every table switch.
-    return EMPTY_LAYOUT;
-  }
-}
-
-function writeLayout(key: string | undefined, layout: GridLayout): void {
-  if (!key) return;
-  try {
-    localStorage.setItem(LAYOUT_STORAGE_PREFIX + key, JSON.stringify(layout));
-  } catch {
-    // A full or disabled store must not take the grid down with it; the
-    // layout simply stops surviving reloads.
-  }
 }
 
 export interface DataGridProps {
@@ -213,53 +174,36 @@ export function DataGrid({
   }
 
   const isPinned = (column: string) => layout.pinned.includes(column);
-  const widthOf = (column: string) => layout.widths[column] ?? MIN_COLUMN_PX;
 
   // On-screen order: the saved order, minus columns this table no longer has,
   // plus any it gained — then pinned columns hoisted to the front so "pinned"
   // and "leftmost" can't disagree.
-  const visualColumns = useMemo(() => {
-    const known = layout.order.filter((c) => columns.includes(c));
-    const ordered = [...known, ...columns.filter((c) => !known.includes(c))];
-    return [
-      ...ordered.filter((c) => layout.pinned.includes(c)),
-      ...ordered.filter((c) => !layout.pinned.includes(c)),
-    ];
-  }, [columns, layout]);
+  const visual = useMemo(() => visualColumns(columns, layout), [columns, layout]);
 
   // Undragged, unpinned columns stay flexible (`minmax(…, 1fr)`, matching the
   // mockup's auto-sizing `<table>`). Pinning forces a fixed width because a
   // sticky offset has to be a number we can compute before layout runs.
   const gridTemplateColumns = useMemo(
     () =>
-      visualColumns
+      visual
         .map((col) =>
           layout.widths[col] || layout.pinned.includes(col)
             ? `${layout.widths[col] ?? MIN_COLUMN_PX}px`
             : `minmax(${MIN_COLUMN_PX}px, 1fr)`,
         )
         .join(" ") + ` ${ACTIONS_COLUMN_PX}px`,
-    [visualColumns, layout],
+    [visual, layout],
   );
 
   // Left offset for each pinned column, accumulated across the pinned run.
-  const pinOffsets = useMemo(() => {
-    const offsets: Record<string, number> = {};
-    let accumulated = 0;
-    for (const col of visualColumns) {
-      if (!layout.pinned.includes(col)) break;
-      offsets[col] = accumulated;
-      accumulated += layout.widths[col] ?? MIN_COLUMN_PX;
-    }
-    return offsets;
-  }, [visualColumns, layout]);
+  const offsets = useMemo(() => pinOffsets(visual, layout), [visual, layout]);
 
   // Floor for the header+body wrapper below. Without it, a block-level `auto`
   // width can't grow past its containing block even when the grid's own
   // column minimums need more room — the grid silently overflows its box
   // instead of the box (and its scrollbar) growing to fit. This is what let
   // the header and body compute different widths and drift apart on scroll.
-  const minTableWidth = visualColumns.reduce((sum, col) => sum + widthOf(col), 0) + ACTIONS_COLUMN_PX;
+  const minTableWidth = visual.reduce((sum, col) => sum + widthOf(col, layout), 0) + ACTIONS_COLUMN_PX;
 
   // Filtering is over the fetched page only, so a row keeps its original
   // index — that index is what `renderCell` resolves an edit against, and a
@@ -314,7 +258,7 @@ export function DataGrid({
     updateLayout({
       ...layout,
       pinned,
-      order: visualColumns,
+      order: visual,
       // Pinning fixes the width, so capture whatever it currently is rather
       // than snapping the column to the default on pin.
       widths: pinned.includes(column) && !layout.widths[column]
@@ -331,10 +275,10 @@ export function DataGrid({
 
   function moveColumn(column: string, targetColumn: string) {
     if (column === targetColumn) return;
-    const from = visualColumns.indexOf(column);
-    const to = visualColumns.indexOf(targetColumn);
+    const from = visual.indexOf(column);
+    const to = visual.indexOf(targetColumn);
     if (from < 0 || to < 0) return;
-    const next = visualColumns.filter((c) => c !== column);
+    const next = visual.filter((c) => c !== column);
     // Removing the column first shifts everything after it left by one, so a
     // rightward move has to land AFTER the target to actually go anywhere —
     // inserting at the target's new index would put it back where it started.
@@ -346,10 +290,10 @@ export function DataGrid({
   /** Keyboard equivalent of the header drag — dragging alone would make
    *  reordering mouse-only. */
   function nudgeColumn(column: string, delta: number) {
-    const from = visualColumns.indexOf(column);
+    const from = visual.indexOf(column);
     const to = from + delta;
-    if (to < 0 || to >= visualColumns.length) return;
-    moveColumn(column, visualColumns[to]);
+    if (to < 0 || to >= visual.length) return;
+    moveColumn(column, visual[to]);
   }
 
   function onHeaderKeyDown(column: string) {
@@ -383,8 +327,8 @@ export function DataGrid({
 
   async function copyRow(row: (string | null)[], format: "tsv" | "json") {
     // Copied in the order the user is looking at, not storage order.
-    const ordered = visualColumns.map((col) => row[columns.indexOf(col)] ?? null);
-    const text = format === "tsv" ? rowAsTsv(ordered) : rowAsJson(visualColumns, ordered);
+    const ordered = visual.map((col) => row[columns.indexOf(col)] ?? null);
+    const text = format === "tsv" ? rowAsTsv(ordered) : rowAsJson(visual, ordered);
     try {
       await navigator.clipboard.writeText(text);
       setCopyError(null);
@@ -436,7 +380,7 @@ export function DataGrid({
             className="sticky top-0 z-30 border-b border-border bg-surface-2 font-mono"
             role="row"
           >
-            {visualColumns.map((col) => {
+            {visual.map((col) => {
               const sortIndex = sortIndexOf(col);
               const active = sortIndex >= 0;
               const pinned = isPinned(col);
@@ -448,7 +392,7 @@ export function DataGrid({
                   aria-sort={active ? (sort[sortIndex].descending ? "descending" : "ascending") : undefined}
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={onHeaderDrop(col)}
-                  style={pinned ? { position: "sticky", left: pinOffsets[col], zIndex: 2 } : undefined}
+                  style={pinned ? { position: "sticky", left: offsets[col], zIndex: 2 } : undefined}
                   // `group` belongs on the cell, not the sort button: the pin
                   // button is the button's SIBLING, so a group scoped to the
                   // button would never reveal it on hover.
@@ -547,7 +491,7 @@ export function DataGrid({
                       transform: `translateY(${virtualRow.start}px)`,
                     }}
                   >
-                    {visualColumns.map((col) => {
+                    {visual.map((col) => {
                       // Always the DATA index: reordering changes where a
                       // column is drawn, never which value it holds or which
                       // column an edit resolves to.
@@ -559,7 +503,7 @@ export function DataGrid({
                       // or hovering would reveal a hole where it sits.
                       const pinnedClass = pinned ? "bg-bg group-hover/row:bg-surface-2" : "";
                       const pinnedStyle = pinned
-                        ? { position: "sticky" as const, left: pinOffsets[col], zIndex: 10 }
+                        ? { position: "sticky" as const, left: offsets[col], zIndex: 10 }
                         : undefined;
                       return renderCell ? (
                         // `relative` so an expanded inline editor can position
