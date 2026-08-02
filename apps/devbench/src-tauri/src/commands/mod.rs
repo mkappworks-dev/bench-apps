@@ -8,6 +8,7 @@ pub mod history;
 pub mod logs;
 pub mod mcp;
 pub mod provider;
+pub mod qualified_table;
 pub mod query;
 pub mod request;
 pub mod sessions;

@@ -73,16 +73,22 @@ pub(crate) fn cell_to_string(row: &sqlx::postgres::PgRow, index: usize) -> Optio
 /// Validates that a table or column identifier is a legitimate Postgres
 /// identifier. Allows only ASCII alphanumeric characters and underscores.
 pub(crate) fn validate_identifier(identifier: &str) -> Result<(), String> {
+    validate_identifier_labeled("table name", identifier)
+}
+
+/// Same rules, but the caller names what it is validating. A rejected schema
+/// reporting "table name contains invalid characters" sends the reader to the
+/// wrong half of the input.
+pub(crate) fn validate_identifier_labeled(kind: &str, identifier: &str) -> Result<(), String> {
     if identifier.is_empty() {
-        return Err("table name cannot be empty".to_string());
+        return Err(format!("{kind} cannot be empty"));
     }
     if identifier.len() > 63 {
-        return Err("table name exceeds maximum Postgres identifier length (63)".to_string());
+        return Err(format!("{kind} exceeds maximum Postgres identifier length (63)"));
     }
     if !identifier.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(format!(
-            "table name contains invalid characters; only alphanumeric and underscore allowed: {}",
-            identifier
+            "{kind} contains invalid characters; only alphanumeric and underscore allowed: {identifier}"
         ));
     }
     Ok(())
