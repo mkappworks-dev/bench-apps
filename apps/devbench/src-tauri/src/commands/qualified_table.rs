@@ -1,11 +1,11 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::commands::db::validate_identifier_labeled;
 
 /// A schema-qualified table. Fields are private and the only constructor
 /// validates both identifiers, so an unvalidated `QualifiedTable` cannot
 /// exist anywhere in the process — including one that arrived over IPC.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "QualifiedTableWire")]
 pub struct QualifiedTable {
     schema: String,
@@ -102,6 +102,15 @@ mod tests {
     fn rejects_empty_parts() {
         assert!(QualifiedTable::new("", "orders").is_err());
         assert!(QualifiedTable::new("public", "").is_err());
+    }
+
+    // `#[serde(try_from = "...")]` only governs Deserialize; Serialize is a
+    // separate derive reading the struct's own private fields directly. This
+    // proves the two didn't drift into different wire shapes.
+    #[test]
+    fn serializes_to_the_same_shape_it_deserializes_from() {
+        let t = QualifiedTable::new("public", "orders").unwrap();
+        assert_eq!(serde_json::to_string(&t).unwrap(), r#"{"schema":"public","name":"orders"}"#);
     }
 
     // Deserialization is the real boundary. A plain derive would let the

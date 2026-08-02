@@ -388,7 +388,7 @@ mod tests {
         let (_dir, db) = db().await;
         let secrets = InMemorySecretStore::default();
         let created = create_connection_impl(&db.pool, &secrets, input("Staging")).await.unwrap();
-        sqlx::query("INSERT INTO watched_tables (connection_id, table_name) VALUES (?, 'orders')")
+        sqlx::query("INSERT INTO watched_tables (connection_id, table_schema, table_name) VALUES (?, 'public', 'orders')")
             .bind(&created.id)
             .execute(&db.pool)
             .await

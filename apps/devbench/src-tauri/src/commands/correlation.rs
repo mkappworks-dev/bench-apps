@@ -7,6 +7,7 @@ use tauri::State;
 use super::db::{get_primary_key_column, validate_identifier};
 use super::history::{save_history_entry_impl, HistoryEntryInput};
 use super::request::{fire_request_impl, FireRequestInput, FireRequestOutput};
+use crate::commands::qualified_table::QualifiedTable;
 use crate::connection_registry::ConnectionRegistry;
 use crate::local_db::LocalDb;
 use crate::secrets::SecretStore;
@@ -94,16 +95,12 @@ pub struct CorrelationResult {
 /// degrade to "unable to verify" instead of failing the whole request.
 async fn snapshot_all(
     pool: &Pool<Postgres>,
-    watched_tables: &[String],
-) -> Result<Vec<(String, String, Vec<RowSnapshot>)>, String> {
+    watched_tables: &[QualifiedTable],
+) -> Result<Vec<(QualifiedTable, String, Vec<RowSnapshot>)>, String> {
     let mut snapshots = Vec::with_capacity(watched_tables.len());
     for table in watched_tables {
-        // The SQLite watched-tables store returns bare names with no schema
-        // column yet, so every watched table is assumed to live in `public`
-        // until that store carries its own schema.
-        let qualified = crate::commands::qualified_table::QualifiedTable::new("public", table)?;
-        let pk_col = get_primary_key_column(pool, &qualified).await?;
-        let snapshot = snapshot_table(pool, &qualified, &pk_col).await?;
+        let pk_col = get_primary_key_column(pool, table).await?;
+        let snapshot = snapshot_table(pool, table, &pk_col).await?;
         snapshots.push((table.clone(), pk_col, snapshot));
     }
     Ok(snapshots)
@@ -111,14 +108,15 @@ async fn snapshot_all(
 
 async fn diff_all(
     pool: &Pool<Postgres>,
-    before: Vec<(String, String, Vec<RowSnapshot>)>,
+    before: Vec<(QualifiedTable, String, Vec<RowSnapshot>)>,
 ) -> Result<Vec<TableDiff>, String> {
     let mut table_diffs = Vec::with_capacity(before.len());
     for (table, pk_col, before_rows) in before {
-        // Same `public`-assumption boundary as `snapshot_all` above.
-        let qualified = crate::commands::qualified_table::QualifiedTable::new("public", &table)?;
-        let after = snapshot_table(pool, &qualified, &pk_col).await?;
-        let diff = diff_table_snapshots(&table, &before_rows, &after);
+        let after = snapshot_table(pool, &table, &pk_col).await?;
+        // `table.name()` — bare, not `table.to_string()` — is what reaches
+        // `TableDiff.table`, which is user-facing output. A `public`-only user
+        // must keep seeing exactly the name they always have.
+        let diff = diff_table_snapshots(table.name(), &before_rows, &after);
         if diff.inserted > 0 || diff.updated > 0 || diff.deleted > 0 {
             table_diffs.push(diff);
         }
@@ -129,7 +127,7 @@ async fn diff_all(
 pub async fn run_correlated_request_impl(
     request: FireRequestInput,
     pool: Option<Pool<Postgres>>,
-    watched_tables: Vec<String>,
+    watched_tables: Vec<QualifiedTable>,
     logs: &crate::log_state::LogState,
 ) -> Result<CorrelationResult, String> {
     // Everything DB-related is fallible-but-not-fatal. Only a failure to fire
@@ -219,7 +217,7 @@ pub struct CorrelationWindowResult {
 pub async fn run_correlated_request_impl_with_registry(
     request: FireRequestInput,
     pool: Option<Pool<Postgres>>,
-    watched_tables: Vec<String>,
+    watched_tables: Vec<QualifiedTable>,
     logs: &LogState,
     _emails: &EmailState,
     db: &sqlx::SqlitePool,
@@ -355,7 +353,7 @@ pub async fn run_correlated_request(
     correlation_registry: State<'_, Arc<CorrelationRegistry>>,
     request: FireRequestInput,
     connection_id: String,
-    watched_tables: Vec<String>,
+    watched_tables: Vec<QualifiedTable>,
     session_id: Option<String>,
 ) -> Result<CorrelationResult, String> {
     // A pool that fails to resolve degrades to None rather than failing the
@@ -542,7 +540,7 @@ mod tests {
                 body: None,
             },
             Some(pool.clone()),
-            vec!["orders_e2e".to_string(), "untouched_e2e".to_string()],
+            vec![public("orders_e2e"), public("untouched_e2e")],
             &crate::log_state::LogState::new(),
         )
         .await
@@ -717,7 +715,7 @@ mod tests {
                 body: None,
             },
             None,
-            vec!["table_that_does_not_exist_anywhere".to_string()],
+            vec![public("table_that_does_not_exist_anywhere")],
             &crate::log_state::LogState::new(),
         )
         .await
