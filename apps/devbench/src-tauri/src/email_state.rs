@@ -1,26 +1,19 @@
 use serde::Serialize;
-use std::collections::VecDeque;
+use sqlx::{Row, SqlitePool};
+use std::sync::Mutex;
 
 /// Port the local SMTP catcher listens on. Point your backend's SMTP config
 /// here — the same integration Mailhog and Mailpit ask for.
-///
-/// Hardcoded on purpose: Settings > General (Plan 4) replaces this constant
-/// with a stored, user-editable value, at which point the spec's "shortcut
-/// into Settings to change the port" becomes live. Same scoping shape as
-/// Plan 1's `DEV_CONNECTION` and Plan 2's `DEFAULT_CORRELATION_WINDOW_MS`.
 pub const DEFAULT_SMTP_PORT: u16 = 1025;
 
-/// How many messages are kept. Old ones are evicted; `evicted_through_id`
-/// lets a correlation window detect that it lost some.
-pub const MAX_INBOX_MESSAGES: usize = 200;
+/// Global cap on persisted captured mail, across every session. Eviction
+/// removes the oldest rows table-wide; `captured_emails_state` records how
+/// far, so a correlation window (or the inbox footer) can detect it lost some.
+pub const MAX_CAPTURED_EMAILS: i64 = 5_000;
 
-/// A message the catcher accepted, in full.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CapturedEmail {
     pub id: u64,
-    /// DevBench's own clock when `DATA` completed. Correlation windows are
-    /// bounded by this, never by the message's `Date:` header — the header
-    /// comes from the target backend and may be skewed, absent, or unparsed.
     pub captured_at_ms: i64,
     pub from: String,
     pub to: Vec<String>,
@@ -29,11 +22,14 @@ pub struct CapturedEmail {
     pub text_body: Option<String>,
     pub raw: String,
     pub size_bytes: usize,
+    /// `None` unless a correlated request's window observed this email.
+    pub request_id: Option<String>,
+    /// Populated by a `LEFT JOIN request_history` in `get_captured_email` —
+    /// `None` whenever `request_id` is `None`.
+    pub request_method: Option<String>,
+    pub request_url: Option<String>,
 }
 
-/// What the inbox list and the rollup carry. Deliberately excludes the bodies
-/// and the raw source so listing 200 messages does not push megabytes across
-/// the Tauri IPC boundary to render subject lines.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct EmailSummary {
     pub id: u64,
@@ -44,17 +40,10 @@ pub struct EmailSummary {
     pub size_bytes: usize,
 }
 
-impl From<&CapturedEmail> for EmailSummary {
-    fn from(e: &CapturedEmail) -> Self {
-        Self {
-            id: e.id,
-            captured_at_ms: e.captured_at_ms,
-            from: e.from.clone(),
-            to: e.to.clone(),
-            subject: e.subject.clone(),
-            size_bytes: e.size_bytes,
-        }
-    }
+#[derive(Debug, Serialize, PartialEq)]
+pub struct ListEmailsResult {
+    pub emails: Vec<EmailSummary>,
+    pub evicted_through_id: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -65,19 +54,11 @@ pub struct ParsedEmail {
 }
 
 /// Lifts subject and bodies out of an RFC 5322 message. From/to are NOT taken
-/// from here — they come from the SMTP envelope, which is what the backend
-/// actually addressed the mail to (a Bcc recipient exists in the envelope and
-/// never in the headers).
+/// from here — they come from the SMTP envelope (see `smtp_catcher.rs`).
 pub fn parse_captured(raw: &str) -> ParsedEmail {
     let parsed = mail_parser::MessageParser::default().parse(raw);
     match parsed {
         Some(message) => {
-            // `Message::body_html`/`body_text` synthesize a converted
-            // representation when only one genuine part exists (e.g. a
-            // plain-text-only message gets an auto-generated HTML body).
-            // That's the wrong contract here: html_body/text_body must
-            // reflect what the backend actually sent, so a part is only
-            // reported when it is genuinely that MIME type.
             let html_body = message.html_part(0).and_then(|part| match &part.body {
                 mail_parser::PartType::Html(html) => Some(html.to_string()),
                 _ => None,
@@ -93,9 +74,6 @@ pub fn parse_captured(raw: &str) -> ParsedEmail {
             }
         }
         None => ParsedEmail {
-            // An unparseable message is still a real message: keep it, show
-            // the raw view, and say the subject is unknown rather than
-            // dropping it and reporting one fewer email than was sent.
             subject: "(unparseable message)".to_string(),
             html_body: None,
             text_body: None,
@@ -103,117 +81,253 @@ pub fn parse_captured(raw: &str) -> ParsedEmail {
     }
 }
 
-pub struct EmailStore {
-    messages: VecDeque<CapturedEmail>,
-    capacity: usize,
-    next_id: u64,
-    evicted_through_id: u64,
+async fn active_session_id(pool: &SqlitePool) -> Option<String> {
+    let row = sqlx::query("SELECT value FROM settings WHERE key = 'active_session_id'")
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()?;
+    let value: String = row.get("value");
+    if value.is_empty() { None } else { Some(value) }
 }
 
-impl EmailStore {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            messages: VecDeque::with_capacity(capacity.min(64)),
-            capacity,
-            next_id: 1,
-            evicted_through_id: 0,
-        }
-    }
+/// Deletes rows beyond `cap`, oldest first, and bumps
+/// `captured_emails_state.evicted_through_id` to the highest id it deleted.
+/// A private, cap-parameterized helper (rather than hardcoding
+/// `MAX_CAPTURED_EMAILS` inline) so tests can exercise real eviction without
+/// inserting 5,000 rows.
+async fn evict_overflow(pool: &SqlitePool, cap: i64) -> Result<(), String> {
+    let cutoff: Option<i64> = sqlx::query("SELECT id FROM captured_emails ORDER BY id DESC LIMIT 1 OFFSET ?")
+        .bind(cap)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("failed to look up eviction cutoff: {e}"))?
+        .map(|r| r.get::<i64, _>("id"));
 
-    /// The id the NEXT captured message will receive. Correlation snapshots
-    /// this before firing a request, then selects ids strictly greater.
-    pub fn next_id(&self) -> u64 {
-        self.next_id
-    }
+    let Some(cutoff_id) = cutoff else { return Ok(()) };
 
-    /// Highest id dropped from the inbox. A caller whose `from_id` is at or
-    /// below this knows its view is incomplete.
-    pub fn evicted_through_id(&self) -> u64 {
-        self.evicted_through_id
-    }
+    sqlx::query("UPDATE captured_emails_state SET evicted_through_id = ?1 WHERE id = 1 AND evicted_through_id < ?1")
+        .bind(cutoff_id)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("failed to record eviction high-water mark: {e}"))?;
 
-    pub fn push(&mut self, from: &str, to: &[String], raw: &str, captured_at_ms: i64) -> u64 {
-        let parsed = parse_captured(raw);
-        let id = self.next_id;
-        self.next_id += 1;
-        self.messages.push_back(CapturedEmail {
-            id,
-            captured_at_ms,
-            from: from.to_string(),
-            to: to.to_vec(),
-            subject: parsed.subject,
-            html_body: parsed.html_body,
-            text_body: parsed.text_body,
-            raw: raw.to_string(),
-            size_bytes: raw.len(),
-        });
-        while self.messages.len() > self.capacity {
-            if let Some(dropped) = self.messages.pop_front() {
-                self.evicted_through_id = dropped.id;
-            }
-        }
-        id
-    }
-
-    /// Newest first — an inbox is read from the top.
-    pub fn list(&self, limit: usize) -> Vec<EmailSummary> {
-        self.messages.iter().rev().take(limit).map(EmailSummary::from).collect()
-    }
-
-    pub fn get(&self, id: u64) -> Option<CapturedEmail> {
-        self.messages.iter().find(|m| m.id == id).cloned()
-    }
-
-    /// Empties the inbox. Ids are NOT rewound: an in-flight correlation window
-    /// holding a `from_id` must never be able to match a later message.
-    pub fn clear(&mut self) {
-        if let Some(last) = self.messages.back() {
-            self.evicted_through_id = last.id;
-        }
-        self.messages.clear();
-    }
-
-    /// Messages captured strictly after `after_id` and no later than
-    /// `captured_before_or_at_ms`. The correlation-window selector, matching
-    /// `LogBuffer::between` so correlation treats both sources identically.
-    pub fn between(&self, after_id: u64, captured_before_or_at_ms: i64) -> Vec<EmailSummary> {
-        self.messages
-            .iter()
-            .filter(|m| m.id > after_id && m.captured_at_ms <= captured_before_or_at_ms)
-            .map(EmailSummary::from)
-            .collect()
-    }
+    sqlx::query("DELETE FROM captured_emails WHERE id <= ?")
+        .bind(cutoff_id)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("failed to evict overflow captured emails: {e}"))?;
+    Ok(())
 }
 
-use std::sync::{Arc, Mutex};
+/// Inserts a captured message, tagging it with whatever session is active
+/// right now, and evicts overflow beyond `MAX_CAPTURED_EMAILS`. Called from
+/// the SMTP catcher thread via `block_on` (see `smtp_catcher.rs`).
+pub async fn insert_captured_email(
+    pool: &SqlitePool,
+    from: &str,
+    to: &[String],
+    raw: &str,
+    captured_at_ms: i64,
+) -> Result<(), String> {
+    let parsed = parse_captured(raw);
+    let session_id = active_session_id(pool).await;
+    let to_json = serde_json::to_string(to).map_err(|e| format!("failed to encode recipients: {e}"))?;
+
+    sqlx::query(
+        "INSERT INTO captured_emails \
+         (session_id, captured_at, from_addr, to_addrs, subject, html_body, text_body, raw, size_bytes) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&session_id)
+    .bind(captured_at_ms)
+    .bind(from)
+    .bind(&to_json)
+    .bind(&parsed.subject)
+    .bind(&parsed.html_body)
+    .bind(&parsed.text_body)
+    .bind(raw)
+    .bind(raw.len() as i64)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("failed to store captured email: {e}"))?;
+
+    evict_overflow(pool, MAX_CAPTURED_EMAILS).await
+}
+
+/// `session_id: None` mirrors `list_history_impl`'s unscoped case exactly:
+/// every row, not `session_id IS NULL` — two distinct queries, not one
+/// `(?1 IS NULL OR session_id = ?1)` predicate, for the same index-usage
+/// reason `history.rs` already settled.
+pub async fn list_captured_emails(
+    pool: &SqlitePool,
+    session_id: Option<&str>,
+    limit: i64,
+) -> Result<ListEmailsResult, String> {
+    const COLUMNS: &str =
+        "SELECT id, captured_at, from_addr, to_addrs, subject, size_bytes FROM captured_emails";
+
+    let rows = match session_id {
+        Some(id) => {
+            sqlx::query(&format!("{COLUMNS} WHERE session_id = ? ORDER BY id DESC LIMIT ?"))
+                .bind(id)
+                .bind(limit)
+                .fetch_all(pool)
+                .await
+        }
+        None => {
+            sqlx::query(&format!("{COLUMNS} ORDER BY id DESC LIMIT ?"))
+                .bind(limit)
+                .fetch_all(pool)
+                .await
+        }
+    }
+    .map_err(|e| format!("failed to list captured emails: {e}"))?;
+
+    let emails = rows
+        .into_iter()
+        .map(|r| EmailSummary {
+            id: r.get::<i64, _>("id") as u64,
+            captured_at_ms: r.get("captured_at"),
+            from: r.get("from_addr"),
+            to: serde_json::from_str(&r.get::<String, _>("to_addrs")).unwrap_or_default(),
+            subject: r.get("subject"),
+            size_bytes: r.get::<i64, _>("size_bytes") as usize,
+        })
+        .collect();
+
+    Ok(ListEmailsResult { emails, evicted_through_id: evicted_through_id(pool).await? })
+}
+
+pub async fn get_captured_email(pool: &SqlitePool, id: u64) -> Result<Option<CapturedEmail>, String> {
+    let row = sqlx::query(
+        "SELECT ce.id, ce.captured_at, ce.from_addr, ce.to_addrs, ce.subject, ce.html_body, ce.text_body, \
+                ce.raw, ce.size_bytes, ce.request_id, rh.method AS request_method, rh.url AS request_url \
+         FROM captured_emails ce \
+         LEFT JOIN request_history rh ON rh.id = ce.request_id \
+         WHERE ce.id = ?",
+    )
+    .bind(id as i64)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("failed to look up captured email {id}: {e}"))?;
+
+    Ok(row.map(|r| CapturedEmail {
+        id: r.get::<i64, _>("id") as u64,
+        captured_at_ms: r.get("captured_at"),
+        from: r.get("from_addr"),
+        to: serde_json::from_str(&r.get::<String, _>("to_addrs")).unwrap_or_default(),
+        subject: r.get("subject"),
+        html_body: r.get("html_body"),
+        text_body: r.get("text_body"),
+        raw: r.get("raw"),
+        size_bytes: r.get::<i64, _>("size_bytes") as usize,
+        request_id: r.get("request_id"),
+        request_method: r.get("request_method"),
+        request_url: r.get("request_url"),
+    }))
+}
+
+/// Uses the SAME scoping semantics as `list_captured_emails` — deliberately.
+/// If clearing used a narrower scope than listing (e.g. only
+/// `session_id IS NULL` when unscoped), "Clear inbox" with no active session
+/// would leave most of what's on screen untouched.
+pub async fn clear_captured_emails(pool: &SqlitePool, session_id: Option<&str>) -> Result<(), String> {
+    // Advance the high-water mark first, the same way `evict_overflow` does,
+    // to whichever id is highest among the rows this call is about to delete.
+    // Without this, an in-flight correlation window whose `from_email_id`
+    // predates the clear would report `emails: Some([])` instead of
+    // `emails_truncated: true` — "this request sent no mail" when mail was
+    // actually captured and then cleared, the exact false negative principle
+    // 4 forbids.
+    let max_id: Option<i64> = match session_id {
+        Some(id) => {
+            sqlx::query("SELECT MAX(id) as id FROM captured_emails WHERE session_id = ?").bind(id).fetch_one(pool).await
+        }
+        None => sqlx::query("SELECT MAX(id) as id FROM captured_emails").fetch_one(pool).await,
+    }
+    .map_err(|e| format!("failed to look up max captured email id before clearing: {e}"))?
+    .get::<Option<i64>, _>("id");
+
+    if let Some(id) = max_id {
+        sqlx::query("UPDATE captured_emails_state SET evicted_through_id = ?1 WHERE id = 1 AND evicted_through_id < ?1")
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("failed to record eviction high-water mark before clearing: {e}"))?;
+    }
+
+    match session_id {
+        Some(id) => sqlx::query("DELETE FROM captured_emails WHERE session_id = ?").bind(id).execute(pool).await,
+        None => sqlx::query("DELETE FROM captured_emails").execute(pool).await,
+    }
+    .map_err(|e| format!("failed to clear captured emails: {e}"))?;
+    Ok(())
+}
+
+pub async fn between_captured_emails(
+    pool: &SqlitePool,
+    after_id: u64,
+    captured_before_or_at_ms: i64,
+) -> Result<Vec<EmailSummary>, String> {
+    let rows = sqlx::query(
+        "SELECT id, captured_at, from_addr, to_addrs, subject, size_bytes FROM captured_emails \
+         WHERE id > ? AND captured_at <= ? ORDER BY id ASC",
+    )
+    .bind(after_id as i64)
+    .bind(captured_before_or_at_ms)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("failed to look up captured emails in window: {e}"))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| EmailSummary {
+            id: r.get::<i64, _>("id") as u64,
+            captured_at_ms: r.get("captured_at"),
+            from: r.get("from_addr"),
+            to: serde_json::from_str(&r.get::<String, _>("to_addrs")).unwrap_or_default(),
+            subject: r.get("subject"),
+            size_bytes: r.get::<i64, _>("size_bytes") as usize,
+        })
+        .collect())
+}
+
+pub async fn evicted_through_id(pool: &SqlitePool) -> Result<u64, String> {
+    let row = sqlx::query("SELECT evicted_through_id FROM captured_emails_state WHERE id = 1")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("failed to read eviction high-water mark: {e}"))?;
+    Ok(row.get::<i64, _>("evicted_through_id") as u64)
+}
+
+/// The current highest captured-email id (0 if none exist yet). Correlation
+/// snapshots this before firing a request, then selects ids strictly greater
+/// (`between_captured_emails`).
+pub async fn current_max_email_id(pool: &SqlitePool) -> Result<u64, String> {
+    let row = sqlx::query("SELECT COALESCE(MAX(id), 0) as id FROM captured_emails")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("failed to read current max captured email id: {e}"))?;
+    Ok(row.get::<i64, _>("id") as u64)
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SmtpStatus {
     pub listening: bool,
     pub port: u16,
-    /// Populated when the catcher could not start. Rendered verbatim in the
-    /// Email tab so the user learns *why* no mail is being caught, rather than
-    /// staring at an empty inbox that looks like "the backend sent nothing".
     pub error: Option<String>,
 }
 
-/// Tauri-managed email state: the inbox plus the catcher's health.
+/// Tauri-managed email state: just the catcher's health. The inbox itself
+/// lives in SQLite now (see the functions above), not here.
 pub struct EmailState {
-    store: Arc<Mutex<EmailStore>>,
     status: Mutex<SmtpStatus>,
 }
 
 impl EmailState {
     pub fn new() -> Self {
-        Self {
-            store: Arc::new(Mutex::new(EmailStore::new(MAX_INBOX_MESSAGES))),
-            status: Mutex::new(SmtpStatus { listening: false, port: DEFAULT_SMTP_PORT, error: None }),
-        }
-    }
-
-    /// Handed to the catcher thread; also read by the commands.
-    pub fn store(&self) -> Arc<Mutex<EmailStore>> {
-        Arc::clone(&self.store)
+        Self { status: Mutex::new(SmtpStatus { listening: false, port: DEFAULT_SMTP_PORT, error: None }) }
     }
 
     pub fn status(&self) -> SmtpStatus {
@@ -243,6 +357,13 @@ impl Default for EmailState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local_db::LocalDb;
+
+    async fn db() -> (tempfile::TempDir, LocalDb) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        (dir, db)
+    }
 
     const SIMPLE: &str = "Subject: Order confirmation #8841\r\n\
                           From: orders@shop.test\r\n\
@@ -284,73 +405,247 @@ mod tests {
         assert_eq!(parsed.subject, "(no subject)");
     }
 
-    #[test]
-    fn store_assigns_increasing_ids_and_lists_newest_first() {
-        let mut store = EmailStore::new(MAX_INBOX_MESSAGES);
-        let first = store.push("a@x.test", &["b@y.test".into()], SIMPLE, 1_000);
-        let second = store.push("c@x.test", &["d@y.test".into()], SIMPLE, 2_000);
-        assert!(second > first);
+    #[tokio::test]
+    async fn inserts_and_lists_a_captured_email_newest_first() {
+        let (_dir, db) = db().await;
+        insert_captured_email(&db.pool, "a@x.test", &["b@y.test".into()], SIMPLE, 1_000).await.unwrap();
+        insert_captured_email(&db.pool, "c@x.test", &["d@y.test".into()], SIMPLE, 2_000).await.unwrap();
 
-        let listed = store.list(10);
-        assert_eq!(listed.len(), 2);
-        assert_eq!(listed[0].id, second, "inbox shows newest first");
-        assert_eq!(listed[0].from, "c@x.test");
+        let result = list_captured_emails(&db.pool, None, 10).await.unwrap();
+        assert_eq!(result.emails.len(), 2);
+        assert_eq!(result.emails[0].from, "c@x.test", "newest first");
+        assert_eq!(result.evicted_through_id, 0);
     }
 
-    #[test]
-    fn store_get_returns_the_full_message_including_raw_source() {
-        let mut store = EmailStore::new(MAX_INBOX_MESSAGES);
-        let id = store.push("a@x.test", &["b@y.test".into()], SIMPLE, 1_000);
-        let full = store.get(id).unwrap();
+    #[tokio::test]
+    async fn get_returns_the_full_message_including_raw_source() {
+        let (_dir, db) = db().await;
+        insert_captured_email(&db.pool, "a@x.test", &["b@y.test".into()], SIMPLE, 1_000).await.unwrap();
+        let id = list_captured_emails(&db.pool, None, 10).await.unwrap().emails[0].id;
+
+        let full = get_captured_email(&db.pool, id).await.unwrap().unwrap();
         assert_eq!(full.subject, "Order confirmation #8841");
         assert_eq!(full.to, vec!["b@y.test".to_string()]);
         assert!(full.raw.contains("Thanks for your order"));
         assert_eq!(full.size_bytes, SIMPLE.len());
     }
 
-    #[test]
-    fn store_evicts_oldest_and_records_how_far_it_evicted() {
-        let mut store = EmailStore::new(2);
-        for _ in 0..4 {
-            store.push("a@x.test", &["b@y.test".into()], SIMPLE, 1_000);
+    #[tokio::test]
+    async fn a_freshly_captured_email_has_no_request_id() {
+        let (_dir, db) = db().await;
+        insert_captured_email(&db.pool, "a@x.test", &["b@y.test".into()], SIMPLE, 1_000).await.unwrap();
+        let id = list_captured_emails(&db.pool, None, 10).await.unwrap().emails[0].id;
+        assert_eq!(get_captured_email(&db.pool, id).await.unwrap().unwrap().request_id, None);
+    }
+
+    #[tokio::test]
+    async fn a_captured_email_linked_to_a_request_carries_its_method_and_url() {
+        use crate::commands::history::{save_history_entry_impl, HistoryEntryInput};
+
+        let (_dir, db) = db().await;
+        let history_id = save_history_entry_impl(
+            &db.pool,
+            HistoryEntryInput {
+                method: "POST".to_string(),
+                url: "/api/checkout".to_string(),
+                status_code: 201,
+                response_body: "{}".to_string(),
+                duration_ms: 12,
+                session_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        insert_captured_email(&db.pool, "a@x.test", &["b@y.test".into()], SIMPLE, 1_000).await.unwrap();
+        let id = list_captured_emails(&db.pool, None, 10).await.unwrap().emails[0].id;
+        sqlx::query("UPDATE captured_emails SET request_id = ? WHERE id = ?")
+            .bind(&history_id)
+            .bind(id as i64)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let full = get_captured_email(&db.pool, id).await.unwrap().unwrap();
+        assert_eq!(full.request_id.as_deref(), Some(history_id.as_str()));
+        assert_eq!(full.request_method.as_deref(), Some("POST"));
+        assert_eq!(full.request_url.as_deref(), Some("/api/checkout"));
+    }
+
+    #[tokio::test]
+    async fn an_unlinked_captured_email_has_no_request_method_or_url() {
+        let (_dir, db) = db().await;
+        insert_captured_email(&db.pool, "a@x.test", &["b@y.test".into()], SIMPLE, 1_000).await.unwrap();
+        let id = list_captured_emails(&db.pool, None, 10).await.unwrap().emails[0].id;
+
+        let full = get_captured_email(&db.pool, id).await.unwrap().unwrap();
+        assert_eq!(full.request_method, None);
+        assert_eq!(full.request_url, None);
+    }
+
+    #[tokio::test]
+    async fn get_returns_none_for_a_missing_id() {
+        let (_dir, db) = db().await;
+        assert_eq!(get_captured_email(&db.pool, 9_999).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn captures_the_currently_active_session_at_insert_time() {
+        use crate::commands::sessions::create_session_impl;
+        use crate::commands::settings::set_setting_impl;
+
+        let (_dir, db) = db().await;
+        let session = create_session_impl(&db.pool, "Order flow", None).await.unwrap();
+        set_setting_impl(&db.pool, "active_session_id", &session.id).await.unwrap();
+
+        insert_captured_email(&db.pool, "a@x.test", &["b@y.test".into()], SIMPLE, 1_000).await.unwrap();
+
+        let scoped = list_captured_emails(&db.pool, Some(&session.id), 10).await.unwrap();
+        assert_eq!(scoped.emails.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn with_no_active_session_captured_mail_lands_unattributed() {
+        let (_dir, db) = db().await;
+        insert_captured_email(&db.pool, "a@x.test", &["b@y.test".into()], SIMPLE, 1_000).await.unwrap();
+
+        let all = list_captured_emails(&db.pool, None, 10).await.unwrap();
+        assert_eq!(all.emails.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn listing_with_no_session_filter_returns_every_email_not_just_unattributed_ones() {
+        use crate::commands::sessions::create_session_impl;
+        use crate::commands::settings::set_setting_impl;
+
+        let (_dir, db) = db().await;
+        let session = create_session_impl(&db.pool, "Order flow", None).await.unwrap();
+        set_setting_impl(&db.pool, "active_session_id", &session.id).await.unwrap();
+        insert_captured_email(&db.pool, "a@x.test", &["b@y.test".into()], SIMPLE, 1_000).await.unwrap();
+
+        let unscoped = list_captured_emails(&db.pool, None, 10).await.unwrap();
+        assert_eq!(unscoped.emails.len(), 1, "a session-tagged row must still show up in the unscoped view");
+    }
+
+    #[tokio::test]
+    async fn listing_scoped_to_one_session_excludes_another_sessions_mail() {
+        use crate::commands::sessions::create_session_impl;
+        use crate::commands::settings::set_setting_impl;
+
+        let (_dir, db) = db().await;
+        let a = create_session_impl(&db.pool, "Order flow", None).await.unwrap();
+        let b = create_session_impl(&db.pool, "Checkout", None).await.unwrap();
+
+        set_setting_impl(&db.pool, "active_session_id", &a.id).await.unwrap();
+        insert_captured_email(&db.pool, "in-a@x.test", &["b@y.test".into()], SIMPLE, 1_000).await.unwrap();
+
+        set_setting_impl(&db.pool, "active_session_id", &b.id).await.unwrap();
+        insert_captured_email(&db.pool, "in-b@x.test", &["b@y.test".into()], SIMPLE, 2_000).await.unwrap();
+
+        let in_a = list_captured_emails(&db.pool, Some(&a.id), 10).await.unwrap();
+        assert_eq!(in_a.emails.len(), 1);
+        assert_eq!(in_a.emails[0].from, "in-a@x.test");
+
+        let in_b = list_captured_emails(&db.pool, Some(&b.id), 10).await.unwrap();
+        assert_eq!(in_b.emails.len(), 1);
+        assert_eq!(in_b.emails[0].from, "in-b@x.test");
+    }
+
+    #[tokio::test]
+    async fn clear_with_no_session_filter_empties_every_row() {
+        let (_dir, db) = db().await;
+        insert_captured_email(&db.pool, "a@x.test", &["b@y.test".into()], SIMPLE, 1_000).await.unwrap();
+
+        clear_captured_emails(&db.pool, None).await.unwrap();
+
+        assert_eq!(list_captured_emails(&db.pool, None, 10).await.unwrap().emails.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn clear_scoped_to_a_session_leaves_other_sessions_mail_untouched() {
+        use crate::commands::sessions::create_session_impl;
+        use crate::commands::settings::set_setting_impl;
+
+        let (_dir, db) = db().await;
+        let a = create_session_impl(&db.pool, "Order flow", None).await.unwrap();
+        let b = create_session_impl(&db.pool, "Checkout", None).await.unwrap();
+
+        set_setting_impl(&db.pool, "active_session_id", &a.id).await.unwrap();
+        insert_captured_email(&db.pool, "in-a@x.test", &["x@y.test".into()], SIMPLE, 1_000).await.unwrap();
+        set_setting_impl(&db.pool, "active_session_id", &b.id).await.unwrap();
+        insert_captured_email(&db.pool, "in-b@x.test", &["x@y.test".into()], SIMPLE, 2_000).await.unwrap();
+
+        clear_captured_emails(&db.pool, Some(&a.id)).await.unwrap();
+
+        assert_eq!(list_captured_emails(&db.pool, Some(&a.id), 10).await.unwrap().emails.len(), 0);
+        assert_eq!(list_captured_emails(&db.pool, Some(&b.id), 10).await.unwrap().emails.len(), 1);
+    }
+
+    // Regression test: clearing must advance the high-water mark, not just
+    // delete rows — otherwise an in-flight window whose `from_email_id`
+    // predates the clear reports `emails: Some([])` instead of truncation, a
+    // false negative.
+    #[tokio::test]
+    async fn clearing_advances_the_eviction_mark_so_an_open_window_can_detect_it() {
+        let (_dir, db) = db().await;
+        insert_captured_email(&db.pool, "a@x.test", &["b@y.test".into()], SIMPLE, 1_000).await.unwrap();
+        let id = list_captured_emails(&db.pool, None, 10).await.unwrap().emails[0].id;
+
+        clear_captured_emails(&db.pool, None).await.unwrap();
+
+        assert_eq!(
+            evicted_through_id(&db.pool).await.unwrap(),
+            id,
+            "clearing must advance the mark to the highest id it deleted, not just delete rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn clearing_an_empty_inbox_leaves_the_eviction_mark_untouched() {
+        let (_dir, db) = db().await;
+        clear_captured_emails(&db.pool, None).await.unwrap();
+        assert_eq!(evicted_through_id(&db.pool).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn ids_are_never_reused_after_clearing() {
+        let (_dir, db) = db().await;
+        insert_captured_email(&db.pool, "a@x.test", &["b@y.test".into()], SIMPLE, 1_000).await.unwrap();
+        let first_id = list_captured_emails(&db.pool, None, 10).await.unwrap().emails[0].id;
+
+        clear_captured_emails(&db.pool, None).await.unwrap();
+        insert_captured_email(&db.pool, "c@x.test", &["d@y.test".into()], SIMPLE, 2_000).await.unwrap();
+        let second_id = list_captured_emails(&db.pool, None, 10).await.unwrap().emails[0].id;
+
+        assert!(second_id > first_id, "AUTOINCREMENT must never reuse a row's id");
+    }
+
+    #[tokio::test]
+    async fn eviction_past_a_cap_drops_the_oldest_row_and_records_how_far() {
+        let (_dir, db) = db().await;
+        for i in 0..3 {
+            insert_captured_email(&db.pool, "a@x.test", &["b@y.test".into()], SIMPLE, 1_000 + i).await.unwrap();
         }
-        assert_eq!(store.list(10).len(), 2);
-        assert_eq!(store.evicted_through_id(), 2);
+        // Exercises the same eviction logic `insert_captured_email` uses in
+        // production, with a cap small enough to test without inserting
+        // thousands of rows.
+        evict_overflow(&db.pool, 2).await.unwrap();
+
+        let result = list_captured_emails(&db.pool, None, 10).await.unwrap();
+        assert_eq!(result.emails.len(), 2);
+        assert_eq!(result.evicted_through_id, 1);
     }
 
-    #[test]
-    fn store_between_selects_by_id_lower_bound_and_capture_time_upper_bound() {
-        let mut store = EmailStore::new(MAX_INBOX_MESSAGES);
-        store.push("a@x.test", &["b@y.test".into()], SIMPLE, 1_000);
-        let from_id = store.next_id() - 1;
-        store.push("inside@x.test", &["b@y.test".into()], SIMPLE, 1_500);
-        store.push("after@x.test", &["b@y.test".into()], SIMPLE, 9_999);
-
-        let selected = store.between(from_id, 2_000);
-        assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].from, "inside@x.test");
-    }
-
-    #[test]
-    fn clear_empties_the_inbox_without_rewinding_ids() {
-        let mut store = EmailStore::new(MAX_INBOX_MESSAGES);
-        store.push("a@x.test", &["b@y.test".into()], SIMPLE, 1_000);
-        let next_before = store.next_id();
-        store.clear();
-        assert_eq!(store.list(10).len(), 0);
-        assert_eq!(store.next_id(), next_before, "ids must never be reused");
-    }
-
-    #[test]
-    fn a_new_email_state_reports_not_listening_until_the_catcher_binds() {
+    #[tokio::test]
+    async fn a_new_email_state_reports_not_listening_until_the_catcher_binds() {
         let state = EmailState::new();
         let status = state.status();
         assert!(!status.listening);
         assert_eq!(status.error, None);
     }
 
-    #[test]
-    fn a_bind_failure_is_recorded_as_status_rather_than_being_thrown_away() {
+    #[tokio::test]
+    async fn a_bind_failure_is_recorded_as_status_rather_than_being_thrown_away() {
         let state = EmailState::new();
         state.set_status(SmtpStatus {
             listening: false,
@@ -360,22 +655,5 @@ mod tests {
         let status = state.status();
         assert!(!status.listening);
         assert!(status.error.unwrap().contains("1025"));
-    }
-
-    #[test]
-    fn email_state_exposes_its_store_for_the_catcher_thread_and_the_commands() {
-        let state = EmailState::new();
-        // `state.store()` returns an owned `Arc` clone (by design — that's
-        // what the catcher thread needs). Locking it inline as
-        // `state.store().lock().unwrap()` does not compile: the temporary
-        // `Arc` is dropped at the end of the `let` statement while the guard
-        // it produced is still borrowed for use on the next line (E0716).
-        // Binding the `Arc` first keeps it alive for the block.
-        let store_arc = state.store();
-        {
-            let mut store = store_arc.lock().unwrap();
-            store.push("a@x.test", &["b@y.test".into()], SIMPLE, 1_000);
-        }
-        assert_eq!(state.store().lock().unwrap().list(10).len(), 1);
     }
 }

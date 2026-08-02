@@ -1,49 +1,37 @@
 use mailin_embedded::response::{self, Response};
 use mailin_embedded::{Handler, Server, SslConfig};
+use sqlx::SqlitePool;
 use std::io;
 use std::net::{IpAddr, TcpListener};
-use std::sync::{Arc, Mutex};
 
-use crate::email_state::EmailStore;
+use crate::email_state::insert_captured_email;
 
-/// Ceiling on one captured message. Checked INSIDE `Handler::data`, which is
-/// called once per received chunk — the same bounded-incremental shape as
-/// `fire_request`'s streamed response reader, never buffer-then-check.
+/// Ceiling on one captured message. Checked INSIDE `Handler::data`.
 pub const MAX_MESSAGE_BYTES: usize = 10 * 1024 * 1024;
 
-/// Binds the catcher's socket. Done separately from `serve` so a port
-/// conflict (Mailhog or Mailpit already running) surfaces as an ordinary
-/// `Result` at app startup, per the v1 spec's error-handling requirement.
-/// `serve` blocks forever and could not report this.
+/// Binds the catcher's socket, separately from `serve`, so a port conflict
+/// surfaces as an ordinary `Result` at app startup.
 pub fn bind(port: u16) -> Result<TcpListener, String> {
-    // 127.0.0.1, never 0.0.0.0: a local-first tool must not expose an open
-    // mail relay-shaped listener to the network.
     TcpListener::bind(("127.0.0.1", port)).map_err(|e| {
         format!("SMTP port {port} is unavailable ({e}) — another catcher (Mailhog/Mailpit) may be running")
     })
 }
 
 /// Runs the SMTP server. BLOCKS FOREVER — call on a dedicated thread.
-pub fn serve(listener: TcpListener, store: Arc<Mutex<EmailStore>>) -> Result<(), String> {
-    let handler = CatcherHandler::new(store);
+pub fn serve(listener: TcpListener, pool: SqlitePool) -> Result<(), String> {
+    let handler = CatcherHandler::new(pool);
     let mut server = Server::new(handler);
     server
         .with_name("devbench")
-        // No STARTTLS: this is a loopback catcher for a developer's own
-        // backend. TLS here would add a certificate to manage and secure
-        // nothing that is not already inside the machine's trust boundary.
         .with_ssl(SslConfig::None)
         .map_err(|e| format!("failed to configure SMTP server: {e}"))?;
     server.with_tcp_listener(listener);
     server.serve().map_err(|e| format!("SMTP server stopped: {e}"))
 }
 
-/// `mailin-embedded` CLONES the handler once per connection, so the envelope
-/// and body fields below are naturally per-connection state; only `store` is
-/// shared. That is exactly the isolation a per-session accumulator needs.
 #[derive(Clone)]
 pub struct CatcherHandler {
-    store: Arc<Mutex<EmailStore>>,
+    pool: SqlitePool,
     from: String,
     to: Vec<String>,
     data: Vec<u8>,
@@ -51,8 +39,8 @@ pub struct CatcherHandler {
 }
 
 impl CatcherHandler {
-    pub fn new(store: Arc<Mutex<EmailStore>>) -> Self {
-        Self { store, from: String::new(), to: Vec::new(), data: Vec::new(), overflowed: false }
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool, from: String::new(), to: Vec::new(), data: Vec::new(), overflowed: false }
     }
 }
 
@@ -67,14 +55,10 @@ impl Handler for CatcherHandler {
     }
 
     fn rcpt(&mut self, _to: &str) -> Response {
-        // Accept every recipient: a catcher's job is to catch, not to route.
-        // The authoritative recipient list arrives in `data_start`.
         response::OK
     }
 
     fn data_start(&mut self, _domain: &str, from: &str, _is8bit: bool, to: &[String]) -> Response {
-        // The SMTP ENVELOPE, which is what the backend actually addressed the
-        // message to — including Bcc recipients, which never appear in headers.
         self.from = from.to_string();
         self.to = to.to_vec();
         self.data.clear();
@@ -86,8 +70,6 @@ impl Handler for CatcherHandler {
         if self.overflowed {
             return Ok(());
         }
-        // Budget checked per chunk, before appending — a hostile or runaway
-        // sender can never make us allocate past the cap.
         if self.data.len() + buf.len() > MAX_MESSAGE_BYTES {
             self.overflowed = true;
             self.data.clear();
@@ -106,20 +88,27 @@ impl Handler for CatcherHandler {
             return response::INTERNAL_ERROR;
         }
         let bytes = std::mem::take(&mut self.data);
-        // Lossy: a message can legitimately carry 8-bit bytes in a charset we
-        // do not decode. Dropping it would under-report what the backend sent,
-        // which principle 4 forbids; replacement characters are honest.
         let raw = String::from_utf8_lossy(&bytes).into_owned();
         let captured_at_ms = chrono::Utc::now().timestamp_millis();
 
-        match self.store.lock() {
-            Ok(mut store) => {
-                store.push(&self.from, &self.to, &raw, captured_at_ms);
-                response::OK
-            }
-            // A poisoned mutex means a previous panic. Rejecting is better than
-            // silently accepting a message we cannot store: the sending backend
-            // sees a failure it can log, rather than DevBench claiming zero mail.
+        // `mailin-embedded` calls every Handler method synchronously from
+        // this blocking OS thread. `insert_captured_email` is async (it goes
+        // through the SQLite pool), so this bridges exactly the way
+        // `main.rs`'s synchronous `.setup()` closure already bridges to
+        // async for `LocalDb::connect` — `tauri::async_runtime::block_on`
+        // manages its own runtime independently of the caller's, so it
+        // works from a foreign, non-tokio thread like this one.
+        match tauri::async_runtime::block_on(insert_captured_email(
+            &self.pool,
+            &self.from,
+            &self.to,
+            &raw,
+            captured_at_ms,
+        )) {
+            Ok(()) => response::OK,
+            // A failed write is better rejected than silently dropped: the
+            // sending backend sees a failure it can log, rather than
+            // DevBench claiming zero mail.
             Err(_) => response::INTERNAL_ERROR,
         }
     }
@@ -128,12 +117,11 @@ impl Handler for CatcherHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::email_state::MAX_INBOX_MESSAGES;
+    use crate::email_state::{get_captured_email, list_captured_emails};
+    use crate::local_db::LocalDb;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpStream;
 
-    /// Reads SMTP reply lines until one has a space (not '-') after the code,
-    /// which is how a multiline EHLO reply terminates.
     fn read_reply(reader: &mut BufReader<TcpStream>) -> String {
         loop {
             let mut line = String::new();
@@ -147,32 +135,32 @@ mod tests {
         }
     }
 
-    fn start_catcher() -> (u16, Arc<Mutex<EmailStore>>) {
-        let store = Arc::new(Mutex::new(EmailStore::new(MAX_INBOX_MESSAGES)));
-        // Port 0 lets the OS pick a free one, so tests never collide with a
-        // real Mailhog on 1025 or with each other under `cargo test`.
+    async fn start_catcher() -> (u16, tempfile::TempDir, SqlitePool) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        let pool = db.pool.clone();
         let listener = bind(0).unwrap();
         let port = listener.local_addr().unwrap().port();
-        let store_for_server = Arc::clone(&store);
+        let pool_for_server = pool.clone();
         std::thread::spawn(move || {
-            let _ = serve(listener, store_for_server);
+            let _ = serve(listener, pool_for_server);
         });
-        (port, store)
+        (port, dir, pool)
     }
 
-    fn wait_for_messages(store: &Arc<Mutex<EmailStore>>, want: usize) {
+    async fn wait_for_messages(pool: &SqlitePool, want: usize) {
         for _ in 0..100 {
-            if store.lock().unwrap().list(10).len() >= want {
+            if list_captured_emails(pool, None, 10).await.unwrap().emails.len() >= want {
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("timed out waiting for {want} captured message(s)");
     }
 
-    #[test]
-    fn catches_a_message_sent_by_a_plain_smtp_client() {
-        let (port, store) = start_catcher();
+    #[tokio::test]
+    async fn catches_a_message_sent_by_a_plain_smtp_client() {
+        let (port, _dir, pool) = start_catcher().await;
 
         let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         let mut writer = stream.try_clone().unwrap();
@@ -196,22 +184,21 @@ mod tests {
         write!(writer, "QUIT\r\n").unwrap();
         let _ = read_reply(&mut reader);
 
-        wait_for_messages(&store, 1);
-        let guard = store.lock().unwrap();
-        let listed = guard.list(10);
+        wait_for_messages(&pool, 1).await;
+        let listed = list_captured_emails(&pool, None, 10).await.unwrap().emails;
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].from, "orders@shop.test");
         assert_eq!(listed[0].to, vec!["customer@example.com".to_string()]);
         assert_eq!(listed[0].subject, "Order confirmation #8841");
 
-        let full = guard.get(listed[0].id).unwrap();
+        let full = get_captured_email(&pool, listed[0].id).await.unwrap().unwrap();
         assert!(full.text_body.unwrap().contains("Thanks for your order"));
         assert!(full.raw.contains("Subject: Order confirmation #8841"));
     }
 
-    #[test]
-    fn captures_the_envelope_recipient_even_when_it_is_absent_from_the_headers() {
-        let (port, store) = start_catcher();
+    #[tokio::test]
+    async fn captures_the_envelope_recipient_even_when_it_is_absent_from_the_headers() {
+        let (port, _dir, pool) = start_catcher().await;
 
         let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         let mut writer = stream.try_clone().unwrap();
@@ -222,8 +209,6 @@ mod tests {
         let _ = read_reply(&mut reader);
         write!(writer, "MAIL FROM:<orders@shop.test>\r\n").unwrap();
         let _ = read_reply(&mut reader);
-        // A Bcc recipient: present in the envelope, deliberately absent from
-        // the headers. Parsing `To:` would silently lose it.
         write!(writer, "RCPT TO:<audit@shop.test>\r\n").unwrap();
         let _ = read_reply(&mut reader);
         write!(writer, "DATA\r\n").unwrap();
@@ -232,9 +217,9 @@ mod tests {
         let _ = read_reply(&mut reader);
         write!(writer, "QUIT\r\n").unwrap();
 
-        wait_for_messages(&store, 1);
-        let guard = store.lock().unwrap();
-        assert_eq!(guard.list(10)[0].to, vec!["audit@shop.test".to_string()]);
+        wait_for_messages(&pool, 1).await;
+        let listed = list_captured_emails(&pool, None, 10).await.unwrap().emails;
+        assert_eq!(listed[0].to, vec!["audit@shop.test".to_string()]);
     }
 
     #[test]
@@ -248,10 +233,11 @@ mod tests {
         assert!(message.contains("Mailhog"), "the error must tell the user what to look for");
     }
 
-    #[test]
-    fn data_rejects_a_message_past_the_size_cap_without_buffering_it() {
-        let store = Arc::new(Mutex::new(EmailStore::new(MAX_INBOX_MESSAGES)));
-        let mut handler = CatcherHandler::new(Arc::clone(&store));
+    #[tokio::test]
+    async fn data_rejects_a_message_past_the_size_cap_without_buffering_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        let mut handler = CatcherHandler::new(db.pool.clone());
         handler.data_start("tester", "a@x.test", false, &["b@y.test".to_string()]);
 
         let chunk = vec![b'x'; 1024 * 1024];
@@ -266,6 +252,10 @@ mod tests {
         assert!(rejected_at.unwrap() <= 10, "rejection must happen at the cap, not after 20 MiB");
 
         handler.data_end();
-        assert_eq!(store.lock().unwrap().list(10).len(), 0, "an overflowed message is not stored");
+        assert_eq!(
+            list_captured_emails(&db.pool, None, 10).await.unwrap().emails.len(),
+            0,
+            "an overflowed message is not stored"
+        );
     }
 }

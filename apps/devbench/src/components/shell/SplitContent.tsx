@@ -15,6 +15,8 @@ export function SplitContent({
   onOpenLog,
   onOpenEmail,
   emailFocusRequest,
+  onOpenHistory,
+  historyFocusRequest,
 }: {
   onAddTab: (pane: Pane, kind: ToolKind) => void;
   onPatchState: (id: string, patch: Record<string, unknown>) => void;
@@ -22,6 +24,8 @@ export function SplitContent({
   onOpenLog: () => void;
   onOpenEmail: (emailId: number | null) => void;
   emailFocusRequest: { tabId: string; emailId: number | null } | null;
+  onOpenHistory: (requestId: string) => void;
+  historyFocusRequest: { tabId: string; requestId: string } | null;
 }) {
   const tabs = useAppStore((s) => s.tabs);
   const activeTabId = useAppStore((s) => s.activeTabId);
@@ -45,6 +49,8 @@ export function SplitContent({
           onOpenLog={onOpenLog}
           onOpenEmail={onOpenEmail}
           emailFocusId={emailFocusRequest?.tabId === tab.id ? emailFocusRequest.emailId : null}
+          onOpenHistory={onOpenHistory}
+          historyFocusId={historyFocusRequest?.tabId === tab.id ? historyFocusRequest.requestId : null}
         />
       </div>
     ));

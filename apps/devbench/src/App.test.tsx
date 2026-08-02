@@ -22,7 +22,6 @@ describe("App shell", () => {
     render(<App />);
     expect(screen.getByRole("complementary", { name: "Sessions" })).toBeInTheDocument();
     expect(screen.getByRole("complementary", { name: "AI Assistant" })).toBeInTheDocument();
-    // No tabs open yet — Task 5 covers the empty-state prompt this produces.
     expect(screen.queryAllByRole("tab")).toHaveLength(0);
   });
 
@@ -113,5 +112,41 @@ describe("App shell", () => {
     expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
 
     useAppStore.getState().setTheme("dark");
+    useAppStore.getState().setRoute("workspace");
+  });
+
+  // Bug: LocalDb::connect failing used to panic main.rs, so the window never
+  // opened at all. Now the DB error is surfaced as app state instead, and
+  // must replace the workspace with a blocking explanation rather than
+  // leaving the broken shell on screen or failing silently.
+  it("renders the startup error screen instead of the workspace when the database failed to initialize", async () => {
+    vi.spyOn(tauriLib, "invokeGetStartupStatus").mockResolvedValue({
+      db_error: {
+        db_path: "/tmp/devbench-test/devbench.db",
+        error: "migration 5 was previously applied but has been modified",
+      },
+    });
+    vi.spyOn(tauriLib, "invokeGetSettings").mockResolvedValue(settings);
+    vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue([]);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/couldn't start/i)).toBeInTheDocument());
+    expect(
+      screen.getByText("migration 5 was previously applied but has been modified"),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Sessions" })).not.toBeInTheDocument();
+  });
+
+  it("renders the normal workspace, with no error screen, when the startup check reports no error", async () => {
+    vi.spyOn(tauriLib, "invokeGetStartupStatus").mockResolvedValue({ db_error: null });
+    vi.spyOn(tauriLib, "invokeGetSettings").mockResolvedValue(settings);
+    vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue([]);
+
+    render(<App />);
+
+    expect(screen.getByRole("complementary", { name: "Sessions" })).toBeInTheDocument();
+    await waitFor(() => expect(tauriLib.invokeGetStartupStatus).toHaveBeenCalled());
+    expect(screen.queryByText(/couldn't start/i)).not.toBeInTheDocument();
   });
 });

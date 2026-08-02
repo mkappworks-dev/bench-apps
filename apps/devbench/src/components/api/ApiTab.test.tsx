@@ -20,6 +20,7 @@ function sendResult(body: string): CorrelationResult {
     response: { status_code: 201, body, duration_ms: 142 },
     table_diffs: [],
     db_error: null,
+    history_id: `hist-${body}`,
   };
 }
 
@@ -60,6 +61,7 @@ describe("ApiTab", () => {
       response: { status_code: 201, body: '{"id":1}', duration_ms: 10 },
       table_diffs: [{ table: "orders", inserted: 1, updated: 0, deleted: 0 }],
       db_error: null,
+      history_id: null,
     });
     // Left pending: the DB chip is filled in from Phase 1 data, before the
     // correlation window closes, so this test never needs to resolve it.
@@ -141,6 +143,31 @@ describe("ApiTab", () => {
     expect(screen.queryByText('{"id":8841}')).not.toBeInTheDocument();
     // Not stuck mid-send either: the rollup shows only while sending or displayed.
     expect(screen.queryByText("What happened")).not.toBeInTheDocument();
+  });
+
+  // The link between a captured email and the request that sent it is dead
+  // unless the history id from the send actually reaches the window call — a
+  // wiring gap that types alone would not catch.
+  it("threads the send's history_id into the window collection call", async () => {
+    vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
+      correlation_id: "corr-1",
+      response: { status_code: 201, body: '{"id":8841}', duration_ms: 142 },
+      table_diffs: [],
+      db_error: null,
+      history_id: "hist-77",
+    });
+    const collectWindow = vi
+      .spyOn(tauriLib, "invokeCollectCorrelationWindow")
+      .mockResolvedValue({ log_lines: [], log_lines_truncated: false, emails: [], emails_truncated: false });
+
+    render(<ApiTab tab={tab()} onPatchState={() => {}} onOpenDb={() => {}} onOpenLog={() => {}} onOpenEmail={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText("/api/orders"), {
+      target: { value: "/api/orders" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(collectWindow).toHaveBeenCalledWith("corr-1", "hist-77"));
   });
 
   // The window resolves long after the response, and unguarded would splice
@@ -241,5 +268,36 @@ describe("ApiTab", () => {
     });
 
     expect(screen.getByText("1 line")).toBeInTheDocument();
+  });
+
+  // Email's "Sent by" chip deep-links here via focusHistoryId — the same
+  // prop-forwarding bug class as the DB-chip regression test above, just for
+  // an incoming prop instead of an outgoing callback.
+  it("forwards focusHistoryId to HistorySidebar and selects the matching entry", async () => {
+    vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([
+      {
+        id: "hist-1",
+        method: "POST",
+        url: "/api/orders",
+        status_code: 201,
+        response_body: '{"id":8841}',
+        duration_ms: 142,
+        fired_at: "2026-07-30T14:02:11Z",
+        session_id: null,
+      },
+    ]);
+
+    render(
+      <ApiTab
+        tab={tab()}
+        onPatchState={() => {}}
+        onOpenDb={() => {}}
+        onOpenLog={() => {}}
+        onOpenEmail={() => {}}
+        focusHistoryId="hist-1"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('{"id":8841}')).toBeInTheDocument());
   });
 });

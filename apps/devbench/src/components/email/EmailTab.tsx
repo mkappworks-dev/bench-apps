@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EmailInbox } from "./EmailInbox";
 import { EmailViewer } from "./EmailViewer";
+import { useAppStore } from "../../store/useAppStore";
 import {
   invokeClearEmails,
   invokeGetEmail,
@@ -13,21 +14,50 @@ import {
 
 /** How often the inbox is refreshed. Mail is far rarer than log lines. */
 const POLL_INTERVAL_MS = 1_000;
+/** Matches the backend's global retention cap (`MAX_CAPTURED_EMAILS`). */
+const LIST_LIMIT = 5_000;
 
-export function EmailTab({ focusEmailId = null }: { focusEmailId?: number | null }) {
+export function EmailTab({
+  focusEmailId = null,
+  onOpenHistory,
+}: {
+  focusEmailId?: number | null;
+  /** Forwarded straight to EmailViewer's "Sent by" chip — App.tsx owns the
+   *  actual tab-focusing logic, same split as the Rollup's onOpenEmail. */
+  onOpenHistory?: (requestId: string) => void;
+}) {
+  const activeSessionId = useAppStore((s) => s.activeSessionId);
   const [emails, setEmails] = useState<EmailSummary[]>([]);
+  const [evictedThroughId, setEvictedThroughId] = useState(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selected, setSelected] = useState<CapturedEmail | null>(null);
   const [status, setStatus] = useState<SmtpStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // The live session. A poll tick started under session A can resolve after
+  // the user has switched to B; comparing against this ref (not the tick's
+  // closed-over value) is what lets that resolution be dropped. Same
+  // approach as ApiTab.tsx's `belongsToCurrentSession`.
+  const activeSessionIdRef = useRef(activeSessionId);
+
+  // Switching sessions must not leave a previous session's selected email
+  // sitting in the viewer — same rationale as ApiTab.tsx's clear-on-switch.
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+    setSelectedId(null);
+  }, [activeSessionId]);
+
   const refresh = useCallback(async () => {
+    const requestedSessionId = activeSessionId;
     try {
-      setEmails(await invokeListEmails(200));
+      const result = await invokeListEmails(activeSessionId, LIST_LIMIT);
+      if (activeSessionIdRef.current !== requestedSessionId) return;
+      setEmails(result.emails);
+      setEvictedThroughId(result.evicted_through_id);
     } catch {
       // A transient IPC failure is not worth tearing the pane down.
     }
-  }, []);
+  }, [activeSessionId]);
 
   useEffect(() => {
     invokeSmtpStatus().then(setStatus).catch(() => setStatus(null));
@@ -69,7 +99,7 @@ export function EmailTab({ focusEmailId = null }: { focusEmailId?: number | null
 
   async function handleClear() {
     try {
-      await invokeClearEmails();
+      await invokeClearEmails(activeSessionId);
       setSelectedId(null);
       await refresh();
     } catch (err) {
@@ -78,10 +108,11 @@ export function EmailTab({ focusEmailId = null }: { focusEmailId?: number | null
   }
 
   return (
-    <div className="-m-6 flex h-full flex-col">
+    <div className="-m-6 flex h-full flex-1 flex-col">
       <div className="flex flex-1 overflow-hidden">
         <EmailInbox
           emails={emails}
+          evictedThroughId={evictedThroughId}
           selectedId={selectedId}
           onSelect={setSelectedId}
           onClear={handleClear}
@@ -90,7 +121,7 @@ export function EmailTab({ focusEmailId = null }: { focusEmailId?: number | null
           {error ? (
             <div className="m-4 rounded-lg border border-border bg-danger-bg p-3 text-sm text-danger">{error}</div>
           ) : (
-            <EmailViewer email={selected} />
+            <EmailViewer email={selected} onOpenHistory={onOpenHistory} />
           )}
         </div>
       </div>
