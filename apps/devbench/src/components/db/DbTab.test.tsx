@@ -305,6 +305,58 @@ describe("DbTab", () => {
     expect(screen.getByText("by-id")).toBeInTheDocument();
   });
 
+  describe("query console", () => {
+    it("opens and closes the query console via the toggle button, without hiding Browse", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: ["id"], rows: [["1"]], pk_column: "id" });
+
+      renderDb("orders");
+      await waitFor(() => screen.getByText("1"));
+
+      expect(screen.queryByPlaceholderText("SELECT * FROM orders LIMIT 10;")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Query console" }));
+
+      expect(await screen.findByPlaceholderText("SELECT * FROM orders LIMIT 10;")).toBeInTheDocument();
+      // Browse's own grid keeps rendering the whole time the console is
+      // open — it's a sibling panel, not a mode that replaces the grid.
+      expect(screen.getByText("1")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Query console" }));
+      await waitFor(() =>
+        expect(screen.queryByPlaceholderText("SELECT * FROM orders LIMIT 10;")).not.toBeInTheDocument(),
+      );
+    });
+
+    // Real production path for the hazard the task brief calls out: closing
+    // the drawer unmounts QueryConsole (DbTab only renders it while
+    // consoleOpen). An uncommitted preview left open at that moment holds a
+    // real transaction and row lock that must not leak for the sweep's full
+    // ~2-minute window just because the drawer was toggled shut — this
+    // proves the actual DbTab wiring exercises that cleanup, not just the
+    // isolated QueryConsole unit tests.
+    it("closing the console with an open, uncommitted preview rolls it back", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: ["id"], rows: [["1"]], pk_column: "id" });
+      vi.spyOn(tauriLib, "invokePreviewQuery").mockResolvedValue({
+        preview_id: "p1",
+        columns: [],
+        rows: [],
+        rows_affected: 1,
+      });
+      const rollback = vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+
+      renderDb("orders");
+      await waitFor(() => screen.getByText("1"));
+      fireEvent.click(screen.getByRole("button", { name: "Query console" }));
+      const textarea = await screen.findByPlaceholderText("SELECT * FROM orders LIMIT 10;");
+      fireEvent.change(textarea, { target: { value: "UPDATE orders SET status = 'x'" } });
+      fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+      await screen.findByRole("button", { name: "Commit" });
+
+      fireEvent.click(screen.getByRole("button", { name: "Query console" }));
+
+      await waitFor(() => expect(rollback).toHaveBeenCalledWith("p1"));
+    });
+  });
+
   describe("inline cell editing", () => {
     it("clicking an editable cell shows an input; previewing shows a diff; committing updates the grid", async () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({

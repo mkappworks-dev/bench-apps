@@ -232,6 +232,10 @@ export interface QueryPreview {
   rows_affected: number | null;
 }
 
+export function invokePreviewQuery(connectionId: string, sql: string): Promise<QueryPreview> {
+  return invoke("preview_query", { connectionId, sql });
+}
+
 export function invokePreviewCellEdit(
   connectionId: string,
   table: string,

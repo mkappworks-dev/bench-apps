@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { SchemaTree } from "./SchemaTree";
 import { DataGrid, cellDisplay } from "./DataGrid";
+import { QueryConsole } from "./QueryConsole";
 import {
   invokeListTableRows,
   invokeListWatchedTables,
@@ -77,6 +78,7 @@ export function DbTab({
   const [page, setPage] = useState(0);
 
   const [editing, setEditing] = useState<CellEdit | null>(null);
+  const [consoleOpen, setConsoleOpen] = useState(false);
   // Cell-edit failures render next to the grid, not in place of it — reusing
   // `error` (which swaps the whole grid for an error box) would make a
   // failed single-cell commit look like the entire table failed to load.
@@ -495,40 +497,57 @@ export function DbTab({
         onSelectTable={(t) => onPatchState({ table: t })}
         onConnectionChange={setActiveConnectionId}
       />
-      <div className="flex-1 overflow-y-auto p-5">
-        {!activeConnectionId ? (
-          <div className="text-sm text-text-faint">Select a connection to browse its data.</div>
-        ) : error ? (
-          <div className="rounded-lg border border-border bg-danger-bg p-3 text-sm text-danger">{error}</div>
-        ) : tableRows ? (
-          <div className={loading ? "opacity-60 transition-opacity duration-200" : undefined}>
-            {editError ? (
-              <div role="alert" className="mb-2 rounded-sm border border-border bg-danger-bg px-3 py-1.5 text-xs text-danger">
-                {editError}
-              </div>
-            ) : null}
-            <DataGrid
-              columns={tableRows.columns}
-              rows={tableRows.rows}
-              sortColumn={sortColumn}
-              sortDescending={sortDescending}
-              onSort={handleSort}
-              hasPrevPage={page > 0}
-              hasNextPage={hasNextPage}
-              onPrevPage={handlePrevPage}
-              onNextPage={handleNextPage}
-              renderCell={renderCell}
-            />
-            {!tableRows.pk_column ? (
-              <div className="mt-2 text-xs text-text-faint">
-                No single-column primary key on <span className="font-semibold text-text-muted">{table}</span> — cells are
-                read-only.
-              </div>
-            ) : null}
+      <div className="flex min-h-0 flex-1 flex-col">
+        {activeConnectionId ? (
+          <div className="flex items-center border-b border-border px-4 py-2">
+            <span className="text-sm font-semibold text-text-muted">{table ?? "No table selected"}</span>
+            <button
+              type="button"
+              aria-label="Query console"
+              aria-pressed={consoleOpen}
+              onClick={() => setConsoleOpen((open) => !open)}
+              className="ml-auto flex h-7 shrink-0 items-center gap-1.5 rounded-sm px-2 text-xs font-medium text-text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-text aria-pressed:bg-surface-2 aria-pressed:text-text"
+            >
+              Query console
+            </button>
           </div>
-        ) : loading ? (
-          <div className="text-sm text-text-faint">Loading…</div>
         ) : null}
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          {!activeConnectionId ? (
+            <div className="text-sm text-text-faint">Select a connection to browse its data.</div>
+          ) : error ? (
+            <div className="rounded-lg border border-border bg-danger-bg p-3 text-sm text-danger">{error}</div>
+          ) : tableRows ? (
+            <div className={loading ? "opacity-60 transition-opacity duration-200" : undefined}>
+              {editError ? (
+                <div role="alert" className="mb-2 rounded-sm border border-border bg-danger-bg px-3 py-1.5 text-xs text-danger">
+                  {editError}
+                </div>
+              ) : null}
+              <DataGrid
+                columns={tableRows.columns}
+                rows={tableRows.rows}
+                sortColumn={sortColumn}
+                sortDescending={sortDescending}
+                onSort={handleSort}
+                hasPrevPage={page > 0}
+                hasNextPage={hasNextPage}
+                onPrevPage={handlePrevPage}
+                onNextPage={handleNextPage}
+                renderCell={renderCell}
+              />
+              {!tableRows.pk_column ? (
+                <div className="mt-2 text-xs text-text-faint">
+                  No single-column primary key on <span className="font-semibold text-text-muted">{table}</span> — cells are
+                  read-only.
+                </div>
+              ) : null}
+            </div>
+          ) : loading ? (
+            <div className="text-sm text-text-faint">Loading…</div>
+          ) : null}
+        </div>
+        {consoleOpen && activeConnectionId ? <QueryConsole connectionId={activeConnectionId} /> : null}
       </div>
     </div>
   );
