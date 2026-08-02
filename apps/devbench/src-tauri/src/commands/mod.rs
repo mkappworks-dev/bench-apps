@@ -9,4 +9,6 @@ pub mod provider;
 pub mod request;
 pub mod sessions;
 pub mod settings;
+pub mod startup;
+pub mod tabs;
 pub mod watched;

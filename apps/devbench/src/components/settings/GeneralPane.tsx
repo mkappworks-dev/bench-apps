@@ -1,19 +1,10 @@
 import { useEffect, useState } from "react";
-import { useAppStore, type ThemePref } from "../../store/useAppStore";
 import { invokeGetSettings, invokeSetSetting } from "../../lib/tauri";
-
-const THEMES: { id: ThemePref; label: string }[] = [
-  { id: "system", label: "System" },
-  { id: "dark", label: "Dark" },
-  { id: "light", label: "Light" },
-];
 
 const MIN_WINDOW_S = 1;
 const MAX_WINDOW_S = 60;
 
 export function GeneralPane() {
-  const theme = useAppStore((s) => s.theme);
-  const setTheme = useAppStore((s) => s.setTheme);
   const [windowSeconds, setWindowSeconds] = useState(5);
   const [smtpPort, setSmtpPort] = useState(1025);
   const [windowError, setWindowError] = useState<string | null>(null);
@@ -24,17 +15,11 @@ export function GeneralPane() {
       .then((s) => {
         setWindowSeconds(Math.round(s.correlation_window_ms / 1000));
         setSmtpPort(s.smtp_port);
-        setTheme(s.theme as ThemePref);
       })
       .catch(() => {
         /* defaults already in state */
       });
-  }, [setTheme]);
-
-  async function saveTheme(next: ThemePref) {
-    setTheme(next);
-    await invokeSetSetting("theme", next).catch(() => {});
-  }
+  }, []);
 
   async function saveWindow() {
     if (!Number.isFinite(windowSeconds) || windowSeconds < MIN_WINDOW_S || windowSeconds > MAX_WINDOW_S) {
@@ -60,30 +45,6 @@ export function GeneralPane() {
       <p className="mt-1 text-sm text-text-muted">App-wide behavior.</p>
 
       <section className="mt-6 rounded-lg border border-border p-4">
-        {/* A radiogroup: exactly one theme applies at a time. Base UI's
-            ToggleGroup is a MULTI-select primitive and would be the wrong
-            semantics here (see this plan's Decision 1). */}
-        <div role="radiogroup" aria-label="Theme">
-          <div className="text-sm font-semibold text-text">Theme</div>
-          <div className="mt-2 inline-flex rounded-sm border border-border p-0.5">
-            {THEMES.map((t) => (
-              <button
-                key={t.id}
-                role="radio"
-                aria-checked={theme === t.id}
-                onClick={() => void saveTheme(t.id)}
-                className={`rounded-sm px-3 py-1.5 text-xs font-medium transition-colors duration-150 ${
-                  theme === t.id ? "bg-surface-2 text-text" : "text-text-muted hover:bg-surface-2"
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="mt-4 rounded-lg border border-border p-4">
         <label htmlFor="corr-window" className="text-sm font-semibold text-text">
           Correlation window
         </label>

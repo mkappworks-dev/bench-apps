@@ -31,7 +31,8 @@ target/
 # each with its own nested .git - must never be swept into this repo)
 .claude/worktrees/
 
-# superpowers:brainstorming visual-companion session files
+# Superpowers scratch workspace (SDD ledgers, briefs, review packages,
+# brainstorming session files — per-session artifacts, not project history)
 .superpowers/
 
 # Playwright MCP scratch output (screenshots/snapshots from ad-hoc verification)

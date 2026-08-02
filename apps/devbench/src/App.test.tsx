@@ -18,12 +18,11 @@ describe("App shell", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders the three-column workspace with one tab per tool", () => {
+  it("renders the three-column workspace", () => {
     render(<App />);
-    expect(screen.getByText("DevBench")).toBeInTheDocument();
-    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["API", "DB", "Log", "Email"]);
     expect(screen.getByRole("complementary", { name: "Sessions" })).toBeInTheDocument();
     expect(screen.getByRole("complementary", { name: "AI Assistant" })).toBeInTheDocument();
+    expect(screen.queryAllByRole("tab")).toHaveLength(0);
   });
 
   it("hides the chat dock when it is toggled off, without overlaying the content", () => {
@@ -38,6 +37,19 @@ describe("App shell", () => {
     render(<App />);
     expect(screen.getByRole("heading", { name: "General" })).toBeInTheDocument();
     expect(screen.queryAllByRole("tab").map((t) => t.textContent)).not.toContain("Email");
+    useAppStore.getState().setRoute("workspace");
+  });
+
+  // The brand sits in both routes' top strips at the same offset, so navigating
+  // into Settings must not drop it — that would read as the lockup flickering.
+  it("keeps the brand lockup in the top strip on both routes", () => {
+    const { unmount } = render(<App />);
+    expect(screen.getByText("Dev Bench")).toBeInTheDocument();
+    unmount();
+
+    useAppStore.getState().setRoute("settings");
+    render(<App />);
+    expect(screen.getByText("Dev Bench")).toBeInTheDocument();
     useAppStore.getState().setRoute("workspace");
   });
 
@@ -75,10 +87,10 @@ describe("App shell", () => {
     useAppStore.getState().setTheme("dark");
   });
 
-  // Bug: cycleTheme() (the TopBar button) only called setTheme locally, with
-  // no backend persistence — so cycling the theme from the app's most common
-  // entry point was silently lost on restart.
-  it("persists the theme when cycled from the TopBar button", async () => {
+  // Bug: cycleTheme() only called setTheme locally, with no backend
+  // persistence — so changing the theme was silently lost on restart. The
+  // control moved to Settings > Appearance, but the bug class is identical.
+  it("persists the theme when changed from Settings", async () => {
     // Resolve the mount-time hydration to "light" (distinct from the "dark"
     // default) and wait for it to land before clicking, so the hydration
     // effect's setTheme() can't race with — and clobber — the click's.
@@ -89,11 +101,52 @@ describe("App shell", () => {
     render(<App />);
     await waitFor(() => expect(useAppStore.getState().theme).toBe("light"));
 
-    // THEME_CYCLE is ["system", "dark", "light"]; from "light" the next is "system".
-    fireEvent.click(screen.getByRole("button", { name: /theme:/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^settings$/i }));
+    fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /theme/i }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "System" }));
 
     await waitFor(() => expect(setSetting).toHaveBeenCalledWith("theme", "system"));
+    // The theme must actually be applied, not just stored.
+    expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
 
     useAppStore.getState().setTheme("dark");
+    useAppStore.getState().setRoute("workspace");
+  });
+
+  // Bug: LocalDb::connect failing used to panic main.rs, so the window never
+  // opened at all. Now the DB error is surfaced as app state instead, and
+  // must replace the workspace with a blocking explanation rather than
+  // leaving the broken shell on screen or failing silently.
+  it("renders the startup error screen instead of the workspace when the database failed to initialize", async () => {
+    vi.spyOn(tauriLib, "invokeGetStartupStatus").mockResolvedValue({
+      db_error: {
+        db_path: "/tmp/devbench-test/devbench.db",
+        error: "migration 5 was previously applied but has been modified",
+      },
+    });
+    vi.spyOn(tauriLib, "invokeGetSettings").mockResolvedValue(settings);
+    vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue([]);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/couldn't start/i)).toBeInTheDocument());
+    expect(
+      screen.getByText("migration 5 was previously applied but has been modified"),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Sessions" })).not.toBeInTheDocument();
+  });
+
+  it("renders the normal workspace, with no error screen, when the startup check reports no error", async () => {
+    vi.spyOn(tauriLib, "invokeGetStartupStatus").mockResolvedValue({ db_error: null });
+    vi.spyOn(tauriLib, "invokeGetSettings").mockResolvedValue(settings);
+    vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue([]);
+
+    render(<App />);
+
+    expect(screen.getByRole("complementary", { name: "Sessions" })).toBeInTheDocument();
+    await waitFor(() => expect(tauriLib.invokeGetStartupStatus).toHaveBeenCalled());
+    expect(screen.queryByText(/couldn't start/i)).not.toBeInTheDocument();
   });
 });

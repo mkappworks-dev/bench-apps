@@ -1,5 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export interface DbInitError {
+  db_path: string;
+  error: string;
+}
+
+export interface StartupStatus {
+  db_error: DbInitError | null;
+}
+
+export function invokeGetStartupStatus(): Promise<StartupStatus> {
+  return invoke("get_startup_status");
+}
+
 export interface FireRequestInput {
   method: string;
   url: string;
@@ -46,6 +59,8 @@ export interface CorrelationResult {
   /** `null` means the database could not be verified — never render this as "0 writes". */
   table_diffs: TableDiff[] | null;
   db_error: string | null;
+  /** The saved request_history row's id, once known — null only if that save itself failed. */
+  history_id: string | null;
 }
 
 export interface DbConnectInput {
@@ -116,6 +131,16 @@ export interface CapturedEmail extends EmailSummary {
   html_body: string | null;
   text_body: string | null;
   raw: string;
+  /** Set once a correlated request's window observes this email. */
+  request_id: string | null;
+  request_method: string | null;
+  request_url: string | null;
+}
+
+export interface ListEmailsResult {
+  emails: EmailSummary[];
+  /** Highest id ever evicted by the 5,000-message cap. 0 = nothing evicted yet. */
+  evicted_through_id: number;
 }
 
 export interface SmtpStatus {
@@ -124,16 +149,17 @@ export interface SmtpStatus {
   error: string | null;
 }
 
-export function invokeListEmails(limit: number): Promise<EmailSummary[]> {
-  return invoke("list_emails", { limit });
+/** `sessionId` null lists every captured email regardless of session (the unscoped view) — same convention as `invokeListHistory`. */
+export function invokeListEmails(sessionId: string | null, limit: number): Promise<ListEmailsResult> {
+  return invoke("list_emails", { sessionId, limit });
 }
 
 export function invokeGetEmail(id: number): Promise<CapturedEmail> {
   return invoke("get_email", { id });
 }
 
-export function invokeClearEmails(): Promise<void> {
-  return invoke("clear_emails");
+export function invokeClearEmails(sessionId: string | null): Promise<void> {
+  return invoke("clear_emails", { sessionId });
 }
 
 export function invokeSmtpStatus(): Promise<SmtpStatus> {
@@ -162,8 +188,11 @@ export function invokeReadLogLines(args: {
   });
 }
 
-export function invokeCollectCorrelationWindow(correlationId: string): Promise<CorrelationWindowResult> {
-  return invoke("collect_correlation_window", { correlationId });
+export function invokeCollectCorrelationWindow(
+  correlationId: string,
+  historyId: string | null,
+): Promise<CorrelationWindowResult> {
+  return invoke("collect_correlation_window", { correlationId, historyId });
 }
 
 export interface TableInfo {
@@ -301,4 +330,40 @@ export interface ChatReply {
 
 export function invokeSendChatMessage(messages: ChatMessage[]): Promise<ChatReply> {
   return invoke("send_chat_message", { messages });
+}
+
+export interface TabRow {
+  id: string;
+  session_id: string | null;
+  kind: string;
+  pane: string;
+  ordinal: number;
+  state: string | null;
+}
+
+export function invokeListTabs(sessionId: string | null): Promise<TabRow[]> {
+  return invoke("list_tabs", { sessionId });
+}
+
+export function invokeCreateTab(input: {
+  id: string;
+  sessionId: string | null;
+  kind: string;
+  pane: string;
+  ordinal: number;
+  state: string;
+}): Promise<void> {
+  return invoke("create_tab", input);
+}
+
+export function invokeCloseTab(id: string): Promise<void> {
+  return invoke("close_tab", { id });
+}
+
+export function invokeSetTabState(id: string, state: string): Promise<void> {
+  return invoke("set_tab_state", { id, state });
+}
+
+export function invokeMoveTab(id: string, pane: string, ordinal: number): Promise<void> {
+  return invoke("move_tab", { id, pane, ordinal });
 }

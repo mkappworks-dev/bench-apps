@@ -1,5 +1,5 @@
 import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EmailViewer } from "./EmailViewer";
 import type { CapturedEmail } from "../../lib/tauri";
 
@@ -13,6 +13,9 @@ const email: CapturedEmail = {
   html_body: "<h2>Thanks for your order.</h2>",
   text_body: "Thanks for your order.",
   raw: "Subject: Order confirmation #8841\r\nFrom: orders@shop.test\r\n\r\nThanks for your order.\r\n",
+  request_id: null,
+  request_method: null,
+  request_url: null,
 };
 
 describe("EmailViewer", () => {
@@ -39,6 +42,16 @@ describe("EmailViewer", () => {
     expect(document.querySelector("h2")).toBeNull();
   });
 
+  // jsdom computes no styles, so the class is the only reachable signal. The
+  // invariant is worth pinning: on a themed surface the mail's own black text
+  // becomes unreadable in dark mode.
+  it("renders the HTML body on a light canvas in both themes", () => {
+    render(<EmailViewer email={email} />);
+    const frame = screen.getByTitle("Email HTML body");
+    expect(frame.className).toContain("bg-white");
+    expect(frame.className).not.toContain("bg-surface");
+  });
+
   it("switches to the plain-text view", () => {
     render(<EmailViewer email={email} />);
     fireEvent.click(screen.getByRole("tab", { name: "Plain" }));
@@ -62,5 +75,50 @@ describe("EmailViewer", () => {
   it("says so when a message has no HTML part rather than showing a blank frame", () => {
     render(<EmailViewer email={{ ...email, html_body: null }} />);
     expect(screen.getByText(/no html part/i)).toBeInTheDocument();
+  });
+});
+
+describe("EmailViewer — Sent by link", () => {
+  const linkedEmail: CapturedEmail = {
+    id: 1,
+    captured_at_ms: 1_800_000_000_000,
+    from: "orders@shop.test",
+    to: ["customer@example.com"],
+    subject: "Order confirmation #8841",
+    size_bytes: 512,
+    html_body: "<p>Thanks!</p>",
+    text_body: "Thanks!",
+    raw: "Subject: Order confirmation #8841\r\n\r\nThanks!",
+    request_id: "hist-1",
+    request_method: "POST",
+    request_url: "/api/checkout",
+  };
+
+  it("shows the Sent by chip when the email is linked to a request", () => {
+    render(<EmailViewer email={linkedEmail} />);
+    expect(screen.getByText(/Sent by/)).toBeInTheDocument();
+    expect(screen.getByText("POST /api/checkout")).toBeInTheDocument();
+  });
+
+  it("calls onOpenHistory with the request id when the chip is clicked", () => {
+    const onOpenHistory = vi.fn();
+    render(<EmailViewer email={linkedEmail} onOpenHistory={onOpenHistory} />);
+    fireEvent.click(screen.getByText(/Sent by/));
+    expect(onOpenHistory).toHaveBeenCalledWith("hist-1");
+  });
+
+  it("shows no Sent by chip when the email has no linked request", () => {
+    const unlinked: CapturedEmail = { ...linkedEmail, request_id: null, request_method: null, request_url: null };
+    render(<EmailViewer email={unlinked} />);
+    expect(screen.queryByText(/Sent by/)).not.toBeInTheDocument();
+  });
+
+  // getByText only concatenates a node's direct text-node children, so it can't
+  // see whitespace dropped between the <b> and <span> siblings — check the full
+  // textContent instead, which is what a screen reader's accessible name reflects.
+  it("keeps a space between the request and the arrow in the chip text", () => {
+    render(<EmailViewer email={linkedEmail} />);
+    const chip = screen.getByRole("button", { name: /Sent by/ });
+    expect(chip.textContent).toBe("Sent by POST /api/checkout → view in History");
   });
 });

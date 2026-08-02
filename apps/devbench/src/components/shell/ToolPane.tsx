@@ -1,4 +1,4 @@
-import type { TabId } from "../../store/useAppStore";
+import type { Tab } from "../../store/useAppStore";
 import { ApiTab } from "../api/ApiTab";
 import { DbTab } from "../db/DbTab";
 import { LogTab } from "../log/LogTab";
@@ -6,35 +6,63 @@ import { EmailTab } from "../email/EmailTab";
 import { useAppStore } from "../../store/useAppStore";
 
 /**
- * Renders one tool. Both panes use this, which is what keeps "any of the four
- * tools in either pane" true by construction rather than by discipline.
+ * Renders one tab instance. Every pane's every tab goes through this, which
+ * is what keeps "any tool, any number of times, in either pane" true by
+ * construction. `onOpenDb`/`onOpenLog`/`onOpenEmail` are the Rollup deep
+ * links; only the "api" case uses them. `onOpenHistory` is the reverse deep
+ * link (Email's "Sent by" chip); only the "email" case uses it. `emailFocusId`
+ * and `historyFocusId` only matter to the "email"/"api" case respectively,
+ * and only when this specific tab is the deep link's target (App.tsx resolves
+ * that before this component ever sees it).
  */
 export function ToolPane({
   tab,
-  dbFocusTable,
-  emailFocusId,
-  onOpenTableInDb,
+  onPatchState,
+  onOpenDb,
+  onOpenLog,
   onOpenEmail,
+  emailFocusId,
+  onOpenHistory,
+  historyFocusId,
 }: {
-  tab: TabId;
-  dbFocusTable: string | null;
+  tab: Tab;
+  onPatchState: (patch: Record<string, unknown>) => void;
+  onOpenDb: (table: string) => void;
+  onOpenLog: () => void;
+  onOpenEmail: (emailId: number | null) => void;
   emailFocusId: number | null;
-  onOpenTableInDb: (table: string) => void;
-  onOpenEmail: (id: number | null) => void;
+  onOpenHistory: (requestId: string) => void;
+  historyFocusId: string | null;
 }) {
   const watchedTables = useAppStore((s) => s.watchedTables);
   const toggleWatchedTable = useAppStore((s) => s.toggleWatchedTable);
 
-  switch (tab) {
+  switch (tab.kind) {
     case "api":
-      return <ApiTab onOpenTableInDb={onOpenTableInDb} onOpenEmail={onOpenEmail} />;
+      return (
+        <ApiTab
+          tab={tab}
+          onPatchState={onPatchState}
+          onOpenDb={onOpenDb}
+          onOpenLog={onOpenLog}
+          onOpenEmail={onOpenEmail}
+          focusHistoryId={historyFocusId}
+        />
+      );
     case "db":
       return (
-        <DbTab watchedTables={watchedTables} onToggleWatch={toggleWatchedTable} focusTable={dbFocusTable} />
+        <DbTab
+          watchedTables={watchedTables}
+          onToggleWatch={toggleWatchedTable}
+          table={typeof tab.state.table === "string" ? tab.state.table : null}
+          onPatchState={onPatchState}
+        />
       );
     case "log":
-      return <LogTab />;
+      return (
+        <LogTab sourceId={typeof tab.state.sourceId === "string" ? tab.state.sourceId : null} onPatchState={onPatchState} />
+      );
     case "email":
-      return <EmailTab focusEmailId={emailFocusId} />;
+      return <EmailTab focusEmailId={emailFocusId} onOpenHistory={onOpenHistory} />;
   }
 }

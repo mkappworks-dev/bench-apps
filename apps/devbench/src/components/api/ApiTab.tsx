@@ -3,7 +3,7 @@ import { RequestBuilder } from "./RequestBuilder";
 import { ResponseViewer } from "./ResponseViewer";
 import { HistorySidebar } from "./HistorySidebar";
 import { Rollup, type RollupData } from "../rollup/Rollup";
-import { useAppStore } from "../../store/useAppStore";
+import { useAppStore, type Tab } from "../../store/useAppStore";
 import {
   invokeCollectCorrelationWindow,
   type CorrelationResult,
@@ -28,14 +28,22 @@ interface DisplayResult {
 }
 
 export function ApiTab({
-  onOpenTableInDb,
+  tab,
+  onPatchState,
+  onOpenDb,
+  onOpenLog,
   onOpenEmail,
+  focusHistoryId,
 }: {
-  onOpenTableInDb: (table: string) => void;
+  tab: Tab;
+  onPatchState: (patch: Record<string, unknown>) => void;
+  onOpenDb: (table: string) => void;
+  onOpenLog: () => void;
   onOpenEmail: (emailId: number | null) => void;
+  /** Deep-linked from Email's "Sent by" chip — forwarded to HistorySidebar. */
+  focusHistoryId?: string | null;
 }) {
   const watchedTables = useAppStore((s) => s.watchedTables);
-  const setActiveTab = useAppStore((s) => s.setActiveTab);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const [result, setResult] = useState<DisplayResult | null>(null);
   const [sending, setSending] = useState(false);
@@ -96,7 +104,7 @@ export function ApiTab({
     setHistoryRefreshKey((k) => k + 1);
 
     try {
-      const window = await invokeCollectCorrelationWindow(correlation.correlation_id);
+      const window = await invokeCollectCorrelationWindow(correlation.correlation_id, correlation.history_id);
       // Re-checked after the await: a whole window has passed, so the user may
       // have moved on.
       if (!belongsToCurrentSession(sendSessionId)) return;
@@ -156,28 +164,22 @@ export function ApiTab({
     });
   }
 
-  function handleOpenDb(table: string) {
-    setActiveTab("db");
-    onOpenTableInDb(table);
-  }
-
-  function handleOpenEmail(emailId: number | null) {
-    setActiveTab("email");
-    onOpenEmail(emailId);
-  }
-
   return (
     <div className="-m-6 flex h-full">
       <HistorySidebar
         onSelect={handleHistorySelect}
         refreshKey={historyRefreshKey}
         sessionId={activeSessionId}
+        focusId={focusHistoryId}
       />
       <div className="mx-auto flex max-w-180 flex-1 flex-col gap-4 overflow-y-auto p-6">
         <RequestBuilder
           connection={DEV_CONNECTION}
           watchedTables={watchedTables}
           sessionId={activeSessionId}
+          method={typeof tab.state.method === "string" ? tab.state.method : "GET"}
+          url={typeof tab.state.url === "string" ? tab.state.url : ""}
+          onPatchState={onPatchState}
           onSendStart={handleSendStart}
           onResult={handleResult}
           onError={handleError}
@@ -192,13 +194,7 @@ export function ApiTab({
               What happened
             </div>
             <div className="rounded-lg border border-border bg-surface">
-              <Rollup
-                data={result?.rollup ?? null}
-                loading={sending}
-                onOpenDb={handleOpenDb}
-                onOpenLog={() => setActiveTab("log")}
-                onOpenEmail={handleOpenEmail}
-              />
+              <Rollup data={result?.rollup ?? null} loading={sending} onOpenDb={onOpenDb} onOpenLog={onOpenLog} onOpenEmail={onOpenEmail} />
             </div>
           </div>
         ) : null}

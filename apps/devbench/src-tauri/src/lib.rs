@@ -6,3 +6,4 @@ pub mod log_state;
 pub mod mcp_client;
 pub mod secrets;
 pub mod smtp_catcher;
+pub mod startup_state;
