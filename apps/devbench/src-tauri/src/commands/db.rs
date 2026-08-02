@@ -133,11 +133,19 @@ pub(crate) async fn get_column_type(pool: &PgPool, table: &str, column: &str) ->
 pub struct SortTerm {
     pub column: String,
     pub descending: bool,
+    /// An unticked term is kept by the UI but must not reach the ORDER BY.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 pub async fn list_table_rows_impl(
     pool: &PgPool,
     table: &str,
+    filter: &[crate::commands::db_filter::FilterCondition],
     order_by: &[SortTerm],
     limit: i64,
     offset: i64,
@@ -154,20 +162,27 @@ pub async fn list_table_rows_impl(
     // renders read-only.
     let pk_column = get_primary_key_column(pool, table).await.ok();
 
-    let mut sql = format!("SELECT * FROM \"{table}\"");
-    if !order_by.is_empty() {
-        let terms: Vec<String> = order_by
-            .iter()
-            .map(|t| format!("\"{}\" {}", t.column, if t.descending { "DESC" } else { "ASC" }))
-            .collect();
+    // Filter params take $1..$n, so limit and offset follow them.
+    let compiled = crate::commands::db_filter::compile_filter(filter, 1)?;
+    let limit_index = compiled.params.len() + 1;
+    let offset_index = compiled.params.len() + 2;
+
+    let mut sql = format!("SELECT * FROM \"{table}\"{}", compiled.where_sql);
+    let terms: Vec<String> = order_by
+        .iter()
+        .filter(|t| t.enabled)
+        .map(|t| format!("\"{}\" {}", t.column, if t.descending { "DESC" } else { "ASC" }))
+        .collect();
+    if !terms.is_empty() {
         sql.push_str(&format!(" ORDER BY {}", terms.join(", ")));
     }
-    // No other value in this query is bound (table/column are identifiers,
-    // which Postgres can't bind — they're interpolated after validation
-    // instead), so limit/offset are $1/$2.
-    sql.push_str(" LIMIT $1 OFFSET $2");
+    sql.push_str(&format!(" LIMIT ${limit_index} OFFSET ${offset_index}"));
 
-    let rows = sqlx::query(&sql)
+    let mut query = sqlx::query(&sql);
+    for param in &compiled.params {
+        query = query.bind(param);
+    }
+    let rows = query
         .bind(limit)
         .bind(offset)
         .fetch_all(pool)
@@ -187,6 +202,26 @@ pub async fn list_table_rows_impl(
     Ok(TableRows { columns, rows: out_rows, pk_column })
 }
 
+pub async fn count_table_rows_impl(
+    pool: &PgPool,
+    table: &str,
+    filter: &[crate::commands::db_filter::FilterCondition],
+) -> Result<i64, String> {
+    validate_identifier(table)?;
+    let compiled = crate::commands::db_filter::compile_filter(filter, 1)?;
+    let sql = format!("SELECT COUNT(*) AS n FROM \"{table}\"{}", compiled.where_sql);
+
+    let mut query = sqlx::query(&sql);
+    for param in &compiled.params {
+        query = query.bind(param);
+    }
+    let row = query
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("count failed: {e}"))?;
+    Ok(row.get::<i64, _>("n"))
+}
+
 // The argument list IS the IPC surface — see run_correlated_request's
 // identical rationale in correlation.rs.
 #[allow(clippy::too_many_arguments)]
@@ -197,12 +232,34 @@ pub async fn list_table_rows(
     registry: State<'_, std::sync::Arc<ConnectionRegistry>>,
     connection_id: String,
     table: String,
+    filter: Option<Vec<crate::commands::db_filter::FilterCondition>>,
     order_by: Option<Vec<SortTerm>>,
     limit: i64,
     offset: i64,
 ) -> Result<TableRows, String> {
     let pool = registry.pool_for(&connection_id, &db.pool, secrets.as_ref()).await?;
-    list_table_rows_impl(&pool, &table, &order_by.unwrap_or_default(), limit, offset).await
+    list_table_rows_impl(
+        &pool,
+        &table,
+        &filter.unwrap_or_default(),
+        &order_by.unwrap_or_default(),
+        limit,
+        offset,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn count_table_rows(
+    db: State<'_, LocalDb>,
+    secrets: State<'_, std::sync::Arc<dyn SecretStore>>,
+    registry: State<'_, std::sync::Arc<ConnectionRegistry>>,
+    connection_id: String,
+    table: String,
+    filter: Option<Vec<crate::commands::db_filter::FilterCondition>>,
+) -> Result<i64, String> {
+    let pool = registry.pool_for(&connection_id, &db.pool, secrets.as_ref()).await?;
+    count_table_rows_impl(&pool, &table, &filter.unwrap_or_default()).await
 }
 
 #[cfg(test)]
@@ -210,7 +267,16 @@ mod tests {
     use super::*;
 
     fn asc_on(column: &str) -> SortTerm {
-        SortTerm { column: column.to_string(), descending: false }
+        SortTerm { column: column.to_string(), descending: false, enabled: true }
+    }
+
+    fn eq_on(column: &str, value: &str) -> crate::commands::db_filter::FilterCondition {
+        crate::commands::db_filter::FilterCondition {
+            column: column.to_string(),
+            op: crate::commands::db_filter::FilterOp::Eq,
+            value: Some(value.to_string()),
+            enabled: true,
+        }
     }
 
     async fn test_pool() -> PgPool {
@@ -306,7 +372,7 @@ mod tests {
     #[tokio::test]
     async fn list_table_rows_rejects_malicious_table_name() {
         let pool = test_pool().await;
-        let result = list_table_rows_impl(&pool, "orders; DROP TABLE users; --", &[], 200, 0).await;
+        let result = list_table_rows_impl(&pool, "orders; DROP TABLE users; --", &[], &[], 200, 0).await;
         assert!(result.is_err(), "should reject malicious table name before executing query");
     }
 
@@ -317,7 +383,7 @@ mod tests {
         sqlx::query("CREATE TABLE test_rows_table (id serial PRIMARY KEY, name text)").execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO test_rows_table (name) VALUES ('test_row_1')").execute(&pool).await.unwrap();
 
-        let result = list_table_rows_impl(&pool, "test_rows_table", &[], 200, 0).await;
+        let result = list_table_rows_impl(&pool, "test_rows_table", &[], &[], 200, 0).await;
         assert!(result.is_ok(), "should successfully list rows from valid table");
 
         let table_rows = result.unwrap();
@@ -334,7 +400,7 @@ mod tests {
         sqlx::query("DROP TABLE IF EXISTS no_pk_test").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE no_pk_test (a int, b int)").execute(&pool).await.unwrap();
 
-        let result = list_table_rows_impl(&pool, "no_pk_test", &[], 200, 0).await.unwrap();
+        let result = list_table_rows_impl(&pool, "no_pk_test", &[], &[], 200, 0).await.unwrap();
         assert_eq!(result.pk_column, None, "no single-column PK means not editable, not an error");
 
         sqlx::query("DROP TABLE no_pk_test").execute(&pool).await.unwrap();
@@ -349,12 +415,12 @@ mod tests {
             sqlx::query("INSERT INTO sort_test (n) VALUES ($1)").bind(n).execute(&pool).await.unwrap();
         }
 
-        let asc = list_table_rows_impl(&pool, "sort_test", &[asc_on("n")], 200, 0).await.unwrap();
+        let asc = list_table_rows_impl(&pool, "sort_test", &[], &[asc_on("n")], 200, 0).await.unwrap();
         let n_col = asc.columns.iter().position(|c| c == "n").unwrap();
         let values: Vec<_> = asc.rows.iter().map(|r| r[n_col].clone()).collect();
         assert_eq!(values, vec![Some("1".to_string()), Some("2".to_string()), Some("3".to_string())]);
 
-        let paged = list_table_rows_impl(&pool, "sort_test", &[asc_on("n")], 1, 1).await.unwrap();
+        let paged = list_table_rows_impl(&pool, "sort_test", &[], &[asc_on("n")], 1, 1).await.unwrap();
         assert_eq!(paged.rows.len(), 1, "LIMIT 1 must return exactly one row");
         assert_eq!(paged.rows[0][n_col], Some("2".to_string()), "OFFSET 1 must skip the first sorted row");
 
@@ -378,7 +444,8 @@ mod tests {
         let sorted = list_table_rows_impl(
             &pool,
             "multisort_test",
-            &[asc_on("grp"), SortTerm { column: "n".into(), descending: true }],
+            &[],
+            &[asc_on("grp"), SortTerm { column: "n".into(), descending: true, enabled: true }],
             200,
             0,
         )
@@ -414,6 +481,7 @@ mod tests {
         let result = list_table_rows_impl(
             &pool,
             "orders",
+            &[],
             &[asc_on("id"), asc_on("n; DROP TABLE users; --")],
             200,
             0,
@@ -426,7 +494,7 @@ mod tests {
     async fn sort_column_rejects_a_malicious_identifier() {
         let pool = test_pool().await;
         let result =
-            list_table_rows_impl(&pool, "orders", &[asc_on("n; DROP TABLE users; --")], 200, 0).await;
+            list_table_rows_impl(&pool, "orders", &[], &[asc_on("n; DROP TABLE users; --")], 200, 0).await;
         assert!(result.is_err(), "a malicious ORDER BY column must be rejected exactly like a malicious table name");
     }
 
@@ -442,7 +510,7 @@ mod tests {
         sqlx::query("INSERT INTO unsupported_type_test (amount, notes) VALUES (42.50, NULL)")
             .execute(&pool).await.unwrap();
 
-        let result = list_table_rows_impl(&pool, "unsupported_type_test", &[], 200, 0).await.unwrap();
+        let result = list_table_rows_impl(&pool, "unsupported_type_test", &[], &[], 200, 0).await.unwrap();
         assert_eq!(result.columns, vec!["id", "amount", "notes"]);
         assert_eq!(result.rows[0][1], Some("<unsupported type>".to_string()));
         assert_eq!(result.rows[0][2], None, "a genuine NULL must still render as None");
@@ -459,7 +527,7 @@ mod tests {
         sqlx::query("INSERT INTO datetime_type_test (created_at, birth_date) VALUES ('2025-07-30 12:34:56+00:00', '2025-07-30')")
             .execute(&pool).await.unwrap();
 
-        let result = list_table_rows_impl(&pool, "datetime_type_test", &[], 200, 0).await.unwrap();
+        let result = list_table_rows_impl(&pool, "datetime_type_test", &[], &[], 200, 0).await.unwrap();
         assert_eq!(result.columns, vec!["id", "created_at", "birth_date"]);
         assert!(result.rows[0][1].is_some());
         assert_ne!(result.rows[0][1], Some("<unsupported type>".to_string()));
@@ -483,7 +551,7 @@ mod tests {
         sqlx::query("INSERT INTO bool_type_test (paid) VALUES (true), (false), (NULL)")
             .execute(&pool).await.unwrap();
 
-        let result = list_table_rows_impl(&pool, "bool_type_test", &[], 200, 0).await.unwrap();
+        let result = list_table_rows_impl(&pool, "bool_type_test", &[], &[], 200, 0).await.unwrap();
         assert_eq!(result.rows[0][1], Some("true".to_string()));
         assert_eq!(result.rows[1][1], Some("false".to_string()));
         assert_eq!(result.rows[2][1], None, "a NULL boolean must not become the string \"false\"");
@@ -509,5 +577,91 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("composite primary key"));
         sqlx::query("DROP TABLE composite_pk_test").execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_disabled_sort_term_is_not_applied() {
+        let pool = test_pool().await;
+        let disabled = SortTerm { column: "id".into(), descending: true, enabled: false };
+        let result = list_table_rows_impl(&pool, "orders", &[], &[disabled], 5, 0).await;
+        assert!(result.is_ok(), "a disabled term must be skipped, not rejected");
+    }
+
+    #[tokio::test]
+    async fn a_filter_narrows_the_returned_rows() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS filter_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE filter_test (id serial PRIMARY KEY, status text)")
+            .execute(&pool).await.unwrap();
+        for s in ["paid", "pending", "paid"] {
+            sqlx::query("INSERT INTO filter_test (status) VALUES ($1)")
+                .bind(s).execute(&pool).await.unwrap();
+        }
+
+        let all = list_table_rows_impl(&pool, "filter_test", &[], &[], 200, 0).await.unwrap();
+        assert_eq!(all.rows.len(), 3);
+
+        let paid = list_table_rows_impl(&pool, "filter_test", &[eq_on("status", "paid")], &[], 200, 0)
+            .await.unwrap();
+        assert_eq!(paid.rows.len(), 2);
+
+        sqlx::query("DROP TABLE filter_test").execute(&pool).await.unwrap();
+    }
+
+    // The pager and the grid must never disagree, so the count runs the same
+    // filter the row query does.
+    #[tokio::test]
+    async fn the_count_uses_the_same_filter_as_the_rows() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS count_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE count_test (id serial PRIMARY KEY, status text)")
+            .execute(&pool).await.unwrap();
+        for s in ["paid", "pending", "paid", "paid"] {
+            sqlx::query("INSERT INTO count_test (status) VALUES ($1)")
+                .bind(s).execute(&pool).await.unwrap();
+        }
+
+        assert_eq!(count_table_rows_impl(&pool, "count_test", &[]).await.unwrap(), 4);
+        assert_eq!(
+            count_table_rows_impl(&pool, "count_test", &[eq_on("status", "paid")]).await.unwrap(),
+            3
+        );
+
+        // And it agrees with what an unpaged fetch actually returns.
+        let rows = list_table_rows_impl(&pool, "count_test", &[eq_on("status", "paid")], &[], 500, 0)
+            .await.unwrap();
+        assert_eq!(rows.rows.len() as i64, 3);
+
+        sqlx::query("DROP TABLE count_test").execute(&pool).await.unwrap();
+    }
+
+    // Filter parameters are bound first, so limit/offset must shift to $n+1/$n+2
+    // or the query binds the wrong values to the wrong placeholders.
+    #[tokio::test]
+    async fn a_filter_and_pagination_bind_without_colliding() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS filter_page_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE filter_page_test (id serial PRIMARY KEY, status text, n int)")
+            .execute(&pool).await.unwrap();
+        for n in 1..=5 {
+            sqlx::query("INSERT INTO filter_page_test (status, n) VALUES ('paid', $1)")
+                .bind(n).execute(&pool).await.unwrap();
+        }
+
+        let page = list_table_rows_impl(
+            &pool, "filter_page_test", &[eq_on("status", "paid")], &[asc_on("n")], 2, 1,
+        ).await.unwrap();
+        let n = page.columns.iter().position(|c| c == "n").unwrap();
+        assert_eq!(page.rows.len(), 2, "LIMIT must still apply alongside a filter");
+        assert_eq!(page.rows[0][n], Some("2".to_string()), "OFFSET must skip the first match");
+
+        sqlx::query("DROP TABLE filter_page_test").execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn count_rejects_a_malicious_table_name() {
+        let pool = test_pool().await;
+        let result = count_table_rows_impl(&pool, "orders; DROP TABLE users; --", &[]).await;
+        assert!(result.is_err());
     }
 }

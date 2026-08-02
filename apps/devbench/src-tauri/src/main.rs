@@ -163,6 +163,7 @@ fn main() {
             commands::startup::get_startup_status,
             commands::db::db_connect_and_list_tables,
             commands::db::list_table_rows,
+            commands::db::count_table_rows,
             commands::request::fire_request,
             commands::history::save_history_entry,
             commands::history::list_history,
