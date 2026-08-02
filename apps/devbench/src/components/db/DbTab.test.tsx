@@ -113,7 +113,7 @@ describe("DbTab", () => {
       expect(listRows).toHaveBeenLastCalledWith(
         "c1",
         "orders",
-        expect.objectContaining({ orderBy: [{ column: "status", descending: false }], offset: 0 }),
+        expect.objectContaining({ orderBy: [{ column: "status", descending: false, enabled: true }], offset: 0 }),
       ),
     );
   });
@@ -130,9 +130,9 @@ describe("DbTab", () => {
 
     const sortButton = await screen.findByRole("button", { name: "Sort by status" });
     fireEvent.click(sortButton);
-    await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ orderBy: [{ column: "status", descending: false }] })));
+    await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ orderBy: [{ column: "status", descending: false, enabled: true }] })));
     fireEvent.click(sortButton);
-    await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ orderBy: [{ column: "status", descending: true }] })));
+    await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ orderBy: [{ column: "status", descending: true, enabled: true }] })));
   });
 
   // The backend never returns a total count, so a request for PAGE_SIZE+1
@@ -182,7 +182,7 @@ describe("DbTab", () => {
     await waitFor(() => expect(listRows).toHaveBeenCalled());
     fireEvent.click(await screen.findByRole("button", { name: "Sort by status" }));
     await waitFor(() =>
-      expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ orderBy: [{ column: "status", descending: false }] })),
+      expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ orderBy: [{ column: "status", descending: false, enabled: true }] })),
     );
 
     await act(async () => {

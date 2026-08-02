@@ -202,24 +202,30 @@ export interface TableRows {
   pk_column: string | null;
 }
 
-/** One `ORDER BY` term. The grid sends a list so a sort can tie-break. */
-export interface SortTerm {
-  column: string;
-  descending: boolean;
-}
+export type { FilterCondition, FilterOp, SortTerm } from "../components/db/grid/types";
+import type { FilterCondition, SortTerm } from "../components/db/grid/types";
 
 export function invokeListTableRows(
   connectionId: string,
   table: string,
-  options?: { orderBy?: SortTerm[]; limit?: number; offset?: number },
+  options?: { filter?: FilterCondition[]; orderBy?: SortTerm[]; limit?: number; offset?: number },
 ): Promise<TableRows> {
   return invoke("list_table_rows", {
     connectionId,
     table,
+    filter: options?.filter ?? [],
     orderBy: options?.orderBy ?? [],
     limit: options?.limit ?? 100,
     offset: options?.offset ?? 0,
   });
+}
+
+export function invokeCountTableRows(
+  connectionId: string,
+  table: string,
+  filter: FilterCondition[] = [],
+): Promise<number> {
+  return invoke("count_table_rows", { connectionId, table, filter });
 }
 
 export function invokeListWatchedTables(connectionId: string): Promise<string[]> {

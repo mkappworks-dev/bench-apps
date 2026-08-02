@@ -220,11 +220,14 @@ export function DbTab({
     const existing = sort.find((term) => term.column === column);
     let next: SortTerm[];
     if (!additive) {
-      next = existing && !existing.descending ? [{ column, descending: true }] : [{ column, descending: false }];
+      next =
+        existing && !existing.descending
+          ? [{ column, descending: true, enabled: true }]
+          : [{ column, descending: false, enabled: true }];
     } else if (!existing) {
-      next = [...sort, { column, descending: false }];
+      next = [...sort, { column, descending: false, enabled: true }];
     } else if (!existing.descending) {
-      next = sort.map((term) => (term.column === column ? { column, descending: true } : term));
+      next = sort.map((term) => (term.column === column ? { column, descending: true, enabled: true } : term));
     } else {
       next = sort.filter((term) => term.column !== column);
     }

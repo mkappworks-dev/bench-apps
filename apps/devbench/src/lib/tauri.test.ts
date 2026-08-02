@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   invokeClearEmails,
   invokeCollectCorrelationWindow,
+  invokeCountTableRows,
   invokeListEmails,
   invokeListHistory,
+  invokeListTableRows,
   invokeRunCorrelatedRequest,
 } from "./tauri";
 
@@ -190,5 +192,55 @@ describe("invokeClearEmails", () => {
     expect(payload).toStrictEqual({ sessionId: null });
     expect(payload.sessionId).toBeNull();
     expect(JSON.stringify(payload)).toBe('{"sessionId":null}');
+  });
+});
+
+describe("invokeCountTableRows", () => {
+  beforeEach(() => {
+    invoked.mockClear();
+    invoked.mockResolvedValue(0);
+  });
+
+  it("sends the same filter shape the row query uses", async () => {
+    await invokeCountTableRows("c1", "orders", [
+      { column: "status", op: "eq", value: "paid", enabled: true },
+    ]);
+    expect(lastInvoke()).toEqual([
+      "count_table_rows",
+      {
+        connectionId: "c1",
+        table: "orders",
+        filter: [{ column: "status", op: "eq", value: "paid", enabled: true }],
+      },
+    ]);
+  });
+
+  it("defaults to no filter", async () => {
+    await invokeCountTableRows("c1", "orders");
+    expect(lastInvoke()[1]).toEqual({ connectionId: "c1", table: "orders", filter: [] });
+  });
+});
+
+describe("invokeListTableRows with a filter", () => {
+  beforeEach(() => {
+    invoked.mockClear();
+    invoked.mockResolvedValue({ columns: [], rows: [], pk_column: null });
+  });
+
+  it("passes filter and orderBy through as separate lists", async () => {
+    await invokeListTableRows("c1", "orders", {
+      filter: [{ column: "paid", op: "is_true", value: null, enabled: true }],
+      orderBy: [{ column: "id", descending: true, enabled: true }],
+      limit: 25,
+      offset: 50,
+    });
+    expect(lastInvoke()[1]).toEqual({
+      connectionId: "c1",
+      table: "orders",
+      filter: [{ column: "paid", op: "is_true", value: null, enabled: true }],
+      orderBy: [{ column: "id", descending: true, enabled: true }],
+      limit: 25,
+      offset: 50,
+    });
   });
 });
