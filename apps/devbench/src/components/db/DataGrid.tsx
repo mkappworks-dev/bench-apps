@@ -67,22 +67,20 @@ export function cellDisplay(value: string | null): { text: string; className: st
   return { text: value, className: "", kind: "text" };
 }
 
-// Renders a boolean as the mockup's pill (filled success for true, outlined
-// neutral for false) instead of plain text; everything else is just text.
 export function CellValue({ value }: { value: string | null }) {
   const { text, kind } = cellDisplay(value);
   if (kind === "bool-true" || kind === "bool-false") {
     return (
-      <span
-        // `leading-normal` (1.5) rather than the inherited row leading: the
-        // pill's own line box is what sets its height, and 1.5 is what makes
-        // it the mockup's measured 17.75px instead of 16px.
-        className={`inline-flex rounded-full px-1.75 py-px text-[10.5px] font-bold leading-normal ${
-          kind === "bool-true" ? "bg-success-bg text-success" : "border border-border bg-surface text-text-faint"
-        }`}
-      >
-        {text}
-      </span>
+      <input
+        type="checkbox"
+        readOnly
+        disabled
+        checked={kind === "bool-true"}
+        aria-label={text}
+        // Drawn rather than native: a UA checkbox is ~16px and platform
+        // coloured, which reads as a form control dropped into a dense row.
+        className="mx-auto block size-3.5 appearance-none rounded border border-text-faint checked:border-accent checked:bg-accent disabled:opacity-100"
+      />
     );
   }
   return <>{text}</>;

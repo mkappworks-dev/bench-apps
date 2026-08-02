@@ -44,12 +44,23 @@ describe("DataGrid", () => {
     expect(screen.getByText("<unsupported type>")).toBeInTheDocument();
   });
 
-  // Matches the mockup's `.cell-bool` pill treatment (filled success for
-  // true, outlined neutral for false) rather than plain text.
-  it("renders boolean-looking values as a pill, styled by which boolean it is", () => {
+  // A checkbox rather than a word: booleans are the one column type whose whole
+  // value space fits in a control. Slice 1 renders it read-only; Slice 3 makes
+  // it interactive.
+  it("renders a boolean as a checkbox reflecting its value", () => {
     render(<DataGrid columns={["paid"]} rows={[["true"], ["false"]]} />);
-    expect(screen.getByText("true")).toHaveClass("bg-success-bg", "text-success");
-    expect(screen.getByText("false")).toHaveClass("bg-surface", "text-text-faint");
+    const boxes = screen.getAllByRole("checkbox");
+    expect(boxes).toHaveLength(2);
+    expect(boxes[0]).toBeChecked();
+    expect(boxes[1]).not.toBeChecked();
+    expect(boxes[0]).toBeDisabled();
+  });
+
+  // Three states, and the brief calls NULL-distinctness a hard constraint.
+  it("keeps NULL distinct from false in a boolean column", () => {
+    render(<DataGrid columns={["paid"]} rows={[["false"], [null]]} />);
+    expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+    expect(screen.getByText("NULL")).toBeInTheDocument();
   });
 
   it("calls onSort with the clicked column", () => {
