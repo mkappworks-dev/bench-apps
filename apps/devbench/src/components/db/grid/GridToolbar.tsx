@@ -103,8 +103,13 @@ export function GridToolbar({
   return (
     <div className="relative">
       {/* container-type is what lets the labels collapse on PANE width rather
-          than window width — the toolbar shrinks when the dock opens. */}
-      <div className="@container flex items-center gap-1 border-b border-border bg-surface px-2 py-1.25">
+          than window width — the toolbar shrinks when the dock opens.
+          rounded-t-lg: this bar is the topmost element inside DataGrid's
+          outer wrapper, which no longer clips to its own radius (that clip
+          moved to the inner scroll wrapper so it stops cutting off these
+          popovers) — without it, this bar's square corners paint over the
+          wrapper's rounded top corners. */}
+      <div className="@container flex items-center gap-1 rounded-t-lg border-b border-border bg-surface px-2 py-1.25">
         {onInsert ? (
           <button
             type="button"

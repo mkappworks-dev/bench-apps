@@ -347,8 +347,11 @@ export function DataGrid({
               style={{ display: "grid", gridTemplateColumns }}
               // z-30 keeps the header above an expanded inline editor (z-20),
               // which overflows its own cell and would otherwise ride over the
-              // header when its row is scrolled up under it.
-              className="sticky top-0 z-30 border-b border-border bg-surface-2 font-mono"
+              // header when its row is scrolled up under it. rounded-t-lg only
+              // when there's no toolbar above it: this row is then the topmost
+              // element inside the outer wrapper, which no longer clips to its
+              // own radius (see GridToolbar's matching comment).
+              className={`sticky top-0 z-30 border-b border-border bg-surface-2 font-mono ${toolbar ? "" : "rounded-t-lg"}`}
               role="row"
             >
               {visual.map((col) => {
