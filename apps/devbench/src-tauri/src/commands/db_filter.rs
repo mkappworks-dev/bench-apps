@@ -80,16 +80,27 @@ pub fn compile_filter(
             FilterOp::IsNotNull => format!("{column} IS NOT NULL"),
             FilterOp::IsTrue => format!("{column} IS TRUE"),
             FilterOp::IsFalse => format!("{column} IS FALSE"),
-            FilterOp::Eq | FilterOp::Ne | FilterOp::Gt | FilterOp::Lt => {
-                let operator = match condition.op {
-                    FilterOp::Eq => "=",
-                    FilterOp::Ne => "<>",
-                    FilterOp::Gt => ">",
-                    FilterOp::Lt => "<",
-                    _ => unreachable!(),
-                };
+            // Every value arrives as a Rust String, so sqlx declares each
+            // placeholder as TEXT. Postgres will not implicitly cast TEXT for
+            // operator resolution, so `"id" = $1` against an int column is a
+            // hard error. The cast therefore has to happen in the SQL, on the
+            // column side: comparing string representations is correct for any
+            // column type and a no-op for one that is already text.
+            FilterOp::Eq | FilterOp::Ne => {
+                let operator = if condition.op == FilterOp::Eq { "=" } else { "<>" };
                 params.push(condition.value.clone().unwrap_or_default());
-                let clause = format!("{column} {operator} ${next}");
+                let clause = format!("{column}::text {operator} ${next}");
+                next += 1;
+                clause
+            }
+            // Ordering, unlike equality, is wrong on string representations
+            // ("10" < "9"), so both sides go to numeric instead. The UI only
+            // offers > and < for the number family (OPERATORS_FOR_FAMILY), so
+            // that is the only type this has to serve.
+            FilterOp::Gt | FilterOp::Lt => {
+                let operator = if condition.op == FilterOp::Gt { ">" } else { "<" };
+                params.push(condition.value.clone().unwrap_or_default());
+                let clause = format!("{column}::numeric {operator} ${next}::numeric");
                 next += 1;
                 clause
             }
@@ -104,9 +115,9 @@ pub fn compile_filter(
                 };
                 params.push(pattern);
                 let clause = if needs_escape {
-                    format!(r"{column} LIKE ${next} ESCAPE '\'")
+                    format!(r"{column}::text LIKE ${next} ESCAPE '\'")
                 } else {
-                    format!("{column} LIKE ${next}")
+                    format!("{column}::text LIKE ${next}")
                 };
                 next += 1;
                 clause
@@ -148,7 +159,7 @@ mod tests {
     #[test]
     fn a_value_is_bound_as_a_parameter_not_inlined() {
         let c = compile_filter(&[cond("status", FilterOp::Eq, Some("paid"))], 1).unwrap();
-        assert_eq!(c.where_sql, " WHERE \"status\" = $1");
+        assert_eq!(c.where_sql, " WHERE \"status\"::text = $1");
         assert_eq!(c.params, vec!["paid".to_string()]);
         assert!(!c.where_sql.contains("paid"));
     }
@@ -163,7 +174,7 @@ mod tests {
             1,
         )
         .unwrap();
-        assert_eq!(c.where_sql, " WHERE \"status\" = $1 AND \"notes\" LIKE $2");
+        assert_eq!(c.where_sql, " WHERE \"status\"::text = $1 AND \"notes\"::text LIKE $2");
         assert_eq!(c.params, vec!["paid".to_string(), "%rush%".to_string()]);
     }
 
@@ -172,7 +183,7 @@ mod tests {
     #[test]
     fn parameter_numbering_starts_at_the_given_index() {
         let c = compile_filter(&[cond("status", FilterOp::Eq, Some("paid"))], 3).unwrap();
-        assert_eq!(c.where_sql, " WHERE \"status\" = $3");
+        assert_eq!(c.where_sql, " WHERE \"status\"::text = $3");
     }
 
     // A wildcard typed by the user is data, not syntax.
@@ -180,13 +191,38 @@ mod tests {
     fn like_wildcards_in_user_input_are_escaped() {
         let c = compile_filter(&[cond("notes", FilterOp::Contains, Some("50%_off"))], 1).unwrap();
         assert_eq!(c.params, vec![r"%50\%\_off%".to_string()]);
-        assert!(c.where_sql.ends_with(r"LIKE $1 ESCAPE '\'"));
+        assert_eq!(c.where_sql, " WHERE \"notes\"::text LIKE $1 ESCAPE '\\'");
     }
 
     #[test]
     fn starts_with_anchors_the_pattern_at_the_front() {
         let c = compile_filter(&[cond("email", FilterOp::StartsWith, Some("ada"))], 1).unwrap();
         assert_eq!(c.params, vec!["ada%".to_string()]);
+    }
+
+    // Every parameter binds as TEXT, so the comparison has to be cast in SQL or
+    // Postgres cannot resolve the operator against a non-text column at all.
+    #[test]
+    fn equality_compares_the_columns_text_representation() {
+        let eq = compile_filter(&[cond("id", FilterOp::Eq, Some("4821"))], 1).unwrap();
+        assert_eq!(eq.where_sql, " WHERE \"id\"::text = $1");
+        let ne = compile_filter(&[cond("id", FilterOp::Ne, Some("4821"))], 1).unwrap();
+        assert_eq!(ne.where_sql, " WHERE \"id\"::text <> $1");
+    }
+
+    // Ordering can't ride on the text representation: "10" sorts before "9".
+    #[test]
+    fn ordering_compares_numerically_on_both_sides() {
+        let gt = compile_filter(&[cond("total", FilterOp::Gt, Some("9"))], 1).unwrap();
+        assert_eq!(gt.where_sql, " WHERE \"total\"::numeric > $1::numeric");
+        let lt = compile_filter(&[cond("total", FilterOp::Lt, Some("9"))], 1).unwrap();
+        assert_eq!(lt.where_sql, " WHERE \"total\"::numeric < $1::numeric");
+    }
+
+    #[test]
+    fn like_matches_the_columns_text_representation() {
+        let c = compile_filter(&[cond("email", FilterOp::StartsWith, Some("ada"))], 1).unwrap();
+        assert_eq!(c.where_sql, " WHERE \"email\"::text LIKE $1");
     }
 
     // Valueless operators take no parameter at all.

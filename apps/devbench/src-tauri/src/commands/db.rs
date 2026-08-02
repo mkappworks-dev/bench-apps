@@ -279,6 +279,15 @@ mod tests {
         }
     }
 
+    fn gt_on(column: &str, value: &str) -> crate::commands::db_filter::FilterCondition {
+        crate::commands::db_filter::FilterCondition {
+            column: column.to_string(),
+            op: crate::commands::db_filter::FilterOp::Gt,
+            value: Some(value.to_string()),
+            enabled: true,
+        }
+    }
+
     async fn test_pool() -> PgPool {
         let host = std::env::var("PGHOST").unwrap_or_else(|_| "localhost".into());
         let database = std::env::var("PGDATABASE").unwrap_or_else(|_| "devbench_test".into());
@@ -606,6 +615,40 @@ mod tests {
         assert_eq!(paid.rows.len(), 2);
 
         sqlx::query("DROP TABLE filter_test").execute(&pool).await.unwrap();
+    }
+
+    // Filter values are all bound as TEXT, and Postgres refuses to resolve
+    // `int = text` — so filtering a non-text column has to reach the server and
+    // come back with rows, not an "operator does not exist" error. Asserting on
+    // the compiled SQL alone would never have caught this.
+    #[tokio::test]
+    async fn a_filter_on_a_non_text_column_matches_rather_than_erroring() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS type_filter_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE type_filter_test (id serial PRIMARY KEY, n int)")
+            .execute(&pool).await.unwrap();
+        for n in [7, 42, 9, 10] {
+            sqlx::query("INSERT INTO type_filter_test (n) VALUES ($1)")
+                .bind(n).execute(&pool).await.unwrap();
+        }
+
+        let eq = list_table_rows_impl(&pool, "type_filter_test", &[eq_on("n", "42")], &[], 200, 0)
+            .await
+            .expect("an eq filter on an int column must not be a SQL error");
+        let n = eq.columns.iter().position(|c| c == "n").unwrap();
+        assert_eq!(eq.rows.len(), 1);
+        assert_eq!(eq.rows[0][n], Some("42".to_string()));
+        assert_eq!(count_table_rows_impl(&pool, "type_filter_test", &[eq_on("n", "42")]).await.unwrap(), 1);
+
+        // And ordering compares as numbers, not as strings — "10" > "9" only
+        // holds numerically.
+        let gt = list_table_rows_impl(&pool, "type_filter_test", &[gt_on("n", "9")], &[asc_on("n")], 200, 0)
+            .await
+            .expect("a gt filter on an int column must not be a SQL error");
+        let values: Vec<Option<String>> = gt.rows.iter().map(|r| r[n].clone()).collect();
+        assert_eq!(values, vec![Some("10".to_string()), Some("42".to_string())]);
+
+        sqlx::query("DROP TABLE type_filter_test").execute(&pool).await.unwrap();
     }
 
     // The pager and the grid must never disagree, so the count runs the same
