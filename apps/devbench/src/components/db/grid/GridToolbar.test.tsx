@@ -23,8 +23,8 @@ function renderToolbar(overrides: Partial<Parameters<typeof GridToolbar>[0]> = {
     familyOf: () => "text" as const,
     ...overrides,
   };
-  render(<GridToolbar {...props} />);
-  return props;
+  const { rerender } = render(<GridToolbar {...props} />);
+  return { ...props, rerender: (patch: Partial<Parameters<typeof GridToolbar>[0]>) => rerender(<GridToolbar {...props} {...patch} />) };
 }
 
 describe("GridToolbar", () => {
@@ -99,6 +99,16 @@ describe("GridToolbar", () => {
     const props = renderToolbar();
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(props.onRefresh).toHaveBeenCalled();
+  });
+
+  // pageField is local state seeded once from the page prop — Prev/Next and
+  // any other external page change (filter/sort/limit resets) must still
+  // resync the field, not just the field's own commit path.
+  it("keeps the page-number field in sync when the page prop changes externally", () => {
+    const props = renderToolbar({ page: 1, pageCount: 3 });
+    expect(screen.getByRole("textbox", { name: "Page number" })).toHaveValue("1");
+    props.rerender({ page: 2 });
+    expect(screen.getByRole("textbox", { name: "Page number" })).toHaveValue("2");
   });
 
   it("opens the filter popover and closes it again", () => {

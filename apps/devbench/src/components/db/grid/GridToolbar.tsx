@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ColumnsPopover } from "./ColumnsPopover";
 import { FilterPopover } from "./FilterPopover";
 import { SortPopover } from "./SortPopover";
@@ -47,6 +47,13 @@ export function GridToolbar({
 }) {
   const [open, setOpen] = useState<PopoverId>(null);
   const [pageField, setPageField] = useState(String(page));
+
+  // useState's initial value is only read on mount — every other path that
+  // changes `page` (Prev/Next, or a reset from filter/sort/limit changes)
+  // has to be caught here, not just the commitPage path below.
+  useEffect(() => {
+    setPageField(String(page));
+  }, [page]);
 
   const close = () => setOpen(null);
 
