@@ -21,6 +21,8 @@
      a white hairline reads as edge-lit on a near-black ground and as grime on
      a white one, so light needs its own values, not an opacity tweak. */
   --glass-border: rgba(255, 255, 255, 0.08);
+  --btn-ghost-border: rgba(255, 255, 255, 0.16);
+  --btn-ghost-bg: rgba(255, 255, 255, 0.04);
   --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.06);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.5);
   /* Shell geometry, shared with the app strip's grid columns. */
@@ -47,6 +49,8 @@
     --danger: #b93a3a;
     --danger-bg: #fbe9e9;
     --glass-border: rgba(16, 21, 31, 0.07);
+    --btn-ghost-border: rgba(16, 21, 31, 0.18);
+    --btn-ghost-bg: rgba(16, 21, 31, 0.03);
     --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.6);
     --shadow: 0 1px 2px rgba(16, 21, 31, 0.05), 0 10px 28px rgba(16, 21, 31, 0.09);
   }
@@ -60,6 +64,8 @@
   --warning: #e3a438; --warning-bg: #2b2210;
   --danger: #e5695f; --danger-bg: #2b1514;
   --glass-border: rgba(255, 255, 255, 0.08);
+  --btn-ghost-border: rgba(255, 255, 255, 0.16);
+  --btn-ghost-bg: rgba(255, 255, 255, 0.04);
   --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.06);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.5);
 }
@@ -72,6 +78,8 @@
   --warning: #a3660a; --warning-bg: #faf0dc;
   --danger: #b93a3a; --danger-bg: #fbe9e9;
   --glass-border: rgba(16, 21, 31, 0.07);
+  --btn-ghost-border: rgba(16, 21, 31, 0.18);
+  --btn-ghost-bg: rgba(16, 21, 31, 0.03);
   --glass-hi: inset 0 1px 0 rgba(255, 255, 255, 0.6);
   --shadow: 0 1px 2px rgba(16, 21, 31, 0.05), 0 10px 28px rgba(16, 21, 31, 0.09);
 }

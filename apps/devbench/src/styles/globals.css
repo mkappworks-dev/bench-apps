@@ -18,6 +18,8 @@
   --color-warning-bg: var(--warning-bg);
   --color-danger: var(--danger);
   --color-danger-bg: var(--danger-bg);
+  --color-btn-ghost-border: var(--btn-ghost-border);
+  --color-btn-ghost-bg: var(--btn-ghost-bg);
   --radius-sm: var(--radius-sm);
   --radius-lg: var(--radius-lg);
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
