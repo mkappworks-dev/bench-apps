@@ -42,3 +42,12 @@ body {
     background: var(--surface) !important;
   }
 }
+
+/* The toolbar is always one row: below 620px of its OWN width the button
+   labels drop and only icons remain. A container query, not a media query —
+   the toolbar shrinks when the chat dock opens, not when the window resizes. */
+@container (max-width: 620px) {
+  .tb-label {
+    display: none;
+  }
+}
