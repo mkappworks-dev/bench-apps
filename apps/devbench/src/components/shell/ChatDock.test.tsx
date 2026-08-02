@@ -82,4 +82,88 @@ describe("ChatDock", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close chat" }));
     expect(onClose).toHaveBeenCalled();
   });
+
+  describe("resize", () => {
+    // Same reasoning as QueryConsole's resize tests: this exercises the drag
+    // clamp arithmetic and the `--w-chat` custom property write, not real
+    // layout — there's no getBoundingClientRect here, so unlike DataGrid's
+    // virtualization this is honestly assertable under jsdom. It can't prove
+    // how the resize *looks*, or that AppStrip's topbar tracks the same
+    // property — see the task report for how those were checked in a browser.
+    beforeEach(() => {
+      vi.spyOn(tauriLib, "invokeGetProviderStatus").mockResolvedValue({
+        provider: "anthropic",
+        model: "claude-opus-5",
+        has_key: true,
+      });
+    });
+
+    function currentWidth(): string {
+      return document.documentElement.style.getPropertyValue("--w-chat");
+    }
+
+    it("tracks the raw drag delta between both bounds", async () => {
+      render(<ChatDock onClose={() => {}} />);
+      await waitFor(() => expect(screen.getByPlaceholderText(/ask about this request/i)).toBeEnabled());
+      const handle = screen.getByLabelText("Resize AI Assistant");
+
+      expect(currentWidth()).toBe("320px"); // DEFAULT_WIDTH_PX
+
+      fireEvent.mouseDown(handle, { clientX: 500 });
+      fireEvent.mouseMove(window, { clientX: 400 }); // dragged left 100px -> wider: 320+100=420
+      expect(currentWidth()).toBe("420px");
+      fireEvent.mouseMove(window, { clientX: 550 }); // dragged right 50px from the start -> narrower: 320-50=270
+      expect(currentWidth()).toBe("270px");
+    });
+
+    it("clamps at MIN_WIDTH_PX when dragged past the right", async () => {
+      render(<ChatDock onClose={() => {}} />);
+      await waitFor(() => expect(screen.getByPlaceholderText(/ask about this request/i)).toBeEnabled());
+      const handle = screen.getByLabelText("Resize AI Assistant");
+
+      fireEvent.mouseDown(handle, { clientX: 500 });
+      fireEvent.mouseMove(window, { clientX: 900 }); // narrower by 400: 320-400=-80, below the 260 min
+      expect(currentWidth()).toBe("260px");
+      fireEvent.mouseMove(window, { clientX: 1200 }); // even further past the min
+      expect(currentWidth()).toBe("260px");
+    });
+
+    it("clamps at MAX_WIDTH_PX when dragged past the left", async () => {
+      render(<ChatDock onClose={() => {}} />);
+      await waitFor(() => expect(screen.getByPlaceholderText(/ask about this request/i)).toBeEnabled());
+      const handle = screen.getByLabelText("Resize AI Assistant");
+
+      fireEvent.mouseDown(handle, { clientX: 500 });
+      fireEvent.mouseMove(window, { clientX: 100 }); // wider by 400: 320+400=720, above the 640 max
+      expect(currentWidth()).toBe("640px");
+      fireEvent.mouseMove(window, { clientX: -200 }); // even further past the max
+      expect(currentWidth()).toBe("640px");
+    });
+
+    it("stops resizing once the mouse is released", async () => {
+      render(<ChatDock onClose={() => {}} />);
+      await waitFor(() => expect(screen.getByPlaceholderText(/ask about this request/i)).toBeEnabled());
+      const handle = screen.getByLabelText("Resize AI Assistant");
+
+      fireEvent.mouseDown(handle, { clientX: 500 });
+      fireEvent.mouseMove(window, { clientX: 400 });
+      expect(currentWidth()).toBe("420px");
+
+      fireEvent.mouseUp(window);
+      fireEvent.mouseMove(window, { clientX: 100 }); // a mousemove with no active drag must be a no-op
+      expect(currentWidth()).toBe("420px");
+    });
+
+    it("clears --w-chat on unmount, so a reopen starts back at the default", async () => {
+      const { unmount } = render(<ChatDock onClose={() => {}} />);
+      await waitFor(() => expect(screen.getByPlaceholderText(/ask about this request/i)).toBeEnabled());
+      const handle = screen.getByLabelText("Resize AI Assistant");
+      fireEvent.mouseDown(handle, { clientX: 500 });
+      fireEvent.mouseMove(window, { clientX: 400 });
+      expect(currentWidth()).toBe("420px");
+
+      unmount();
+      expect(currentWidth()).toBe("");
+    });
+  });
 });
