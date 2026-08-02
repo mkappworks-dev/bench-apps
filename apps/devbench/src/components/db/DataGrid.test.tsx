@@ -183,45 +183,11 @@ describe("DataGrid", () => {
     expect(screen.getByRole("button", { name: "Sort by id" })).toHaveTextContent("2");
   });
 
-  it("filters the fetched page and reports how much of it is showing", () => {
-    render(
-      <DataGrid
-        columns={["id", "status"]}
-        rows={[
-          ["1", "paid"],
-          ["2", "refunded"],
-          ["3", "paid"],
-        ]}
-      />,
-    );
-    fireEvent.change(screen.getByRole("textbox", { name: "Filter rows on this page" }), {
-      target: { value: "refunded" },
-    });
-    expect(screen.getByText("1 of 3")).toBeInTheDocument();
-    expect(screen.queryByText("paid")).not.toBeInTheDocument();
-  });
-
-  // The filter hides rows but must not renumber them: `renderCell`'s row index
-  // is what an inline edit resolves its target row against, so a filtered
-  // position would point the write at a different row than the one on screen.
-  it("passes the unfiltered row index to renderCell, so an edit still targets the right row", () => {
-    const seen: number[] = [];
-    render(
-      <DataGrid
-        columns={["id"]}
-        rows={[["a"], ["b"], ["c"]]}
-        renderCell={(rowIndex, _c, value) => {
-          if (value === "c") seen.push(rowIndex);
-          return <span>{value}</span>;
-        }}
-      />,
-    );
-    fireEvent.change(screen.getByRole("textbox", { name: "Filter rows on this page" }), {
-      target: { value: "c" },
-    });
-    expect(seen.at(-1)).toBe(2);
-  });
-
+  // The client-side "Filter rows on this page" box (and the row-index
+  // renumbering hazard it used to guard against) is gone — filtering is now
+  // server-side only, via GridToolbar's Filter popover (see GridToolbar.test.tsx
+  // and DbTab.test.tsx). `renderCell` always receives the plain data index
+  // now, covered by the reorder test below.
   it("reorders a column with Alt+Arrow, giving the header drag a keyboard equivalent", () => {
     render(<ControlledGrid columns={["id", "status", "amount"]} rows={[]} />);
     expect(columnOrder()).toEqual(["id", "status", "amount"]);

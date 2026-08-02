@@ -169,6 +169,28 @@ describe("DbTab", () => {
     expect(await screen.findByRole("button", { name: "Next page" })).toBeDisabled();
   });
 
+  // Regression guard: GridToolbar's rows-per-page <select> calls
+  // onLimitChange then onPageChange synchronously in one onChange. Both are
+  // this render's DbTab closures; without a synchronously-updated ref for
+  // "the limit to fetch with," onPageChange's own fetchRows call would still
+  // read the PRE-change limit and — since it fires second — win the
+  // requestId race, silently reverting the effective page size.
+  it("changing rows per page fetches with the new limit, not the pre-change one", async () => {
+    const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id"], rows: [["1"]], pk_column: "id",
+    });
+    vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(500);
+
+    renderDb("orders");
+    await waitFor(() => expect(listRows).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Rows per page" }), { target: { value: "250" } });
+
+    await waitFor(() =>
+      expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ limit: 250, offset: 0 })),
+    );
+  });
+
   it("sends the applied filter to both the row query and the count", async () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "status"], rows: [["1", "paid"]], pk_column: "id",

@@ -98,6 +98,14 @@ export function DbTab({
   // the grid's own page never carries the true total.
   const [total, setTotal] = useState(0);
 
+  // Mirrors `limit`, but updated synchronously (unlike the state variable,
+  // which only takes effect on the next render). GridToolbar's rows-per-page
+  // control calls onLimitChange then onPageChange back-to-back in one
+  // handler — both are this render's closures, so onPageChange's own `limit`
+  // read would otherwise still see the pre-change value and fetch a page at
+  // the OLD size, which then wins the requestId race since it fires second.
+  const limitRef = useRef(limit);
+
   const [editing, setEditing] = useState<CellEdit | null>(null);
   const [consoleOpen, setConsoleOpen] = useState(false);
   // Cell-edit failures render next to the grid, not in place of it — reusing
@@ -220,6 +228,7 @@ export function DbTab({
     setPage(0);
     setFilter([]);
     setLimit(100);
+    limitRef.current = 100;
     setTotal(0);
     setTableRows(null);
     setError(null);
@@ -642,32 +651,33 @@ export function DbTab({
                       abandonEditForQueryChange();
                       setFilter(next);
                       setPage(0);
-                      void fetchRows(table!, activeConnectionId!, next, sort, 0, limit);
+                      void fetchRows(table!, activeConnectionId!, next, sort, 0, limitRef.current);
                     }}
                     sort={sort}
                     onSortChange={(next) => {
                       abandonEditForQueryChange();
                       setSort(next);
                       setPage(0);
-                      void fetchRows(table!, activeConnectionId!, filter, next, 0, limit);
+                      void fetchRows(table!, activeConnectionId!, filter, next, 0, limitRef.current);
                     }}
                     page={page + 1}
                     pageCount={Math.max(1, Math.ceil(total / limit))}
                     onPageChange={(next) => {
                       abandonEditForQueryChange();
                       setPage(next - 1);
-                      void fetchRows(table!, activeConnectionId!, filter, sort, next - 1, limit);
+                      void fetchRows(table!, activeConnectionId!, filter, sort, next - 1, limitRef.current);
                     }}
                     limit={limit}
                     onLimitChange={(next) => {
                       abandonEditForQueryChange();
+                      limitRef.current = next;
                       setLimit(next);
                       setPage(0);
                       void fetchRows(table!, activeConnectionId!, filter, sort, 0, next);
                     }}
                     onRefresh={() => {
                       abandonEditForQueryChange();
-                      void fetchRows(table!, activeConnectionId!, filter, sort, page, limit);
+                      void fetchRows(table!, activeConnectionId!, filter, sort, page, limitRef.current);
                     }}
                     familyOf={(column) => inferFamily(tableRows.rows[0]?.[tableRows.columns.indexOf(column)] ?? null)}
                   />

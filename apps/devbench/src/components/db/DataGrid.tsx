@@ -149,7 +149,6 @@ export function DataGrid({
 }: DataGridProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
-  const [filter, setFilter] = useState("");
   const [dragColumn, setDragColumn] = useState<string | null>(null);
   // Live width during an in-progress resize drag, overlaid on `layout` for
   // display only — onLayoutChange (which the caller may persist) fires once
@@ -194,18 +193,6 @@ export function DataGrid({
   // instead of the box (and its scrollbar) growing to fit. This is what let
   // the header and body compute different widths and drift apart on scroll.
   const minTableWidth = visual.reduce((sum, col) => sum + widthOf(col, effectiveLayout), 0) + ACTIONS_COLUMN_PX;
-
-  // Filtering is over the fetched page only, so a row keeps its original
-  // index — that index is what `renderCell` resolves an edit against, and a
-  // filtered position would point the write at a different row.
-  const visibleRows = useMemo(() => {
-    const indexed = rows.map((row, index) => ({ row, index }));
-    const needle = filter.trim().toLowerCase();
-    if (!needle) return indexed;
-    return indexed.filter(({ row }) =>
-      row.some((value) => cellDisplay(value).text.toLowerCase().includes(needle)),
-    );
-  }, [rows, filter]);
 
   const sortIndexOf = (column: string) => sort.findIndex((term) => term.column === column);
 
@@ -306,7 +293,7 @@ export function DataGrid({
   }
 
   const virtualizer = useVirtualizer({
-    count: visibleRows.length,
+    count: rows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW_HEIGHT_PX,
     overscan: 8,
@@ -330,22 +317,15 @@ export function DataGrid({
     Object.keys(effectiveLayout.widths).length > 0;
 
   return (
-    <div className="overflow-hidden rounded-lg border border-border" role="table" aria-rowcount={rows.length}>
+    // No overflow-hidden here: GridToolbar's popovers are `position: absolute`
+    // against this ancestor's stacking context, and an overflow-hidden
+    // ancestor clips an absolutely-positioned descendant regardless of
+    // z-index. The clip that actually needs to happen (rounding the
+    // scrolling grid's corners) lives on the narrower wrapper below instead.
+    <div className="rounded-lg border border-border" role="table" aria-rowcount={rows.length}>
       {toolbar}
-      <div className="flex items-center gap-2 border-b border-border bg-surface px-3 py-1.5">
-        <input
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          aria-label="Filter rows on this page"
-          placeholder="Filter this page…"
-          className="h-6.5 min-w-0 flex-1 rounded-sm border border-border bg-bg px-2 font-mono text-xs text-text placeholder:text-text-faint focus-visible:border-text-faint"
-        />
-        {filter.trim() ? (
-          <span className="shrink-0 text-xs text-text-faint">
-            {visibleRows.length} of {rows.length}
-          </span>
-        ) : null}
-        {layoutIsCustomised ? (
+      {layoutIsCustomised ? (
+        <div className="flex items-center justify-end border-b border-border bg-surface px-3 py-1.5">
           <button
             type="button"
             onClick={() => updateLayout(EMPTY_LAYOUT)}
@@ -353,207 +333,208 @@ export function DataGrid({
           >
             Reset layout
           </button>
-        ) : null}
-      </div>
-      {/* Header and body share this one scrollable box (both axes) so a
-          horizontal scroll moves them together — a table/tbody or a
-          sibling header re-flows column widths independently the moment
-          rows are absolutely positioned for virtualization, which is what
-          let the header drift out of alignment with scrolled row content. */}
-      <div ref={scrollRef} className="max-h-125 overflow-auto">
-        <div style={{ minWidth: minTableWidth }}>
-          <div
-            style={{ display: "grid", gridTemplateColumns }}
-            // z-30 keeps the header above an expanded inline editor (z-20),
-            // which overflows its own cell and would otherwise ride over the
-            // header when its row is scrolled up under it.
-            className="sticky top-0 z-30 border-b border-border bg-surface-2 font-mono"
-            role="row"
-          >
-            {visual.map((col) => {
-              const sortIndex = sortIndexOf(col);
-              const active = sortIndex >= 0;
-              const pinned = isPinned(col);
-              return (
-                <div
-                  key={col}
-                  role="columnheader"
-                  data-column={col}
-                  aria-sort={active ? (sort[sortIndex].descending ? "descending" : "ascending") : undefined}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={onHeaderDrop(col)}
-                  style={pinned ? { position: "sticky", left: offsets[col], zIndex: 2 } : undefined}
-                  // `group` belongs on the cell, not the sort button: the pin
-                  // button is the button's SIBLING, so a group scoped to the
-                  // button would never reveal it on hover.
-                  className={`group relative flex select-none items-center border-r border-border text-left text-[10.5px] font-semibold uppercase tracking-[0.04em] text-text-faint ${
-                    pinned ? "bg-surface-2" : ""
-                  } ${dragColumn === col ? "opacity-50" : ""}`}
-                >
-                  {/* `uppercase` is repeated on the button on purpose: the UA
-                      stylesheet sets `text-transform: none` on form controls,
-                      and Tailwind's preflight only re-inherits font/letter-
-                      spacing/color — so the parent's casing never reaches the
-                      label and every header renders lowercase without this. */}
-                  <button
-                    type="button"
-                    draggable
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData("text/x-devbench-column", col);
-                      e.dataTransfer.effectAllowed = "move";
-                      setDragColumn(col);
-                    }}
-                    onDragEnd={() => setDragColumn(null)}
-                    onClick={(e) => onSort?.(col, e.shiftKey)}
-                    onKeyDown={onHeaderKeyDown(col)}
-                    className="flex min-w-0 flex-1 items-center gap-1.25 py-1.75 pl-3 pr-1 text-left uppercase hover:text-text"
-                    aria-label={`Sort by ${col}`}
-                    title="Click to sort, shift-click to add a sort, drag or Alt+Arrow to reorder"
-                  >
-                    <span className="truncate">{col}</span>
-                    <SortChevron active={active} descending={active && sort[sortIndex].descending} column={col} />
-                    {sort.length > 1 && active ? (
-                      <span aria-hidden className="shrink-0 tabular-nums text-text-faint">
-                        {sortIndex + 1}
-                      </span>
-                    ) : null}
-                  </button>
-                  {/* `invisible` rather than opacity so an unrevealed pin
-                      can't be clicked, while the header still reserves its
-                      space and nothing shifts on hover. */}
-                  <button
-                    type="button"
-                    onClick={() => togglePinned(col)}
-                    aria-pressed={pinned}
-                    aria-label={pinned ? `Unfreeze ${col}` : `Freeze ${col}`}
-                    className={`mr-2.5 shrink-0 rounded-sm p-0.5 hover:text-text ${
-                      pinned ? "text-text" : "invisible text-text-faint group-hover:visible group-focus-within:visible"
-                    }`}
-                  >
-                    <PinIcon pinned={pinned} />
-                  </button>
-                  {/* Drag to resize — mirrors the mockup's `.th-resize`. A
-                      sibling of the sort button (not nested inside it) so
-                      dragging never fires a sort click. */}
-                  <div
-                    aria-hidden
-                    data-testid={`resize-handle-${col}`}
-                    onMouseDown={beginColumnResize(col)}
-                    className="absolute inset-y-0 right-0 w-1.25 cursor-col-resize hover:bg-accent hover:opacity-50"
-                  />
-                </div>
-              );
-            })}
-            <div role="columnheader" aria-label="Row actions" />
-          </div>
-
-          {visibleRows.length === 0 ? (
-            <div className="p-4 text-sm text-text-faint">
-              {rows.length === 0 ? "No rows." : `No rows on this page match “${filter.trim()}”.`}
-            </div>
-          ) : (
-            <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
-              {virtualizer.getVirtualItems().map((virtualRow) => {
-                const { row, index: dataRowIndex } = visibleRows[virtualRow.index];
+        </div>
+      ) : null}
+      <div className="overflow-hidden rounded-b-lg">
+        {/* Header and body share this one scrollable box (both axes) so a
+            horizontal scroll moves them together — a table/tbody or a
+            sibling header re-flows column widths independently the moment
+            rows are absolutely positioned for virtualization, which is what
+            let the header drift out of alignment with scrolled row content. */}
+        <div ref={scrollRef} className="max-h-125 overflow-auto">
+          <div style={{ minWidth: minTableWidth }}>
+            <div
+              style={{ display: "grid", gridTemplateColumns }}
+              // z-30 keeps the header above an expanded inline editor (z-20),
+              // which overflows its own cell and would otherwise ride over the
+              // header when its row is scrolled up under it.
+              className="sticky top-0 z-30 border-b border-border bg-surface-2 font-mono"
+              role="row"
+            >
+              {visual.map((col) => {
+                const sortIndex = sortIndexOf(col);
+                const active = sortIndex >= 0;
+                const pinned = isPinned(col);
                 return (
                   <div
-                    key={dataRowIndex}
-                    role="row"
-                    className={`group/row font-mono text-xs hover:bg-surface-2 ${
-                      virtualRow.index === visibleRows.length - 1 ? "" : "border-b border-border"
-                    }`}
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns,
-                      // Pinned to the same constant the virtualizer measures
-                      // with. Left to size itself, a row is only as tall as its
-                      // content — a bordered boolean pill made some rows 33px
-                      // and plain ones 31.5px while `virtualRow.start` advanced
-                      // by a flat 33px, so rows drifted apart by 1.5px gaps.
-                      // Cells stretch to this height and center their own
-                      // content, so a taller pill can't reintroduce that
-                      // variance and the column rules still span the full row.
-                      height: ROW_HEIGHT_PX,
-                      position: "absolute",
-                      top: 0,
-                      left: 0,
-                      width: "100%",
-                      transform: `translateY(${virtualRow.start}px)`,
-                    }}
+                    key={col}
+                    role="columnheader"
+                    data-column={col}
+                    aria-sort={active ? (sort[sortIndex].descending ? "descending" : "ascending") : undefined}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={onHeaderDrop(col)}
+                    style={pinned ? { position: "sticky", left: offsets[col], zIndex: 2 } : undefined}
+                    // `group` belongs on the cell, not the sort button: the pin
+                    // button is the button's SIBLING, so a group scoped to the
+                    // button would never reveal it on hover.
+                    className={`group relative flex select-none items-center border-r border-border text-left text-[10.5px] font-semibold uppercase tracking-[0.04em] text-text-faint ${
+                      pinned ? "bg-surface-2" : ""
+                    } ${dragColumn === col ? "opacity-50" : ""}`}
                   >
-                    {visual.map((col) => {
-                      // Always the DATA index: reordering changes where a
-                      // column is drawn, never which value it holds or which
-                      // column an edit resolves to.
-                      const columnIndex = columns.indexOf(col);
-                      const value = row[columnIndex] ?? null;
-                      const pinned = isPinned(col);
-                      // A pinned cell slides over its neighbours, so it needs
-                      // its own opaque fill — including the row's hover fill,
-                      // or hovering would reveal a hole where it sits.
-                      const pinnedClass = pinned ? "bg-bg group-hover/row:bg-surface-2" : "";
-                      const pinnedStyle = pinned
-                        ? { position: "sticky" as const, left: offsets[col], zIndex: 10 }
-                        : undefined;
-                      return renderCell ? (
-                        // `relative` so an expanded inline editor can position
-                        // itself against this cell and spill over the columns
-                        // to its right instead of being squeezed into one.
-                        <div
-                          key={col}
-                          role="cell"
-                          style={pinnedStyle}
-                          className={`relative flex min-w-0 items-center border-r border-border px-3 text-text-muted ${pinnedClass}`}
-                        >
-                          {renderCell(dataRowIndex, columnIndex, value)}
-                        </div>
-                      ) : (
-                        <div
-                          key={col}
-                          role="cell"
-                          style={pinnedStyle}
-                          className={`flex min-w-0 items-center border-r border-border px-3 text-text-muted ${pinnedClass}`}
-                        >
-                          {/* The truncation lives on this span, not the cell:
-                              text-overflow has no effect on a flex container's
-                              own anonymous text child. */}
-                          <span className={`min-w-0 flex-1 truncate ${cellDisplay(value).className}`}>
-                            <CellValue value={value} />
-                          </span>
-                        </div>
-                      );
-                    })}
-                    <div role="cell" className="flex items-center px-2">
-                      <button
-                        type="button"
-                        aria-label="Copy row as tab-separated values"
-                        onClick={() => void copyRow(row, "tsv")}
-                        className="px-1 text-xs text-text-faint hover:text-text"
-                      >
-                        TSV
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Copy row as JSON"
-                        onClick={() => void copyRow(row, "json")}
-                        className="px-1 text-xs text-text-faint hover:text-text"
-                      >
-                        JSON
-                      </button>
-                    </div>
+                    {/* `uppercase` is repeated on the button on purpose: the UA
+                        stylesheet sets `text-transform: none` on form controls,
+                        and Tailwind's preflight only re-inherits font/letter-
+                        spacing/color — so the parent's casing never reaches the
+                        label and every header renders lowercase without this. */}
+                    <button
+                      type="button"
+                      draggable
+                      onDragStart={(e) => {
+                        e.dataTransfer.setData("text/x-devbench-column", col);
+                        e.dataTransfer.effectAllowed = "move";
+                        setDragColumn(col);
+                      }}
+                      onDragEnd={() => setDragColumn(null)}
+                      onClick={(e) => onSort?.(col, e.shiftKey)}
+                      onKeyDown={onHeaderKeyDown(col)}
+                      className="flex min-w-0 flex-1 items-center gap-1.25 py-1.75 pl-3 pr-1 text-left uppercase hover:text-text"
+                      aria-label={`Sort by ${col}`}
+                      title="Click to sort, shift-click to add a sort, drag or Alt+Arrow to reorder"
+                    >
+                      <span className="truncate">{col}</span>
+                      <SortChevron active={active} descending={active && sort[sortIndex].descending} column={col} />
+                      {sort.length > 1 && active ? (
+                        <span aria-hidden className="shrink-0 tabular-nums text-text-faint">
+                          {sortIndex + 1}
+                        </span>
+                      ) : null}
+                    </button>
+                    {/* `invisible` rather than opacity so an unrevealed pin
+                        can't be clicked, while the header still reserves its
+                        space and nothing shifts on hover. */}
+                    <button
+                      type="button"
+                      onClick={() => togglePinned(col)}
+                      aria-pressed={pinned}
+                      aria-label={pinned ? `Unfreeze ${col}` : `Freeze ${col}`}
+                      className={`mr-2.5 shrink-0 rounded-sm p-0.5 hover:text-text ${
+                        pinned ? "text-text" : "invisible text-text-faint group-hover:visible group-focus-within:visible"
+                      }`}
+                    >
+                      <PinIcon pinned={pinned} />
+                    </button>
+                    {/* Drag to resize — mirrors the mockup's `.th-resize`. A
+                        sibling of the sort button (not nested inside it) so
+                        dragging never fires a sort click. */}
+                    <div
+                      aria-hidden
+                      data-testid={`resize-handle-${col}`}
+                      onMouseDown={beginColumnResize(col)}
+                      className="absolute inset-y-0 right-0 w-1.25 cursor-col-resize hover:bg-accent hover:opacity-50"
+                    />
                   </div>
                 );
               })}
+              <div role="columnheader" aria-label="Row actions" />
             </div>
-          )}
-        </div>
-      </div>
 
-      {copyError ? (
-        <div role="alert" className="border-t border-border bg-danger-bg px-3 py-1.5 text-xs text-danger">
-          Couldn't copy row: {copyError}
+            {rows.length === 0 ? (
+              <div className="p-4 text-sm text-text-faint">No rows.</div>
+            ) : (
+              <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+                {virtualizer.getVirtualItems().map((virtualRow) => {
+                  const dataRowIndex = virtualRow.index;
+                  const row = rows[dataRowIndex];
+                  return (
+                    <div
+                      key={dataRowIndex}
+                      role="row"
+                      className={`group/row font-mono text-xs hover:bg-surface-2 ${
+                        virtualRow.index === rows.length - 1 ? "" : "border-b border-border"
+                      }`}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns,
+                        // Pinned to the same constant the virtualizer measures
+                        // with. Left to size itself, a row is only as tall as its
+                        // content — a bordered boolean pill made some rows 33px
+                        // and plain ones 31.5px while `virtualRow.start` advanced
+                        // by a flat 33px, so rows drifted apart by 1.5px gaps.
+                        // Cells stretch to this height and center their own
+                        // content, so a taller pill can't reintroduce that
+                        // variance and the column rules still span the full row.
+                        height: ROW_HEIGHT_PX,
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                    >
+                      {visual.map((col) => {
+                        // Always the DATA index: reordering changes where a
+                        // column is drawn, never which value it holds or which
+                        // column an edit resolves to.
+                        const columnIndex = columns.indexOf(col);
+                        const value = row[columnIndex] ?? null;
+                        const pinned = isPinned(col);
+                        // A pinned cell slides over its neighbours, so it needs
+                        // its own opaque fill — including the row's hover fill,
+                        // or hovering would reveal a hole where it sits.
+                        const pinnedClass = pinned ? "bg-bg group-hover/row:bg-surface-2" : "";
+                        const pinnedStyle = pinned
+                          ? { position: "sticky" as const, left: offsets[col], zIndex: 10 }
+                          : undefined;
+                        return renderCell ? (
+                          // `relative` so an expanded inline editor can position
+                          // itself against this cell and spill over the columns
+                          // to its right instead of being squeezed into one.
+                          <div
+                            key={col}
+                            role="cell"
+                            style={pinnedStyle}
+                            className={`relative flex min-w-0 items-center border-r border-border px-3 text-text-muted ${pinnedClass}`}
+                          >
+                            {renderCell(dataRowIndex, columnIndex, value)}
+                          </div>
+                        ) : (
+                          <div
+                            key={col}
+                            role="cell"
+                            style={pinnedStyle}
+                            className={`flex min-w-0 items-center border-r border-border px-3 text-text-muted ${pinnedClass}`}
+                          >
+                            {/* The truncation lives on this span, not the cell:
+                                text-overflow has no effect on a flex container's
+                                own anonymous text child. */}
+                            <span className={`min-w-0 flex-1 truncate ${cellDisplay(value).className}`}>
+                              <CellValue value={value} />
+                            </span>
+                          </div>
+                        );
+                      })}
+                      <div role="cell" className="flex items-center px-2">
+                        <button
+                          type="button"
+                          aria-label="Copy row as tab-separated values"
+                          onClick={() => void copyRow(row, "tsv")}
+                          className="px-1 text-xs text-text-faint hover:text-text"
+                        >
+                          TSV
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Copy row as JSON"
+                          onClick={() => void copyRow(row, "json")}
+                          className="px-1 text-xs text-text-faint hover:text-text"
+                        >
+                          JSON
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
-      ) : null}
+
+        {copyError ? (
+          <div role="alert" className="border-t border-border bg-danger-bg px-3 py-1.5 text-xs text-danger">
+            Couldn't copy row: {copyError}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
