@@ -2,19 +2,22 @@ import { useEffect, useRef, useState } from "react";
 import { SchemaTree } from "./SchemaTree";
 import { DataGrid, cellDisplay, CellValue } from "./DataGrid";
 import { QueryConsole } from "./QueryConsole";
+import { GridToolbar } from "./grid/GridToolbar";
+import { inferFamily } from "./grid/types";
+import { readLayout, writeLayout, type GridLayout } from "./grid/gridLayout";
 import {
   invokeListTableRows,
+  invokeCountTableRows,
   invokeListWatchedTables,
   invokeSetWatchedTable,
   invokePreviewCellEdit,
   invokeCommitPreview,
   invokeRollbackPreview,
+  type FilterCondition,
   type SortTerm,
   type TableRows,
 } from "../../lib/tauri";
 import { useAppStore } from "../../store/useAppStore";
-
-const PAGE_SIZE = 100;
 
 // `draft` mirrors the wire value directly (`string | null`) rather than a
 // separate string + "is this null" flag — one field that's either a string
@@ -83,13 +86,17 @@ export function DbTab({
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
 
   const [tableRows, setTableRows] = useState<TableRows | null>(null);
-  const [hasNextPage, setHasNextPage] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   // A list, outermost term first — "status, then newest first" is a normal
   // thing to want from a grid, and the backend takes the whole ORDER BY.
   const [sort, setSort] = useState<SortTerm[]>([]);
   const [page, setPage] = useState(0);
+  const [filter, setFilter] = useState<FilterCondition[]>([]);
+  const [limit, setLimit] = useState(100);
+  // From the parallel invokeCountTableRows call below, not the fetched rows —
+  // the grid's own page never carries the true total.
+  const [total, setTotal] = useState(0);
 
   const [editing, setEditing] = useState<CellEdit | null>(null);
   const [consoleOpen, setConsoleOpen] = useState(false);
@@ -97,6 +104,22 @@ export function DbTab({
   // `error` (which swaps the whole grid for an error box) would make a
   // failed single-cell commit look like the entire table failed to load.
   const [editError, setEditError] = useState<string | null>(null);
+
+  // Column widths/order/pins/hidden, scoped per connection+table exactly like
+  // DataGrid used to scope it internally — lifted up here since GridToolbar's
+  // Columns popover needs to read and write the same state the grid renders
+  // from. Same render-time key-swap as DataGrid had: an effect would let one
+  // render paint the previous table's layout before catching up.
+  const layoutKey = `${activeConnectionId}:${table}`;
+  const [storedLayout, setStoredLayout] = useState(() => ({ key: layoutKey, layout: readLayout(layoutKey) }));
+  if (storedLayout.key !== layoutKey) {
+    setStoredLayout({ key: layoutKey, layout: readLayout(layoutKey) });
+  }
+  const layout = storedLayout.layout;
+  function updateLayout(next: GridLayout) {
+    setStoredLayout({ key: layoutKey, layout: next });
+    writeLayout(layoutKey, next);
+  }
 
   // Bumped on every fetch so a slow, superseded response (e.g. a sort click
   // fired just before a faster one) can be told apart from the latest and
@@ -140,26 +163,38 @@ export function DbTab({
     }
   }
 
-  async function fetchRows(t: string, connId: string, orderBy: SortTerm[], pageNum: number) {
+  async function fetchRows(
+    t: string,
+    connId: string,
+    activeFilter: FilterCondition[],
+    orderBy: SortTerm[],
+    pageNum: number,
+    pageSize: number,
+  ) {
     const requestId = ++requestIdRef.current;
     setLoading(true);
     setError(null);
+    // Fired in parallel: the count is the slow one and the grid should not
+    // block on it.
+    void invokeCountTableRows(connId, t, activeFilter)
+      .then((n) => {
+        if (requestId === requestIdRef.current) setTotal(n);
+      })
+      .catch(() => {
+        if (requestId === requestIdRef.current) setTotal(0);
+      });
     try {
-      // The backend has no cheap COUNT(*); over-fetching by one row and
-      // trimming it is what lets hasNextPage be an honest fact instead of a
-      // guess from "this page happened to come back full."
       const result = await invokeListTableRows(connId, t, {
+        filter: activeFilter,
         orderBy,
-        limit: PAGE_SIZE + 1,
-        offset: pageNum * PAGE_SIZE,
+        limit: pageSize,
+        offset: pageNum * pageSize,
       });
       if (requestId !== requestIdRef.current) return;
-      setTableRows({ ...result, rows: result.rows.slice(0, PAGE_SIZE) });
-      setHasNextPage(result.rows.length > PAGE_SIZE);
+      setTableRows(result);
     } catch (err) {
       if (requestId !== requestIdRef.current) return;
       setTableRows(null);
-      setHasNextPage(false);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       if (requestId === requestIdRef.current) setLoading(false);
@@ -169,10 +204,10 @@ export function DbTab({
   // A new table may not even have the old one's sort column, and its rows
   // start over at offset 0 — same reasoning one level up for a connection
   // switch underneath an already-open table. Clearing `tableRows` here too
-  // (not just resetting sort/page/hasNextPage) drops the *previous* table's
+  // (not just resetting sort/page/filter/total) drops the *previous* table's
   // grid from the DOM for the duration of the switch — leaving it mounted
-  // would keep its stale hasNextPage/sort-column controls clickable against
-  // a table whose page 0 hasn't been fetched yet under the new selection.
+  // would keep its stale toolbar/sort-column controls clickable against a
+  // table whose page 0 hasn't been fetched yet under the new selection.
   useEffect(() => {
     // A stale edit can't survive a table/connection switch: its rowIndex and
     // columnIndex are about to describe entirely different data once the new
@@ -183,11 +218,13 @@ export function DbTab({
     setEditError(null);
     setSort([]);
     setPage(0);
-    setHasNextPage(false);
+    setFilter([]);
+    setLimit(100);
+    setTotal(0);
     setTableRows(null);
     setError(null);
     if (table && activeConnectionId) {
-      void fetchRows(table, activeConnectionId, [], 0);
+      void fetchRows(table, activeConnectionId, [], [], 0, 100);
     } else {
       requestIdRef.current++;
       setLoading(false);
@@ -208,14 +245,22 @@ export function DbTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Any query-shape change (sort, filter, page, limit, refresh) abandons an
+  // in-progress edit the same way a table switch does: the rows it targeted
+  // are about to be replaced, and an open preview is a transaction that must
+  // not leak.
+  function abandonEditForQueryChange() {
+    abandonEdit(editing);
+    setEditing(null);
+    setEditError(null);
+  }
+
   // Plain click replaces the sort; shift-click builds one up. Cycling a term
   // asc → desc → gone (rather than asc → desc → asc) is what makes it possible
   // to drop a column back out of a multi-sort without clearing the whole thing.
   function handleSort(column: string, additive: boolean) {
     if (!table || !activeConnectionId) return;
-    abandonEdit(editing);
-    setEditing(null);
-    setEditError(null);
+    abandonEditForQueryChange();
 
     const existing = sort.find((term) => term.column === column);
     let next: SortTerm[];
@@ -234,27 +279,7 @@ export function DbTab({
 
     setSort(next);
     setPage(0);
-    void fetchRows(table, activeConnectionId, next, 0);
-  }
-
-  function handlePrevPage() {
-    if (!table || !activeConnectionId) return;
-    abandonEdit(editing);
-    setEditing(null);
-    setEditError(null);
-    const nextPage = Math.max(0, page - 1);
-    setPage(nextPage);
-    void fetchRows(table, activeConnectionId, sort, nextPage);
-  }
-
-  function handleNextPage() {
-    if (!table || !activeConnectionId) return;
-    abandonEdit(editing);
-    setEditing(null);
-    setEditError(null);
-    const nextPage = page + 1;
-    setPage(nextPage);
-    void fetchRows(table, activeConnectionId, sort, nextPage);
+    void fetchRows(table, activeConnectionId, filter, next, 0, limit);
   }
 
   function startEdit(rowIndex: number, columnIndex: number, currentValue: string | null) {
@@ -603,12 +628,50 @@ export function DbTab({
                 rows={tableRows.rows}
                 sort={sort}
                 onSort={handleSort}
-                layoutKey={`${activeConnectionId}:${table}`}
-                hasPrevPage={page > 0}
-                hasNextPage={hasNextPage}
-                onPrevPage={handlePrevPage}
-                onNextPage={handleNextPage}
                 renderCell={renderCell}
+                layout={layout}
+                onLayoutChange={updateLayout}
+                toolbar={
+                  <GridToolbar
+                    columns={tableRows.columns}
+                    rows={tableRows.rows}
+                    layout={layout}
+                    onLayoutChange={updateLayout}
+                    filter={filter}
+                    onFilterChange={(next) => {
+                      abandonEditForQueryChange();
+                      setFilter(next);
+                      setPage(0);
+                      void fetchRows(table!, activeConnectionId!, next, sort, 0, limit);
+                    }}
+                    sort={sort}
+                    onSortChange={(next) => {
+                      abandonEditForQueryChange();
+                      setSort(next);
+                      setPage(0);
+                      void fetchRows(table!, activeConnectionId!, filter, next, 0, limit);
+                    }}
+                    page={page + 1}
+                    pageCount={Math.max(1, Math.ceil(total / limit))}
+                    onPageChange={(next) => {
+                      abandonEditForQueryChange();
+                      setPage(next - 1);
+                      void fetchRows(table!, activeConnectionId!, filter, sort, next - 1, limit);
+                    }}
+                    limit={limit}
+                    onLimitChange={(next) => {
+                      abandonEditForQueryChange();
+                      setLimit(next);
+                      setPage(0);
+                      void fetchRows(table!, activeConnectionId!, filter, sort, 0, next);
+                    }}
+                    onRefresh={() => {
+                      abandonEditForQueryChange();
+                      void fetchRows(table!, activeConnectionId!, filter, sort, page, limit);
+                    }}
+                    familyOf={(column) => inferFamily(tableRows.rows[0]?.[tableRows.columns.indexOf(column)] ?? null)}
+                  />
+                }
               />
               {!tableRows.pk_column ? (
                 <div className="mt-2.5 text-xs text-text-faint">

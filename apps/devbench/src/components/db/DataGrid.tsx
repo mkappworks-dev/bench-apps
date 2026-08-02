@@ -15,10 +15,8 @@ import {
   MIN_RESIZED_COLUMN_PX,
   ROW_HEIGHT_PX,
   pinOffsets,
-  readLayout,
   visualColumns,
   widthOf,
-  writeLayout,
   type GridLayout,
 } from "./grid/gridLayout";
 
@@ -37,17 +35,17 @@ export interface DataGridProps {
   sort?: SortTerm[];
   /** `additive` is true for shift-click: append/adjust rather than replace. */
   onSort?: (column: string, additive: boolean) => void;
-  hasNextPage?: boolean;
-  hasPrevPage?: boolean;
-  onPrevPage?: () => void;
-  onNextPage?: () => void;
   /** Overrides how a cell renders — the inline-editing UI plugs in here.
    *  `columnIndex` is always the DATA index, never the on-screen position, so
    *  reordering columns can never redirect an edit to the wrong column. */
   renderCell?: (rowIndex: number, columnIndex: number, value: string | null) => ReactNode;
-  /** Identity the saved column layout is stored under (e.g. connection+table).
-   *  Omit to opt out of persistence entirely. */
-  layoutKey?: string;
+  /** Column widths/order/pins/hidden — owned by the caller (not DataGrid)
+   *  since GridToolbar's Columns popover reads and writes the same state. */
+  layout?: GridLayout;
+  onLayoutChange?: (layout: GridLayout) => void;
+  /** Rendered above the scrollable grid, inside the table wrapper — DbTab
+   *  plugs GridToolbar in here. */
+  toolbar?: ReactNode;
 }
 
 export type CellKind = "null" | "unsupported" | "number" | "bool-true" | "bool-false" | "text";
@@ -144,39 +142,33 @@ export function DataGrid({
   rows,
   sort = [],
   onSort,
-  hasNextPage = false,
-  hasPrevPage = false,
-  onPrevPage,
-  onNextPage,
   renderCell,
-  layoutKey,
+  layout = EMPTY_LAYOUT,
+  onLayoutChange,
+  toolbar,
 }: DataGridProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [dragColumn, setDragColumn] = useState<string | null>(null);
-
-  // Layout is keyed by table, so switching tables must swap it during render
-  // rather than in an effect — an effect would let one render paint the
-  // previous table's widths, and would race the save below into the new key.
-  const [stored, setStored] = useState(() => ({ key: layoutKey, layout: readLayout(layoutKey) }));
-  if (stored.key !== layoutKey) {
-    setStored({ key: layoutKey, layout: readLayout(layoutKey) });
-    setFilter("");
-  }
-  const layout = stored.layout;
+  // Live width during an in-progress resize drag, overlaid on `layout` for
+  // display only — onLayoutChange (which the caller may persist) fires once
+  // on release, not on every mousemove.
+  const [liveWidth, setLiveWidth] = useState<{ column: string; width: number } | null>(null);
+  const effectiveLayout = liveWidth
+    ? { ...layout, widths: { ...layout.widths, [liveWidth.column]: liveWidth.width } }
+    : layout;
 
   function updateLayout(next: GridLayout) {
-    setStored({ key: layoutKey, layout: next });
-    writeLayout(layoutKey, next);
+    onLayoutChange?.(next);
   }
 
-  const isPinned = (column: string) => layout.pinned.includes(column);
+  const isPinned = (column: string) => effectiveLayout.pinned.includes(column);
 
   // On-screen order: the saved order, minus columns this table no longer has,
   // plus any it gained — then pinned columns hoisted to the front so "pinned"
   // and "leftmost" can't disagree.
-  const visual = useMemo(() => visualColumns(columns, layout), [columns, layout]);
+  const visual = useMemo(() => visualColumns(columns, effectiveLayout), [columns, effectiveLayout]);
 
   // Undragged, unpinned columns stay flexible (`minmax(…, 1fr)`, matching the
   // mockup's auto-sizing `<table>`). Pinning forces a fixed width because a
@@ -185,23 +177,23 @@ export function DataGrid({
     () =>
       visual
         .map((col) =>
-          layout.widths[col] || layout.pinned.includes(col)
-            ? `${layout.widths[col] ?? MIN_COLUMN_PX}px`
+          effectiveLayout.widths[col] || effectiveLayout.pinned.includes(col)
+            ? `${effectiveLayout.widths[col] ?? MIN_COLUMN_PX}px`
             : `minmax(${MIN_COLUMN_PX}px, 1fr)`,
         )
         .join(" ") + ` ${ACTIONS_COLUMN_PX}px`,
-    [visual, layout],
+    [visual, effectiveLayout],
   );
 
   // Left offset for each pinned column, accumulated across the pinned run.
-  const offsets = useMemo(() => pinOffsets(visual, layout), [visual, layout]);
+  const offsets = useMemo(() => pinOffsets(visual, effectiveLayout), [visual, effectiveLayout]);
 
   // Floor for the header+body wrapper below. Without it, a block-level `auto`
   // width can't grow past its containing block even when the grid's own
   // column minimums need more room — the grid silently overflows its box
   // instead of the box (and its scrollbar) growing to fit. This is what let
   // the header and body compute different widths and drift apart on scroll.
-  const minTableWidth = visual.reduce((sum, col) => sum + widthOf(col, layout), 0) + ACTIONS_COLUMN_PX;
+  const minTableWidth = visual.reduce((sum, col) => sum + widthOf(col, effectiveLayout), 0) + ACTIONS_COLUMN_PX;
 
   // Filtering is over the fetched page only, so a row keeps its original
   // index — that index is what `renderCell` resolves an edit against, and a
@@ -231,18 +223,15 @@ export function DataGrid({
       let latest = startWidth;
       function onMove(ev: MouseEvent) {
         latest = Math.max(MIN_RESIZED_COLUMN_PX, Math.round(startWidth + (ev.clientX - startX)));
-        setStored((prev) => ({ ...prev, layout: { ...prev.layout, widths: { ...prev.layout.widths, [column]: latest } } }));
+        setLiveWidth({ column, width: latest });
       }
       // Saved once on release rather than on every mousemove: a drag is one
       // decision, and writing storage per frame would be dozens of writes for it.
       function onUp() {
         window.removeEventListener("mousemove", onMove);
         window.removeEventListener("mouseup", onUp);
-        setStored((prev) => {
-          const next = { ...prev.layout, widths: { ...prev.layout.widths, [column]: latest } };
-          writeLayout(layoutKey, next);
-          return { ...prev, layout: next };
-        });
+        setLiveWidth(null);
+        updateLayout({ ...layout, widths: { ...layout.widths, [column]: latest } });
       }
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
@@ -251,17 +240,17 @@ export function DataGrid({
 
   function togglePinned(column: string) {
     const pinned = isPinned(column)
-      ? layout.pinned.filter((c) => c !== column)
-      : [...layout.pinned, column];
+      ? effectiveLayout.pinned.filter((c) => c !== column)
+      : [...effectiveLayout.pinned, column];
     updateLayout({
-      ...layout,
+      ...effectiveLayout,
       pinned,
       order: visual,
       // Pinning fixes the width, so capture whatever it currently is rather
       // than snapping the column to the default on pin.
-      widths: pinned.includes(column) && !layout.widths[column]
-        ? { ...layout.widths, [column]: measuredWidth(column) }
-        : layout.widths,
+      widths: pinned.includes(column) && !effectiveLayout.widths[column]
+        ? { ...effectiveLayout.widths, [column]: measuredWidth(column) }
+        : effectiveLayout.widths,
     });
   }
 
@@ -282,7 +271,7 @@ export function DataGrid({
     // inserting at the target's new index would put it back where it started.
     const anchor = next.indexOf(targetColumn);
     next.splice(from < to ? anchor + 1 : anchor, 0, column);
-    updateLayout({ ...layout, order: next });
+    updateLayout({ ...effectiveLayout, order: next });
   }
 
   /** Keyboard equivalent of the header drag — dragging alone would make
@@ -336,10 +325,13 @@ export function DataGrid({
   }
 
   const layoutIsCustomised =
-    layout.order.length > 0 || layout.pinned.length > 0 || Object.keys(layout.widths).length > 0;
+    effectiveLayout.order.length > 0 ||
+    effectiveLayout.pinned.length > 0 ||
+    Object.keys(effectiveLayout.widths).length > 0;
 
   return (
     <div className="overflow-hidden rounded-lg border border-border" role="table" aria-rowcount={rows.length}>
+      {toolbar}
       <div className="flex items-center gap-2 border-b border-border bg-surface px-3 py-1.5">
         <input
           value={filter}
@@ -562,30 +554,6 @@ export function DataGrid({
           Couldn't copy row: {copyError}
         </div>
       ) : null}
-
-      <div className="flex items-center justify-between border-t border-border bg-surface px-3 py-2 text-xs text-text-faint">
-        <span>
-          {rows.length} row{rows.length === 1 ? "" : "s"}
-        </span>
-        <div className="flex gap-1.5">
-          <button
-            type="button"
-            disabled={!hasPrevPage}
-            onClick={onPrevPage}
-            className="flex h-7.5 items-center rounded-sm px-2.25 hover:bg-surface-2 hover:text-text disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-text-faint"
-          >
-            Prev
-          </button>
-          <button
-            type="button"
-            disabled={!hasNextPage}
-            onClick={onNextPage}
-            className="flex h-7.5 items-center rounded-sm px-2.25 hover:bg-surface-2 hover:text-text disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-text-faint"
-          >
-            Next
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

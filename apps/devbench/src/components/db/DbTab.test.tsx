@@ -41,6 +41,7 @@ describe("DbTab", () => {
   beforeEach(() => {
     vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(0);
     useAppStore.getState().setActiveConnectionId("c1");
   });
 
@@ -135,22 +136,20 @@ describe("DbTab", () => {
     await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ orderBy: [{ column: "status", descending: true, enabled: true }] })));
   });
 
-  // The backend never returns a total count, so a request for PAGE_SIZE+1
-  // rows is how hasNextPage is grounded in fact instead of guessed from "the
-  // page came back full" — a table with exactly 100 rows would otherwise
-  // show a Next button that leads nowhere.
+  // Page count now comes from a separate invokeCountTableRows call, fired
+  // alongside the row fetch rather than derived from how many rows came back.
   it("advances to the next page and requests the corresponding offset", async () => {
-    const overfullPage = Array.from({ length: 101 }, (_, i) => [String(i)]);
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id"],
-      rows: overfullPage,
+      rows: [["1"]],
       pk_column: "id",
     });
+    vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(150);
 
     renderDb("orders");
     await waitFor(() => expect(listRows).toHaveBeenCalled());
 
-    fireEvent.click(await screen.findByRole("button", { name: "Next" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Next page" }));
 
     await waitFor(() =>
       expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ offset: 100 })),
@@ -164,9 +163,45 @@ describe("DbTab", () => {
       rows: exactPage,
       pk_column: "id",
     });
+    vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(100);
 
     renderDb("orders");
-    expect(await screen.findByRole("button", { name: "Next" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Next page" })).toBeDisabled();
+  });
+
+  it("sends the applied filter to both the row query and the count", async () => {
+    const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id", "status"], rows: [["1", "paid"]], pk_column: "id",
+    });
+    const count = vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(1);
+
+    renderDb("orders");
+    await waitFor(() => expect(listRows).toHaveBeenCalled());
+
+    fireEvent.click(await screen.findByRole("button", { name: "Filter" }));
+    fireEvent.click(screen.getByRole("button", { name: /add filter/i }));
+    // FilterPopover disambiguates per-row controls as "Filter column, condition
+    // N" (a11y fix from an earlier task) — a plain-string match here would miss.
+    fireEvent.change(screen.getByRole("combobox", { name: /^Filter column/ }), { target: { value: "status" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Filter value" }), { target: { value: "paid" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    const expected = [{ column: "status", op: "eq", value: "paid", enabled: true }];
+    await waitFor(() =>
+      expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ filter: expected, offset: 0 })),
+    );
+    expect(count).toHaveBeenLastCalledWith("c1", "orders", expected);
+  });
+
+  it("derives the page count from the total, not from the fetched rows", async () => {
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id"], rows: [["1"]], pk_column: "id",
+    });
+    vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(250);
+
+    renderDb("orders");
+    // 250 rows at 100 per page is 3 pages.
+    expect(await screen.findByText("of 3")).toBeInTheDocument();
   });
 
   // Same reasoning as a table switch, one level up: the table stays open but
@@ -201,9 +236,10 @@ describe("DbTab", () => {
   it("selecting a different table resets sort and page", async () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id"],
-      rows: Array.from({ length: 101 }, (_, i) => [String(i)]),
+      rows: [["1"]],
       pk_column: "id",
     });
+    vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(150);
     vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([
       { schema: "public", name: "orders" },
       { schema: "public", name: "payments" },
@@ -211,7 +247,7 @@ describe("DbTab", () => {
 
     render(<DbTabHarness initialTable="orders" />);
     await waitFor(() => expect(listRows).toHaveBeenCalled());
-    fireEvent.click(await screen.findByRole("button", { name: "Next" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Next page" }));
     await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ offset: 100 })));
 
     fireEvent.click(await screen.findByRole("button", { name: "Browse payments" }));
@@ -226,7 +262,7 @@ describe("DbTab", () => {
   });
 
   // Regression guard for a bug caught in review: the previous table's grid
-  // (with its own hasNextPage and sort columns) stayed mounted and clickable
+  // (with its own toolbar and sort columns) stayed mounted and clickable
   // for the entire window between selecting a new table and that table's
   // first fetch resolving. A Next click landed during that window before
   // requested an offset against a table whose page 0 had never been fetched.
@@ -236,16 +272,17 @@ describe("DbTab", () => {
     const deferredPaymentsFetch: { resolve: ((value: TableRows) => void) | null } = { resolve: null };
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation((_conn, t) => {
       if (t === "orders") {
-        return Promise.resolve({
-          columns: ["id"],
-          rows: Array.from({ length: 101 }, (_, i) => [String(i)]),
-          pk_column: "id",
-        });
+        return Promise.resolve({ columns: ["id"], rows: [["1"]], pk_column: "id" });
       }
       return new Promise<TableRows>((resolve) => {
         deferredPaymentsFetch.resolve = resolve;
       });
     });
+    // orders spans multiple pages (Next enabled); payments' single row is
+    // one page (Next ends up disabled once it loads).
+    vi.spyOn(tauriLib, "invokeCountTableRows").mockImplementation((_conn, t) =>
+      Promise.resolve(t === "orders" ? 150 : 1),
+    );
     vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([
       { schema: "public", name: "orders" },
       { schema: "public", name: "payments" },
@@ -253,20 +290,20 @@ describe("DbTab", () => {
 
     render(<DbTabHarness initialTable="orders" />);
     await waitFor(() => expect(listRows).toHaveBeenCalledWith("c1", "orders", expect.anything()));
-    expect(await screen.findByRole("button", { name: "Next" })).not.toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Next page" })).not.toBeDisabled();
 
     fireEvent.click(await screen.findByRole("button", { name: "Browse payments" }));
 
-    // Still inside payments' loading window: orders' grid — and its Next
-    // button, which described orders' pages, not payments' — must be gone,
+    // Still inside payments' loading window: orders' toolbar — and its Next
+    // control, which described orders' pages, not payments' — must be gone,
     // not merely disabled-but-present-and-stale.
-    expect(screen.queryByRole("button", { name: "Next" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Next page" })).not.toBeInTheDocument();
     expect(screen.getByText("Loading…")).toBeInTheDocument();
     expect(listRows).not.toHaveBeenCalledWith("c1", "payments", expect.objectContaining({ offset: 100 }));
 
     expect(deferredPaymentsFetch.resolve).not.toBeNull();
     deferredPaymentsFetch.resolve?.({ columns: ["id"], rows: [["1"]], pk_column: "id" });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Next" })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Next page" })).toBeDisabled());
     expect(listRows).toHaveBeenLastCalledWith("c1", "payments", expect.objectContaining({ orderBy: [], offset: 0 }));
   });
 

@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach, beforeAll } from "vitest";
-import { DataGrid } from "./DataGrid";
+import { DataGrid, type DataGridProps } from "./DataGrid";
+import { EMPTY_LAYOUT, type GridLayout } from "./grid/gridLayout";
 
 // jsdom gives every element a height of 0, which makes TanStack Virtual
 // compute a zero-row viewport and render nothing (see LogStream.test.tsx,
@@ -25,6 +27,17 @@ function columnOrder(): string[] {
   return [...document.querySelectorAll('[role="columnheader"][data-column]')].map(
     (h) => (h as HTMLElement).dataset.column ?? "",
   );
+}
+
+// DataGrid takes `layout` as a controlled prop (widths/order/pins/hidden) —
+// this harness plays the role DbTab does in production, feeding
+// onLayoutChange's result back in as the next render's layout.
+function ControlledGrid({
+  initialLayout = EMPTY_LAYOUT,
+  ...props
+}: Omit<DataGridProps, "layout" | "onLayoutChange"> & { initialLayout?: GridLayout }) {
+  const [layout, setLayout] = useState(initialLayout);
+  return <DataGrid {...props} layout={layout} onLayoutChange={setLayout} />;
 }
 
 describe("DataGrid", () => {
@@ -82,19 +95,6 @@ describe("DataGrid", () => {
     expect(screen.getByTestId("sort-chevron-id")).toHaveClass("rotate-180");
   });
 
-  it("disables Prev on the first page and Next when there is no next page", () => {
-    render(<DataGrid columns={["id"]} rows={[]} hasPrevPage={false} hasNextPage={false} />);
-    expect(screen.getByRole("button", { name: "Prev" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
-  });
-
-  it("calls onNextPage when Next is enabled and clicked", () => {
-    const onNextPage = vi.fn();
-    render(<DataGrid columns={["id"]} rows={[]} hasNextPage onNextPage={onNextPage} />);
-    fireEvent.click(screen.getByRole("button", { name: "Next" }));
-    expect(onNextPage).toHaveBeenCalled();
-  });
-
   it("copies a row as tab-separated values", async () => {
     render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
     fireEvent.click(screen.getByRole("button", { name: "Copy row as tab-separated values" }));
@@ -148,7 +148,7 @@ describe("DataGrid", () => {
   // Mirrors the mockup's `.th-resize` drag handle: dragging pins that one
   // column to a fixed px width while every other column stays flexible.
   it("dragging a column's resize handle fixes that column's width, leaving others flexible", () => {
-    render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
+    render(<ControlledGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
     const headerRow = screen.getByRole("button", { name: "Sort by id" }).closest('[role="row"]') as HTMLElement;
     expect(headerRow.style.gridTemplateColumns).toBe("minmax(140px, 1fr) minmax(140px, 1fr) 90px");
 
@@ -223,7 +223,7 @@ describe("DataGrid", () => {
   });
 
   it("reorders a column with Alt+Arrow, giving the header drag a keyboard equivalent", () => {
-    render(<DataGrid columns={["id", "status", "amount"]} rows={[]} layoutKey="t" />);
+    render(<ControlledGrid columns={["id", "status", "amount"]} rows={[]} />);
     expect(columnOrder()).toEqual(["id", "status", "amount"]);
 
     fireEvent.keyDown(screen.getByRole("button", { name: "Sort by status" }), { key: "ArrowRight", altKey: true });
@@ -239,10 +239,9 @@ describe("DataGrid", () => {
   it("keeps renderCell on the DATA column index after a reorder, not the on-screen position", () => {
     const calls: { columnIndex: number; value: string | null }[] = [];
     render(
-      <DataGrid
+      <ControlledGrid
         columns={["id", "status", "amount"]}
         rows={[["1", "paid", "99"]]}
-        layoutKey="t"
         renderCell={(_r, columnIndex, value) => {
           calls.push({ columnIndex, value });
           return <span>{value}</span>;
@@ -257,33 +256,18 @@ describe("DataGrid", () => {
     expect(amount.at(-1)?.columnIndex).toBe(2);
   });
 
-  it("freezes a column to the left edge and remembers it under the layout key", () => {
-    const { unmount } = render(<DataGrid columns={["id", "status"]} rows={[]} layoutKey="conn:orders" />);
+  // Persisting layout across a table switch (the previous "remembers it under
+  // the layout key" behaviour) moved to DbTab along with the `stored`/
+  // `updateLayout` state — DataGrid now just reflects whatever `layout` prop
+  // it's given. The storage round-trip itself (including the corrupt-JSON
+  // fallback) is still covered directly in gridLayout.test.ts.
+  it("freezes a column to the left edge, reporting the change via onLayoutChange", () => {
+    render(<ControlledGrid columns={["id", "status"]} rows={[]} />);
     fireEvent.click(screen.getByRole("button", { name: "Freeze id" }));
 
     const header = document.querySelector('[data-column="id"]') as HTMLElement;
     expect(header.style.position).toBe("sticky");
     expect(screen.getByRole("button", { name: "Unfreeze id" })).toHaveAttribute("aria-pressed", "true");
-
-    unmount();
-    render(<DataGrid columns={["id", "status"]} rows={[]} layoutKey="conn:orders" />);
-    expect(screen.getByRole("button", { name: "Unfreeze id" })).toBeInTheDocument();
-  });
-
-  it("keeps each table's layout separate, so one table's widths never leak into another's", () => {
-    const { unmount } = render(<DataGrid columns={["id", "status"]} rows={[]} layoutKey="conn:orders" />);
-    fireEvent.click(screen.getByRole("button", { name: "Freeze id" }));
-    unmount();
-
-    render(<DataGrid columns={["id", "status"]} rows={[]} layoutKey="conn:products" />);
-    expect(screen.getByRole("button", { name: "Freeze id" })).toBeInTheDocument();
-  });
-
-  it("a corrupt saved layout falls back to defaults instead of breaking the grid", () => {
-    localStorage.setItem("devbench.grid-layout.conn:orders", "{not json");
-    render(<DataGrid columns={["id", "status"]} rows={[["1", "paid"]]} layoutKey="conn:orders" />);
-    expect(columnOrder()).toEqual(["id", "status"]);
-    expect(screen.getByText("paid")).toBeInTheDocument();
   });
 
   it("shows visible feedback when a clipboard copy fails, instead of failing silently", async () => {
