@@ -469,14 +469,37 @@ mod tests {
         assert!(rollback_preview_impl(&previews, "not-a-real-id").await.is_err());
     }
 
-    // `preview_cell_edit_impl` now takes a `&QualifiedTable`, so a malicious
-    // table name can no longer be passed to it at all — the guarantee moved
-    // to `QualifiedTable::new`.
-    #[test]
-    fn preview_cell_edit_rejects_malicious_identifiers() {
-        let result =
-            crate::commands::qualified_table::QualifiedTable::new("public", "orders; DROP TABLE users; --");
-        assert!(result.is_err());
+    // `pk_column` and `column` are still bare `&str`, validated at runtime
+    // inside `preview_cell_edit_impl` — unlike `table`, which is now a
+    // `QualifiedTable` and can't carry a malicious value at all.
+    #[tokio::test]
+    async fn preview_cell_edit_rejects_a_malicious_pk_column() {
+        let (_dir, sqlite) = db().await;
+        let secrets = InMemorySecretStore::default();
+        let created = create_connection_impl(&sqlite.pool, &secrets, local_dev_input()).await.unwrap();
+        let registry = ConnectionRegistry::new();
+        let previews = PendingPreviewRegistry::new();
+
+        let result = preview_cell_edit_impl(
+            &registry, &previews, &sqlite.pool, &secrets, &created.id,
+            &public("orders"), "id; DROP TABLE users; --", "1", "status", Some("shipped"), 0,
+        ).await;
+        assert!(result.is_err(), "a malicious pk_column must be rejected before it reaches SQL");
+    }
+
+    #[tokio::test]
+    async fn preview_cell_edit_rejects_a_malicious_column() {
+        let (_dir, sqlite) = db().await;
+        let secrets = InMemorySecretStore::default();
+        let created = create_connection_impl(&sqlite.pool, &secrets, local_dev_input()).await.unwrap();
+        let registry = ConnectionRegistry::new();
+        let previews = PendingPreviewRegistry::new();
+
+        let result = preview_cell_edit_impl(
+            &registry, &previews, &sqlite.pool, &secrets, &created.id,
+            &public("orders"), "id", "1", "status; DROP TABLE users; --", Some("shipped"), 0,
+        ).await;
+        assert!(result.is_err(), "a malicious column must be rejected before it reaches SQL");
     }
 
     #[tokio::test]

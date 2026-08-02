@@ -101,15 +101,23 @@ pub async fn get_primary_key_column(
     pool: &PgPool,
     table: &crate::commands::qualified_table::QualifiedTable,
 ) -> Result<String, String> {
-    // Postgres auto-names single-column PK constraints "<table>_pkey", so two
-    // same-named tables in different schemas (this refactor's whole reason
-    // for existing) can share a constraint_name. The join must also pin
-    // constraint_schema, or the WHERE's table_schema filter still lets the
-    // other schema's same-named constraint's columns leak into the join.
+    // pg_constraint's uniqueness rule is UNIQUE (conrelid, contypid, conname):
+    // a constraint name is only guaranteed unique per relation, not per
+    // schema. Two tables in the SAME schema can legally share a constraint
+    // name — a hand-named foreign key with no backing index has nothing
+    // stopping it from colliding with another table's "<table>_pkey" — and
+    // key_column_usage includes FK constraints (contype='f'), so an
+    // unqualified join would pull that FK's columns into this PK lookup and
+    // inflate the row count into a false composite-key error. Pinning both
+    // constraint_schema and the owning table (table_schema, table_name) on
+    // both sides keys the join to the exact relation pg_constraint actually
+    // guarantees uniqueness against.
     let rows = sqlx::query(
         "SELECT kcu.column_name FROM information_schema.table_constraints tc \
          JOIN information_schema.key_column_usage kcu \
-           ON tc.constraint_name = kcu.constraint_name AND tc.constraint_schema = kcu.constraint_schema \
+           ON tc.constraint_name = kcu.constraint_name \
+          AND tc.constraint_schema = kcu.constraint_schema \
+          AND tc.table_schema = kcu.table_schema AND tc.table_name = kcu.table_name \
          WHERE tc.constraint_type = 'PRIMARY KEY' \
            AND tc.table_name = $1 AND tc.table_schema = $2",
     )
@@ -173,7 +181,9 @@ pub async fn list_table_rows_impl(
     limit: i64,
     offset: i64,
 ) -> Result<TableRows, String> {
-    // The table is validated by construction. Sort columns are not.
+    // The table is validated by construction. Sort columns are not — every
+    // term is validated before any is interpolated, because identifiers
+    // (unlike values) can't be bound as parameters.
     for term in order_by {
         validate_identifier(&term.column)?;
     }
@@ -286,6 +296,10 @@ pub async fn count_table_rows(
 mod tests {
     use super::*;
 
+    fn public(name: &str) -> crate::commands::qualified_table::QualifiedTable {
+        crate::commands::qualified_table::QualifiedTable::new("public", name).unwrap()
+    }
+
     fn asc_on(column: &str) -> SortTerm {
         SortTerm { column: column.to_string(), descending: false, enabled: true }
     }
@@ -396,16 +410,6 @@ mod tests {
         for (input, desc) in test_cases {
             assert!(validate_identifier(input).is_err(), "should reject {} in table name", desc);
         }
-    }
-
-    // `list_table_rows_impl` now takes a `&QualifiedTable`, so a malicious
-    // table name can no longer be passed to it at all — the guarantee moved
-    // to `QualifiedTable::new`.
-    #[test]
-    fn list_table_rows_rejects_malicious_table_name() {
-        let result =
-            crate::commands::qualified_table::QualifiedTable::new("public", "orders; DROP TABLE users; --");
-        assert!(result.is_err(), "should reject malicious table name before it can reach SQL");
     }
 
     #[tokio::test]
@@ -611,6 +615,44 @@ mod tests {
         sqlx::query("DROP TABLE composite_pk_test").execute(&pool).await.unwrap();
     }
 
+    // pg_constraint only guarantees a constraint name is unique per relation,
+    // not per schema, so a hand-named FK on an unrelated table can legally
+    // collide with another table's auto-named "<table>_pkey". key_column_usage
+    // includes FK constraints, so joining table_constraints to it on just
+    // constraint_name (+ constraint_schema) pulls that FK's column into this
+    // table's PK lookup and inflates the row count into a false composite-key
+    // error. The join must also pin the constraint's owning relation
+    // (table_schema, table_name) on both sides.
+    #[tokio::test]
+    async fn a_same_named_foreign_key_on_another_table_does_not_corrupt_the_pk_lookup() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS fk_collision_source").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS fk_collision_target").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE fk_collision_target (id serial PRIMARY KEY, tag text)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE fk_collision_source (id serial PRIMARY KEY, target_id int)")
+            .execute(&pool).await.unwrap();
+        // Postgres auto-names fk_collision_target's PK constraint
+        // "fk_collision_target_pkey". Naming this FK the exact same string
+        // reproduces the collision — legal, since pg_constraint's uniqueness
+        // is per relation (conrelid), not per schema.
+        sqlx::query(
+            "ALTER TABLE fk_collision_source ADD CONSTRAINT fk_collision_target_pkey \
+             FOREIGN KEY (target_id) REFERENCES fk_collision_target(id)",
+        )
+        .execute(&pool).await.unwrap();
+
+        let result = get_primary_key_column(&pool, &public("fk_collision_target")).await;
+        assert_eq!(
+            result.as_deref(),
+            Ok("id"),
+            "an unrelated table's same-named FK must not leak into this table's PK lookup: {result:?}"
+        );
+
+        sqlx::query("DROP TABLE fk_collision_source").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE fk_collision_target").execute(&pool).await.unwrap();
+    }
+
     #[tokio::test]
     async fn a_disabled_sort_term_is_not_applied() {
         let pool = test_pool().await;
@@ -725,20 +767,6 @@ mod tests {
         assert_eq!(page.rows[0][n], Some("2".to_string()), "OFFSET must skip the first match");
 
         sqlx::query("DROP TABLE filter_page_test").execute(&pool).await.unwrap();
-    }
-
-    // `count_table_rows_impl` now takes a `&QualifiedTable`, so a malicious
-    // table name can no longer be passed to it at all — the guarantee moved
-    // to `QualifiedTable::new`.
-    #[test]
-    fn count_rejects_a_malicious_table_name() {
-        let result =
-            crate::commands::qualified_table::QualifiedTable::new("public", "orders; DROP TABLE users; --");
-        assert!(result.is_err());
-    }
-
-    fn public(name: &str) -> crate::commands::qualified_table::QualifiedTable {
-        crate::commands::qualified_table::QualifiedTable::new("public", name).unwrap()
     }
 
     // The catalog lookups matched on table_name alone, so a table name present
