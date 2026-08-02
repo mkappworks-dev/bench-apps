@@ -5,7 +5,7 @@ client-side filter bar shipped in `56b8af6` and replaces the single-preview
 cell-edit write model.
 
 The mockup — `docs/mockups/devbench-db-connections.html` — was built first and
-covers all three slices. It is runnable and is the visual source of truth; every
+covers all four slices. It is runnable and is the visual source of truth; every
 layout number below was measured in it.
 
 ## Why
@@ -30,7 +30,8 @@ Four things it cannot do are the ones that come up while actually debugging:
 | Header vs toolbar | Both, one shared state | Direct manipulation is faster; popovers are discoverable and precise. |
 | Pending changes | Staged diff, applied in one transaction | Holding N open transactions pins N pool connections and holds row locks while the user thinks. |
 | Booleans | A checkbox, toggled in place | The one column type whose entire value space fits in a control. |
-| Query console | Preview for real, then stage | Keeps the console's DB-verified preview while unifying where changes land. |
+| Query console | Run for real, then stage | Keeps the DB-verified result while unifying where changes land. |
+| Queries | A tab, listed beside tables | A saved query is a document you return to, not a drawer you toggle. |
 
 ## 1. Shell: the right dock becomes a slot
 
@@ -88,12 +89,81 @@ pushes the toolbar or its pager out of view.
 
 ## 3. Pending button
 
-`[Pending N]` lives in the **pane strip**, next to Query console — not in the
-grid toolbar. Both are pane-level surfaces about work in flight, and the
-pending set spans tables rather than belonging to the one grid below it.
+`[Pending N]` lives in the **pane strip** on a table tab, and in the **query
+head** on a query tab — not in the grid toolbar. It is a pane-level surface: the
+pending set spans tables and queries rather than belonging to the one grid
+below it.
 
 It is hidden entirely when the set is empty, so it never advertises a state
 that does not exist.
+
+## 3a. The rail
+
+Every tab kind shares one rail, in three stacked parts:
+
+```
+┌─────────────────────┐
+│ Local Dev        ▾  │   connection
+├─────────────────────┤
+│ [ TABLES │ QUERIES ]│   segmented control
+├─────────────────────┤
+│ orders            👁 │   the list
+│ payments          👁 │
+│ users             👁 │
+└─────────────────────┘
+```
+
+Queries are a **peer of tables**, not a drawer beneath them: both are things
+this connection contains, and both open into the main pane. The Queries segment
+adds a `+ New query` footer; the Tables segment does not (tables are not created
+from here).
+
+## 3b. Query tabs
+
+Selecting a query opens it as **its own tab** beside the DB tab, and selecting
+the same query again focuses that tab rather than stacking a duplicate — one
+saved query is one document.
+
+A query tab is visually distinct from a table tab: a `--query-tint` ground
+(`rgba(255,255,255,.035)` dark, `rgba(16,21,31,.03)` light) on the tab and the
+pane's chrome, a brighter bottom edge on the active tab, and a mono label. **A
+tint of the surface's own light, not a hue** — semantic colour stays reserved
+for actual state, and a coloured tab would compete with the pending panel's
+own colour-coding.
+
+The pane layout:
+
+```
+[▶ Run query ⌘⏎]  failed orders today            [Pending 2]   ← 44px head, tinted
+──────────────────────────────────────────────────────────────
+SELECT id, status, amount                                       ← editor, full bleed,
+FROM orders                                                       on --bg
+WHERE status = 'failed';
+                        ▂▂▂▂                                    ← resize grip, bottom centre
+──────────────────────────────────────────────────────────────  ← divider
+RAN · in an open transaction — rolled back unless staged         ← results, on --bg
+┌──────┬──────────┬───────────┐
+│ ID   │ STATUS   │ AMOUNT    │
+└──────┴──────────┴───────────┘
+                        [Discard] [Add to pending]
+```
+
+- **Run leads, then the name.** On a tab whose purpose is executing something,
+  the action is the subject and the name is what you are acting on. A 10px gap
+  separates them.
+- **The name is editable in place.** Renaming updates the saved query and its
+  tab label together; the tab label is patched directly rather than by
+  re-rendering, so the caret stays in the field while typing.
+- **The editor runs edge to edge**, with no gutter of its own — it is the
+  content of the pane, not a field inside it.
+- **The resize grip is a small centred pill** in a full-width hit zone at the
+  editor's bottom edge, so the affordance reads as "bottom middle" rather than
+  a bar spanning the pane. Range 90–560px.
+- **Editor and results share `--bg`.** The tint marks *"this is a query"* as a
+  chrome signal; the SQL you write and the rows you get back are ordinary
+  content and sit on the same ground as everywhere else.
+- **Run query, Discard and Add to pending are all 28px**, set by their rows
+  rather than by each button (§14).
 
 ## 4. Filter and Sort popovers
 
@@ -322,22 +392,31 @@ A row action in the actions column stages a delete. It requires a
 single-column primary key — the same rule that already governs whether a cell
 is editable.
 
-## 12. Query console integration
+## 12. Query execution and staging
 
-The console keeps its real preview: **Preview** opens a transaction, runs the
-statement, shows the effect, then rolls back.
+The bottom drawer is gone (§3b). What was the query console is now a query tab,
+and its Preview/Commit pair becomes Run query / Add to pending.
 
-Its **Commit** button becomes **Add to pending**, recording the statement with
-the effect the preview reported. At Apply the statement is **re-run** inside the
-changeset transaction.
+**Run query** opens a transaction, runs the statement, shows the effect, then
+rolls back. The result is labelled `RAN — in an open transaction, rolled back
+unless you add it to Pending`, so nothing about it reads as written.
 
-Re-running means the effect can differ from what the preview showed if the data
-moved in between. The panel therefore stores and displays the previewed effect
-("1 row affected when previewed") so a divergence is visible after Apply rather
-than silent.
+**Add to pending** records the statement together with the effect the run
+reported. At Apply the statement is **re-run** inside the changeset transaction.
+**Discard** drops the result and stages nothing.
 
-`preview_state` and its sweep **stay** for this path — the console genuinely
-needs an open transaction to show an effect.
+Re-running means the effect can differ from what the run showed if the data
+moved in between. The panel therefore stores and displays the reported effect
+("1 row affected when run") so a divergence is visible after Apply rather than
+silent.
+
+`preview_state` and its sweep **stay** for this path — running a statement to
+show its effect genuinely needs an open transaction. Only the *cell-edit* use of
+that machinery is retired (§15).
+
+Naming: the button says "Run query" rather than "Preview" because it does run,
+for real, against the database. Calling that a preview understated it. What is
+provisional is the *transaction*, and the result label says so.
 
 ## 13. Backend commands
 
@@ -380,12 +459,18 @@ parallel with** the first page, so the grid never waits on it; the pager shows
 **One secondary button** (`.btn-secondary` in the mockup): a hairline of the
 surface's own light (`rgba(255,255,255,.16)` dark / `rgba(16,21,31,.18)` light)
 over a 4%-tint fill, rather than a `--border` hairline, which disappears on a
-translucent panel. Used for Add / Cancel / Discard all / Show all, and for
-Pending and Query console in the pane strip.
+translucent panel. Used for Add / Cancel / Discard / Discard all / Show all, the
+sort direction toggle, and Pending in the pane strip.
 
-**Footers own button height**, not buttons: a popover footer sets 26px for both
-its secondary and primary buttons, a dock footer sets 30px. This is what stops
-a secondary and its primary from drifting apart.
+**Rows own button height**, not buttons: a popover footer sets 26px for both its
+secondary and primary buttons, a dock footer 30px, the query head and its
+actions row 28px. This is what stops a secondary and its primary from drifting
+apart, and it means a button added to any of those rows inherits the right
+height without carrying a number of its own.
+
+**`.primary` must be `inline-flex`.** The app sets `svg { display: block }`
+globally, so an icon inside a block-level button stacks above its label rather
+than sitting beside it.
 
 **Checkboxes are drawn, not native**: 14px, 4px radius, transparent with a faint
 border when off, accent fill with an inset tick when on. A UA checkbox is ~16px,
@@ -405,7 +490,8 @@ write reported as failed, and a leaked transaction) must be re-checked against
 the new model in review.
 
 Also removed: the client-side filter bar, its state and counter; the bottom
-pager strip; the boolean pills.
+pager strip; the boolean pills; and the query console drawer entirely — its
+toggle button, resize handle, height state and open/closed flag.
 
 **Kept:** `preview_state`, the sweep and the preview/rollback commands — the
 query console still uses them (§12).
@@ -460,8 +546,12 @@ and bottom pager.
 the jump, and supplies the real column types Slice 1's operators want.
 
 **Slice 3 — writes.** Insert panel, row delete, pending changes panel, boolean
-toggling, `apply_changes`, query console staging. Retires the single-preview
-machinery.
+toggling, `apply_changes`. Retires the single-preview machinery.
+
+**Slice 4 — queries as tabs.** Rail segmented control, saved-query list, query
+tab kind and its tint, the query pane (Run query, editable name, full-bleed
+editor, resize grip, results), Add to pending. Removes the console drawer.
+Depends on Slice 3 for the pending set that Add to pending writes into.
 
 Slice 3 depends on Slice 2's `describe_columns` for the insert panel's field
 types.

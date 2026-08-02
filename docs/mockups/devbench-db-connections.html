@@ -21,6 +21,9 @@
     /* Secondary buttons on glass: a hairline of the surface's own light, not a
        --border hairline, which disappears against a translucent panel. */
     --btn-ghost-border: rgba(255,255,255,.16); --btn-ghost-bg: rgba(255,255,255,.04);
+    /* Query surfaces: a tint of the page's own light, not a hue — semantic
+       colour stays reserved for actual state (DESIGN.md). */
+    --query-tint: rgba(255,255,255,.035); --query-edge: rgba(255,255,255,.28);
     --radius-sm: 6px; --radius-lg: 12px;
     --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
     --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Consolas, monospace;
@@ -37,6 +40,7 @@
     --glass-bg: rgba(255,255,255,.78); --glass-border: rgba(16,21,31,.07);
     --glass-hi: inset 0 1px 0 rgba(255,255,255,.6);
     --btn-ghost-border: rgba(16,21,31,.18); --btn-ghost-bg: rgba(16,21,31,.03);
+    --query-tint: rgba(16,21,31,.03); --query-edge: rgba(16,21,31,.35);
   }
 
   * { box-sizing: border-box; }
@@ -114,7 +118,9 @@
   .field { height: 34px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); padding: 0 11px; display: flex; align-items: center; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text); }
   input.field, select.field, textarea.field { width: 100%; outline: none; }
   textarea.field { padding: 9px 11px; height: auto; min-height: 74px; resize: vertical; line-height: 1.6; }
-  .primary { appearance: none; border: 0; cursor: pointer; height: 34px; padding: 0 16px; border-radius: var(--radius-sm); background: var(--accent); color: var(--accent-on); font-size: var(--fs-md); font-weight: 700; }
+  /* inline-flex, not the default block: `svg { display: block }` applies
+     globally, so an icon inside a plain button stacks above its label. */
+  .primary { appearance: none; border: 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; height: 34px; padding: 0 16px; border-radius: var(--radius-sm); background: var(--accent); color: var(--accent-on); font-size: var(--fs-md); font-weight: 700; }
   .primary:hover { background: var(--accent-strong); }
 
   .tree-item { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border-radius: var(--radius-sm); cursor: pointer; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-muted); border: 0; background: transparent; width: 100%; text-align: left; }
@@ -134,6 +140,48 @@
 
   /* DB tab left rail: connection picker replaces the plain "devbench_test" label */
   .rail { width: 210px; min-width: 210px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+  /* Connection, then what you are browsing, then the list. Queries are a peer
+     of tables rather than a drawer under them — both are things this database
+     contains and both open into the main pane. */
+  .rail-seg { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  .segmented { display: flex; padding: 2px; gap: 2px; border-radius: var(--radius-sm); background: var(--surface-2); }
+  .seg-btn { flex: 1; appearance: none; border: 0; background: transparent; cursor: pointer; height: 22px; border-radius: 4px; color: var(--text-faint); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+  .seg-btn:hover { color: var(--text-muted); }
+  .seg-btn[aria-selected="true"] { background: var(--surface); color: var(--text); }
+  .rail-foot { border-top: 1px solid var(--border); padding: 6px; }
+
+  /* A query tab is a different KIND of thing from a table tab, so it reads
+     differently: mono label and a tinted ground carried through to its pane,
+     rather than a hue that would collide with the semantic palette. */
+  .tab.query[aria-selected="true"] { background: var(--query-tint); color: var(--text); box-shadow: inset 0 -2px 0 var(--query-edge); }
+  .tab.query .sub { font-family: var(--font-mono); }
+  .query-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--query-tint); }
+  /* gap: 10px is the "small gap" between Run and the name — enough to read as
+     two things, tight enough to read as one group. */
+  .query-head { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 10px 0 12px; border-bottom: 1px solid var(--border); }
+  /* The name is the document's title, so it is edited in place rather than
+     behind a rename dialog. Borderless until you go near it. */
+  .query-name { flex: 1; min-width: 0; height: 28px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; padding: 0 8px; color: var(--text); font-size: var(--fs-md); font-weight: 600; outline: none; }
+  .query-name:hover { border-color: var(--border); }
+  .query-name:focus { border-color: var(--text-faint); background: var(--bg); }
+
+  /* Full bleed: the editor is the content of this pane, not a field sitting
+     inside it, so it runs edge to edge with no gutter of its own. */
+  .query-editor-wrap { position: relative; flex-shrink: 0; border-bottom: 1px solid var(--border); background: var(--bg); }
+  .query-editor { display: block; width: 100%; height: 100%; resize: none; border: 0; border-radius: 0; background: transparent; padding: 12px 14px 20px; font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.6; color: var(--text); outline: none; }
+  /* Full-width hit zone, small centred grip — the drag affordance reads as
+     "bottom middle", not a bar spanning the pane. */
+  .query-grip { position: absolute; left: 0; right: 0; bottom: 0; height: 14px; cursor: row-resize; display: flex; align-items: center; justify-content: center; }
+  .query-grip::after { content: ''; width: 36px; height: 4px; border-radius: 2px; background: var(--border); transition: background-color 150ms ease; }
+  .query-grip:hover::after, .query-grip.dragging::after { background: var(--text-faint); }
+
+  /* Results sit on the page's own ground, not the query tint: the tint marks
+     "this is a query", and the result of one is ordinary data again. */
+  .query-results { flex: 1; min-height: 0; overflow: auto; background: var(--bg); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+  /* Same 28px as Run query above: the three buttons on this pane are one set,
+     and the row owns their height rather than each carrying its own. */
+  .query-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .query-head .primary, .query-actions .primary, .query-actions .btn-secondary { height: 28px; }
   /* 44px, the same as .pane-strip and .side-head, so the shell's first
      horizontal rule is one unbroken line across every column instead of
      stepping 1-2px at each boundary. */
@@ -415,6 +463,7 @@ const I = {
   openIn: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>',
   trash: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>',
   grip: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 7h.01M8 12h.01M8 17h.01M16 7h.01M16 12h.01M16 17h.01"/></svg>',
+  play: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4l12 8-12 8V4z"/></svg>',
   tick: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
   cross: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
 };
@@ -503,11 +552,23 @@ const QUERY_EXAMPLES = {
   },
 };
 
+/* Saved queries are peers of tables: things this connection contains, listed
+   in the same rail, opened into the same pane. */
+const QUERIES = [
+  { id: 'q1', name: 'failed orders today', sql: "SELECT id, status, amount\nFROM orders\nWHERE status = 'failed'\n  AND created_at > now() - interval '1 day';" },
+  { id: 'q2', name: 'mark 1042 shipped',   sql: "UPDATE orders SET status = 'shipped' WHERE id = 1042;" },
+];
+
 /* ---------------------------------------------------------------- state */
 const S = {
   route: 'workspace',
   activeConnectionId: 'c1',
   activeTable: 'orders',
+  railSegment: 'tables',   // 'tables' | 'queries'
+  /* One open tab per thing being looked at. A query is its own tab rather than
+     a drawer, because it is a document you come back to, not a transient mode. */
+  tabs: [{ id: 't-db', kind: 'db', label: 'DB' }],
+  activeTabId: 't-db',
   menu: null,
   editingCell: null,     // {ri, ci, draft} — staged on accept, never written directly
   /* Applied vs draft. What the grid queries is the APPLIED set; the popovers
@@ -530,10 +591,9 @@ const S = {
   dock: 'chat',          // 'chat' | 'pending' | 'insert' | null
   pending: [],           // staged changes; nothing is written until Apply
   insertDraft: {},
+  queryHeight: 190,      // px; dragged via .query-grip
   queryExample: 'select',
   queryPhase: 'idle',    // 'idle' | 'preview' | 'committed' — nothing runs for real until Commit
-  consoleOpen: false,
-  drawerHeight: 220,     // px; dragged via .drawer-handle
   connectionModal: null, // null | {mode:'add'} | {mode:'edit', id}
 };
 
@@ -547,7 +607,10 @@ function strip() {
     <div class="strip-col tabs-col">
       ${back
         ? `<button class="ghost-btn" data-act="workspace">${I.back}<span>Back to DevBench</span></button>`
-        : `<div class="tabs"><span class="tab" aria-selected="true">${I.db}<span>DB</span><span class="sub">${S.activeTable}</span></span></div>`}
+        : `<div class="tabs">${S.tabs.map(t => `<button class="tab ${t.kind}" data-tab="${t.id}" aria-selected="${t.id === S.activeTabId}">
+             ${t.kind === 'query' ? I.play : I.db}<span>${t.kind === 'query' ? 'Query' : 'DB'}</span>
+             <span class="sub">${t.kind === 'query' ? t.label : S.activeTable}</span>
+           </button>`).join('')}</div>`}
     </div>
     <div class="strip-col actions-col">
       ${back ? '<span style="font-size:var(--fs-sm);font-weight:600;color:var(--text-faint)">Settings</span>' : ''}
@@ -567,36 +630,80 @@ function sidebar() {
 }
 
 /* ---------------------------------------------------------------- DB tab */
-function dbTab() {
+/* The rail is the same for every tab kind: connection, then what you are
+   browsing, then the list. Only the pane to its right changes. */
+function rail() {
+  const seg = (id, label) =>
+    `<button class="seg-btn" data-seg="${id}" aria-selected="${S.railSegment === id}">${label}</button>`;
   return `<div class="rail">
     <div class="rail-head">
       <button class="select-trigger" data-menu="connection" style="width:100%;justify-content:space-between">
         <span>${activeConnection().name}</span>${I.chev}
       </button>
     </div>
+    <div class="rail-seg"><div class="segmented">${seg('tables', 'Tables')}${seg('queries', 'Queries')}</div></div>
     <div class="rail-list">
-      ${TABLES.map(t => `<button class="tree-item ${WATCHED.has(t) ? 'watched' : ''}" aria-current="${t === S.activeTable}" data-table="${t}">
-        ${t}<span class="eye">${eyeIcon()}</span></button>`).join('')}
+      ${S.railSegment === 'tables'
+        ? TABLES.map(t => `<button class="tree-item ${WATCHED.has(t) ? 'watched' : ''}" aria-current="${t === S.activeTable && activeTab().kind === 'db'}" data-table="${t}">
+            ${t}<span class="eye">${eyeIcon()}</span></button>`).join('')
+        : QUERIES.map(q => `<button class="tree-item" aria-current="${activeTab().queryId === q.id}" data-query="${q.id}">
+            ${I.play}<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${q.name}</span></button>`).join('')}
     </div>
-  </div>
+    ${S.railSegment === 'queries'
+      ? `<div class="rail-foot"><button class="btn-secondary" data-act="new-query" style="width:100%;height:28px">${I.plus}<span>New query</span></button></div>`
+      : ''}
+  </div>`;
+}
+
+function activeTab() {
+  return S.tabs.find(t => t.id === S.activeTabId) || S.tabs[0];
+}
+
+function dbTab() {
+  return `${rail()}
   <div class="db-content">
     <div class="pane-strip">
       <span style="font-size:var(--fs-sm);font-weight:600;color:var(--text-muted)">${S.activeTable}</span>
       <div style="margin-left:auto;display:flex;align-items:center;gap:4px">
-        <!-- Pending sits with the console, not in the grid toolbar: both are
-             pane-level surfaces about work in flight, and the pending set
-             spans tables rather than belonging to the one grid below. -->
+        <!-- Pending is pane-level: the set spans tables rather than belonging
+             to the one grid below it. -->
         ${S.pending.length ? `<button class="btn-secondary" data-act="open-pending" aria-pressed="${S.dock === 'pending'}">
           ${I.stack}<span>Pending</span><span class="tb-badge">${S.pending.length}</span>
         </button>` : ''}
-        <button class="btn-secondary" data-act="toggle-console" aria-pressed="${S.consoleOpen}">
-          <span style="display:inline-flex;transform:rotate(${S.consoleOpen ? 180 : 0}deg)">${I.chev}</span>
-          <span>Query console</span>
-        </button>
       </div>
     </div>
     <div class="db-body">${browseBody()}</div>
-    ${S.consoleOpen ? queryDrawer() : ''}
+  </div>`;
+}
+
+/* A query tab: the editor is the content, not a drawer under something else. */
+function queryTab() {
+  const tab = activeTab();
+  const query = QUERIES.find(q => q.id === tab.queryId) || { name: tab.label, sql: '' };
+  const ex = QUERY_EXAMPLES[S.queryExample];
+  return `${rail()}
+  <div class="query-pane">
+    <div class="query-head">
+      <!-- Run leads: on a query tab the action is the point, and the name is
+           what you are acting on. "Run query" rather than "Preview" — it runs
+           for real, in a transaction, and shows what it did. -->
+      <button class="primary" data-act="run-query" style="padding:0 12px;font-size:var(--fs-sm)">${I.play}Run query ⌘⏎</button>
+      <input class="query-name" value="${query.name}" aria-label="Query name" data-query-name="${query.id ?? ''}" spellcheck="false" />
+      ${S.pending.length ? `<button class="btn-secondary" data-act="open-pending" aria-pressed="${S.dock === 'pending'}">
+        ${I.stack}<span>Pending</span><span class="tb-badge">${S.pending.length}</span>
+      </button>` : ''}
+    </div>
+    <div class="query-editor-wrap" style="height:${S.queryHeight}px">
+      <textarea class="query-editor" spellcheck="false">${query.sql}</textarea>
+      <div class="query-grip" title="Drag to resize"></div>
+    </div>
+    <div class="query-results">
+      <div style="display:flex;gap:6px">
+        <button class="btn-secondary" data-act="ex-select" aria-pressed="${S.queryExample === 'select'}" style="height:24px">Example: SELECT</button>
+        <button class="btn-secondary" data-act="ex-update" aria-pressed="${S.queryExample === 'update'}" style="height:24px">Example: UPDATE</button>
+      </div>
+      ${renderQueryPhase(ex)}
+    </div>
   </div>`;
 }
 
@@ -714,39 +821,16 @@ function browseBody() {
   `;
 }
 
-/* Query console: a resizable bottom drawer, not a mode swap — Browse (above)
-   keeps rendering the currently selected table the whole time. */
-function queryDrawer() {
-  const ex = QUERY_EXAMPLES[S.queryExample];
-  return `<div class="query-drawer" style="height:${S.drawerHeight}px">
-    <div class="drawer-handle" title="Drag to resize"></div>
-    <div class="drawer-head">
-      <span style="font-size:var(--fs-xs);font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text-faint)">Query console</span>
-      <span style="font-size:var(--fs-xs);color:var(--text-faint)">— single statement per run, against ${activeConnection().name}</span>
-      <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
-        <button class="ghost-btn" data-act="ex-select" aria-pressed="${S.queryExample === 'select'}" style="height:24px;font-size:var(--fs-xs)">Example: SELECT</button>
-        <button class="ghost-btn" data-act="ex-update" aria-pressed="${S.queryExample === 'update'}" style="height:24px;font-size:var(--fs-xs)">Example: UPDATE</button>
-        <button class="primary" data-act="run-query" style="height:26px;padding:0 12px;font-size:var(--fs-sm)">Preview ⌘⏎</button>
-        <button class="ghost-btn icon-only" data-act="toggle-console" aria-label="Close console">${I.x}</button>
-      </div>
-    </div>
-    <div class="drawer-body">
-      <textarea class="field" style="min-height:56px" spellcheck="false">${ex.sql}</textarea>
-      ${renderQueryPhase(ex)}
-    </div>
-  </div>`;
-}
-
 function renderQueryPhase(ex) {
   if (S.queryPhase === 'idle') {
-    return `<div class="grid-note" style="margin-top:0">Press Preview — this opens a transaction and shows you the effect. Nothing is permanent in ${activeConnection().name} until you Commit.</div>`;
+    return `<div class="grid-note" style="margin-top:0">Run query executes this in a transaction against ${activeConnection().name} and shows you what it did. Nothing is written until you add it to Pending and Apply.</div>`;
   }
   if (S.queryPhase === 'preview') {
     return `
-      <div class="sql-meta"><span class="pill muted">PREVIEW</span><span>held in an open transaction — not yet committed</span></div>
+      <div class="sql-meta"><span class="pill muted">RAN</span><span>in an open transaction — rolled back unless you add it to Pending</span></div>
       ${ex.diff ? ex.diff.map(diffCard).join('') : (ex.columns.length ? `<div class="grid-wrap">${grid(ex.columns, ex.rows.map((row, index) => ({ row, index })), null)}</div>` : `<div class="grid-note" style="margin-top:0">No rows matched.</div>`)}
-      <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button class="ghost-btn" data-act="rollback-query" style="border:1px solid var(--border)">Discard</button>
+      <div class="query-actions">
+        <button class="btn-secondary" data-act="rollback-query">Discard</button>
         <button class="primary" data-act="stage-query">Add to pending</button>
       </div>
     `;
@@ -1166,48 +1250,38 @@ function render() {
   document.querySelectorAll('.menu, .scrim, .modal-scrim, .pop, .fk-pop').forEach(e => e.remove());
   const root = document.getElementById('root');
   root.innerHTML = `${strip()}<div class="body-grid">
-    ${S.route === 'settings' ? settingsScreen() : `${sidebar()}<div class="panes"><div class="pane">${dbTab()}</div></div>${dock()}`}
+    ${S.route === 'settings' ? settingsScreen() : `${sidebar()}<div class="panes"><div class="pane">${activeTab().kind === 'query' ? queryTab() : dbTab()}</div></div>${dock()}`}
   </div>`;
   if (S.menu) renderMenu();
   if (S.popover) renderPopover();
   if (S.fkPopover) renderFkPopover();
   if (S.connectionModal) renderConnectionModal();
-  wireDrawerDrag();
+  wireEditorDrag();
 }
 
-/* Direct DOM mutation during drag (no render() per mousemove) keeps the
-   resize smooth; S.drawerHeight is synced so the next full render agrees. */
-function wireDrawerDrag() {
-  const handle = document.querySelector('.drawer-handle');
-  const drawer = document.querySelector('.query-drawer');
-  if (!handle || !drawer) return;
-  handle.addEventListener('mousedown', (e) => {
+/* Direct DOM mutation during the drag (no render() per mousemove) keeps the
+   resize smooth; S.queryHeight is synced so the next full render agrees. */
+function wireEditorDrag() {
+  const grip = document.querySelector('.query-grip');
+  const wrap = document.querySelector('.query-editor-wrap');
+  if (!grip || !wrap) return;
+  grip.addEventListener('mousedown', (e) => {
     e.preventDefault();
     const startY = e.clientY;
-    const startH = S.drawerHeight;
-    handle.classList.add('dragging');
+    const startH = S.queryHeight;
+    grip.classList.add('dragging');
     function onMove(ev) {
-      const dy = startY - ev.clientY;
-      S.drawerHeight = Math.min(560, Math.max(120, startH + dy));
-      drawer.style.height = S.drawerHeight + 'px';
+      S.queryHeight = Math.min(560, Math.max(90, startH + (ev.clientY - startY)));
+      wrap.style.height = S.queryHeight + 'px';
     }
     function onUp() {
-      handle.classList.remove('dragging');
+      grip.classList.remove('dragging');
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
     }
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   });
-}
-
-/* Closing without Apply throws the draft away — dismissing a popover must not
-   quietly commit half-finished rules. */
-function closePopover(applied) {
-  S.popover = null;
-  S.condsDraft = null;
-  S.sortDraft = null;
-  void applied;
 }
 
 function renderPopover() {
@@ -1329,6 +1403,17 @@ document.addEventListener('input', e => {
   const t = e.target;
   if (t.dataset.condVal !== undefined) { S.condsDraft[+t.dataset.condVal].val = t.value; return; }
   if (t.dataset.ins !== undefined) { S.insertDraft[t.dataset.ins] = t.value; return; }
+  // Renaming updates the saved query and its tab together — they are the same
+  // thing, and a tab still reading the old name would be a lie.
+  if (t.dataset.queryName !== undefined) {
+    const query = QUERIES.find(q => q.id === t.dataset.queryName);
+    if (query) query.name = t.value;
+    const tab = S.tabs.find(x => x.queryId === t.dataset.queryName);
+    if (tab) tab.label = t.value;
+    const strip = document.querySelector(`.tab[data-tab="${tab?.id}"] .sub`);
+    if (strip) strip.textContent = t.value;   // no full render: keeps focus in the field
+    return;
+  }
 });
 
 document.addEventListener('change', e => {
@@ -1451,6 +1536,28 @@ document.addEventListener('click', e => {
   const menuBtn = e.target.closest('[data-menu]');
   if (menuBtn) { S.menu = { kind: menuBtn.dataset.menu, rect: menuBtn.getBoundingClientRect() }; render(); return; }
 
+  const seg = e.target.closest('[data-seg]');
+  if (seg) { S.railSegment = seg.dataset.seg; render(); return; }
+
+  const tabBtn = e.target.closest('[data-tab]');
+  if (tabBtn) { S.activeTabId = tabBtn.dataset.tab; S.popover = null; render(); return; }
+
+  // Opening a query focuses its tab if it is already open rather than stacking
+  // duplicates — a saved query is one document, however many times you click it.
+  const queryBtn = e.target.closest('[data-query]');
+  if (queryBtn) {
+    const id = queryBtn.dataset.query;
+    const existing = S.tabs.find(t => t.kind === 'query' && t.queryId === id);
+    if (existing) S.activeTabId = existing.id;
+    else {
+      const tab = { id: `t-${id}`, kind: 'query', queryId: id, label: QUERIES.find(q => q.id === id).name };
+      S.tabs = [...S.tabs, tab];
+      S.activeTabId = tab.id;
+    }
+    S.queryPhase = 'idle';
+    render(); return;
+  }
+
   const table = e.target.closest('[data-table]');
   if (table) {
     S.activeTable = table.dataset.table;
@@ -1458,6 +1565,8 @@ document.addEventListener('click', e => {
     // table's sort, filter and frozen columns do not describe them.
     S.editingCell = null; S.sort = []; S.conds = []; S.sortDraft = null; S.condsDraft = null;
     S.pinned = []; S.hidden = []; S.page = 1; S.popover = null;
+    // Picking a table means looking at it, so focus the DB tab.
+    S.activeTabId = 't-db';
     if (S.dock === 'insert') S.dock = 'chat';
     render(); return;
   }
@@ -1483,7 +1592,15 @@ document.addEventListener('click', e => {
     const a = act.dataset.act;
     if (a === 'settings') S.route = 'settings';
     if (a === 'workspace') S.route = 'workspace';
-    if (a === 'toggle-console') { S.consoleOpen = !S.consoleOpen; S.queryPhase = 'idle'; }
+    if (a === 'new-query') {
+      const id = `q${QUERIES.length + 1}`;
+      QUERIES.push({ id, name: 'untitled query', sql: '' });
+      const tab = { id: `t-${id}`, kind: 'query', queryId: id, label: 'untitled query' };
+      S.tabs = [...S.tabs, tab];
+      S.activeTabId = tab.id;
+      S.railSegment = 'queries';
+      S.queryPhase = 'idle';
+    }
     if (a === 'run-query') S.queryPhase = 'preview';
     if (a === 'rollback-query') S.queryPhase = 'idle';
     if (a === 'ex-select') { S.queryExample = 'select'; S.queryPhase = 'idle'; }

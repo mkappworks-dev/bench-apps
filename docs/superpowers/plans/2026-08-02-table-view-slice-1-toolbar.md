@@ -17,7 +17,8 @@
 - Baseline to keep green: `cd apps/devbench && bun run test` (316 passing / 36 files), `bun run build` (runs `tsc`), `cd apps/devbench/src-tauri && cargo test --lib` (194 passing).
 - Postgres for Rust tests: container `devbench-test-pg`, `localhost:5432`, `postgres`/`postgres`, db `devbench_test`. `docker start devbench-test-pg` if unreachable.
 - These four grid behaviours are regression-critical and must still hold after every task: sticky header stays aligned with body columns under horizontal scroll; virtualization keeps rendering rows; horizontal scroll stays contained (`document.documentElement.scrollWidth === clientWidth`); NULL stays visually distinct from `<unsupported type>`.
-- Out of scope for this plan: foreign keys (Slice 2), insert panel / row delete / pending changes / boolean toggling (Slice 3).
+- Out of scope for this plan: foreign keys (Slice 2); insert panel / row delete / pending changes / boolean toggling (Slice 3); rail segments and queries-as-tabs (Slice 4).
+- One thing this plan must NOT break: the query console drawer stays exactly as it is until Slice 4 removes it. Task 12 rewrites `DbTab`'s fetch and pagination state, which sits alongside `consoleOpen` — leave that flag and `<QueryConsole>` untouched.
 
 ---
 
@@ -2729,9 +2730,10 @@ git commit -m "fix(devbench): correct grid toolbar layout against browser measur
 | §14 One secondary button, footers own height | 5, 7, 8 |
 | §16 Testing | every task; browser work in 13 |
 
-Not covered here by design: §1 dock slot, §3 Pending button, §8 foreign keys,
-§9 insert panel, §10 pending changes, §11 row delete, §12 console staging —
-all Slice 2/3, per §17.
+Not covered here by design: §1 dock slot, §3 Pending button, §3a rail
+segments, §3b query tabs, §8 foreign keys, §9 insert panel, §10 pending
+changes, §11 row delete, §12 query execution and staging — all Slices 2–4,
+per §17.
 
 **2. Placeholder scan.** No "TBD", no "add error handling", no "similar to Task
 N". Every code step carries the actual code. Task 13 is the one task without
