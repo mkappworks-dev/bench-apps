@@ -39,7 +39,15 @@ fn main() {
             let logs = Arc::new(LogState::new());
             app.manage(Arc::clone(&logs));
 
-            tauri::async_runtime::block_on(devbench::commands::logs::restore_persisted_sources(&db.pool, &logs));
+            // Seeding MUST run before restore: restoring a command source
+            // respawns its process immediately, whose reader task can start
+            // assigning ids before the next line of code otherwise would.
+            tauri::async_runtime::block_on(async {
+                if let Err(e) = devbench::commands::logs::seed_log_id_counter(&db.pool, &logs).await {
+                    eprintln!("failed to seed log line id counter: {e}");
+                }
+                devbench::commands::logs::restore_persisted_sources(&db.pool, &logs).await;
+            });
 
             let db_pool_for_flush = db.pool.clone();
             handle.manage(db);
@@ -165,7 +173,9 @@ fn main() {
                 let logs = app_handle.state::<Arc<LogState>>();
                 let db = app_handle.state::<LocalDb>();
                 tauri::async_runtime::block_on(async {
-                    let _ = devbench::commands::logs::flush_new_lines(&db.pool, &logs).await;
+                    if let Err(e) = devbench::commands::logs::flush_new_lines(&db.pool, &logs).await {
+                        eprintln!("final log flush on shutdown failed: {e}");
+                    }
                     logs.kill_all_commands().await;
                 });
             }
