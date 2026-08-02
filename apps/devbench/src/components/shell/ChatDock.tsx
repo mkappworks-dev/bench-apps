@@ -89,10 +89,14 @@ export function ChatDock({ onClose }: { onClose: () => void }) {
   return (
     // Ghosty and a flex sibling of the content column — it RESIZES the
     // workspace rather than overlaying it (DESIGN.md).
-    <aside aria-label="AI Assistant" className="flex w-(--w-chat) min-w-(--w-chat) border-l border-border">
+    <aside aria-label="AI Assistant" className="relative flex w-(--w-chat) min-w-(--w-chat) border-l border-border">
+      {/* Overlays the panel's left edge rather than taking a flex track of its
+          own. As a track it pushed the whole content column inward, so the
+          header and composer rules started 14px short of the panel edge
+          instead of meeting the border like every other divider in the shell. */}
       <div
         onMouseDown={onHandleMouseDown}
-        className="flex w-3.5 shrink-0 cursor-col-resize items-center justify-center"
+        className="absolute inset-y-0 left-0 z-10 flex w-3.5 cursor-col-resize items-center justify-center"
         aria-label="Resize AI Assistant"
         role="separator"
         aria-orientation="vertical"
@@ -100,7 +104,7 @@ export function ChatDock({ onClose }: { onClose: () => void }) {
         <div className="h-9 w-1 rounded-full bg-border" aria-hidden />
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex items-center justify-between border-b border-border p-2.5">
+        <div className="flex h-11 items-center justify-between border-b border-border pl-4 pr-2.5">
           <span className="text-xs font-bold text-text-muted">AI Assistant</span>
           <button
             aria-label="Close chat"

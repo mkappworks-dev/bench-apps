@@ -2,10 +2,12 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { SchemaTree } from "./SchemaTree";
 import * as tauriLib from "../../lib/tauri";
+import { useAppStore } from "../../store/useAppStore";
 
 describe("SchemaTree", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    useAppStore.setState({ route: "workspace", settingsPane: "general" });
   });
 
   it("lists tables for the given connection", async () => {
@@ -74,9 +76,36 @@ describe("SchemaTree", () => {
     expect(picker).toHaveTextContent("Local Dev");
 
     fireEvent.click(picker);
-    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Staging" }));
+    // The host line is part of each option's accessible name on purpose —
+    // "Staging" alone doesn't say which server you're about to browse.
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /Staging.*staging-db\.internal:5432\/app/ }));
 
     expect(onConnectionChange).toHaveBeenCalledWith("c2");
+  });
+
+  // Landing on Settings > General would make the user hunt for the pane they
+  // just asked for by name, so the pane is part of what this action navigates to.
+  it("'Manage connections…' opens Settings on the Connections pane, not just Settings", async () => {
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([
+      { id: "c1", name: "Local Dev", engine: "postgres", host: "localhost", port: 5432, database: "devbench_test", username: "postgres", sslmode: "disable", has_password: true },
+    ]);
+    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([]);
+
+    render(
+      <SchemaTree
+        connectionId="c1"
+        watchedTables={new Set()}
+        onToggleWatch={() => {}}
+        onSelectTable={() => {}}
+        onConnectionChange={() => {}}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /connection/i }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Manage connections/ }));
+
+    await waitFor(() => expect(useAppStore.getState().route).toBe("settings"));
+    expect(useAppStore.getState().settingsPane).toBe("connections");
   });
 
   it("shows a distinct empty state when no connection is selected yet, not blank space", async () => {

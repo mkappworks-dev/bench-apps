@@ -9,6 +9,7 @@ import {
   invokePreviewCellEdit,
   invokeCommitPreview,
   invokeRollbackPreview,
+  type SortTerm,
   type TableRows,
 } from "../../lib/tauri";
 import { useAppStore } from "../../store/useAppStore";
@@ -85,8 +86,9 @@ export function DbTab({
   const [hasNextPage, setHasNextPage] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [sortColumn, setSortColumn] = useState<string | null>(null);
-  const [sortDescending, setSortDescending] = useState(false);
+  // A list, outermost term first — "status, then newest first" is a normal
+  // thing to want from a grid, and the backend takes the whole ORDER BY.
+  const [sort, setSort] = useState<SortTerm[]>([]);
   const [page, setPage] = useState(0);
 
   const [editing, setEditing] = useState<CellEdit | null>(null);
@@ -138,7 +140,7 @@ export function DbTab({
     }
   }
 
-  async function fetchRows(t: string, connId: string, orderByColumn: string | null, orderByDesc: boolean, pageNum: number) {
+  async function fetchRows(t: string, connId: string, orderBy: SortTerm[], pageNum: number) {
     const requestId = ++requestIdRef.current;
     setLoading(true);
     setError(null);
@@ -147,8 +149,7 @@ export function DbTab({
       // trimming it is what lets hasNextPage be an honest fact instead of a
       // guess from "this page happened to come back full."
       const result = await invokeListTableRows(connId, t, {
-        orderByColumn,
-        orderByDesc,
+        orderBy,
         limit: PAGE_SIZE + 1,
         offset: pageNum * PAGE_SIZE,
       });
@@ -180,14 +181,13 @@ export function DbTab({
     abandonEdit(editingRef.current);
     setEditing(null);
     setEditError(null);
-    setSortColumn(null);
-    setSortDescending(false);
+    setSort([]);
     setPage(0);
     setHasNextPage(false);
     setTableRows(null);
     setError(null);
     if (table && activeConnectionId) {
-      void fetchRows(table, activeConnectionId, null, false, 0);
+      void fetchRows(table, activeConnectionId, [], 0);
     } else {
       requestIdRef.current++;
       setLoading(false);
@@ -208,16 +208,30 @@ export function DbTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function handleSort(column: string) {
+  // Plain click replaces the sort; shift-click builds one up. Cycling a term
+  // asc → desc → gone (rather than asc → desc → asc) is what makes it possible
+  // to drop a column back out of a multi-sort without clearing the whole thing.
+  function handleSort(column: string, additive: boolean) {
     if (!table || !activeConnectionId) return;
     abandonEdit(editing);
     setEditing(null);
     setEditError(null);
-    const descending = sortColumn === column ? !sortDescending : false;
-    setSortColumn(column);
-    setSortDescending(descending);
+
+    const existing = sort.find((term) => term.column === column);
+    let next: SortTerm[];
+    if (!additive) {
+      next = existing && !existing.descending ? [{ column, descending: true }] : [{ column, descending: false }];
+    } else if (!existing) {
+      next = [...sort, { column, descending: false }];
+    } else if (!existing.descending) {
+      next = sort.map((term) => (term.column === column ? { column, descending: true } : term));
+    } else {
+      next = sort.filter((term) => term.column !== column);
+    }
+
+    setSort(next);
     setPage(0);
-    void fetchRows(table, activeConnectionId, column, descending, 0);
+    void fetchRows(table, activeConnectionId, next, 0);
   }
 
   function handlePrevPage() {
@@ -227,7 +241,7 @@ export function DbTab({
     setEditError(null);
     const nextPage = Math.max(0, page - 1);
     setPage(nextPage);
-    void fetchRows(table, activeConnectionId, sortColumn, sortDescending, nextPage);
+    void fetchRows(table, activeConnectionId, sort, nextPage);
   }
 
   function handleNextPage() {
@@ -237,7 +251,7 @@ export function DbTab({
     setEditError(null);
     const nextPage = page + 1;
     setPage(nextPage);
-    void fetchRows(table, activeConnectionId, sortColumn, sortDescending, nextPage);
+    void fetchRows(table, activeConnectionId, sort, nextPage);
   }
 
   function startEdit(rowIndex: number, columnIndex: number, currentValue: string | null) {
@@ -373,6 +387,22 @@ export function DbTab({
   // (20x20, 4px radius) still follows the mockup's `.cell-edit button`.
   const actionButtonClass =
     "grid h-5 w-5 shrink-0 place-items-center rounded text-text-faint hover:bg-surface-2 hover:text-text disabled:opacity-40";
+  // Accept carries the mockup's success hue (`.cell-edit .save`); cancel stays
+  // neutral. The green is doing real work here rather than decorating a generic
+  // button — it is the same success/danger pairing as the diff text beside it,
+  // marking which control commits the change the user is looking at.
+  const acceptButtonClass =
+    "grid h-5 w-5 shrink-0 place-items-center rounded bg-success-bg text-success hover:brightness-125 disabled:opacity-40";
+
+  // A cell is usually far narrower than the value inside it, so the editor
+  // sizes to its content and floats over the columns to its right rather than
+  // cramming into one column's width. Absolute (against the `relative` cell
+  // DataGrid provides) so no neighbour reflows and the header stays aligned;
+  // opaque because it is genuinely covering the cells underneath. z-20 sits
+  // above sibling cells and below DataGrid's z-30 sticky header.
+  const expandedEditorClass =
+    "absolute left-0 top-1/2 z-20 flex w-max min-w-full -translate-y-1/2 items-center gap-1 " +
+    "rounded-sm border border-border bg-surface-2 px-3 py-1 shadow-lg";
 
   function renderCell(rowIndex: number, columnIndex: number, value: string | null) {
     const column = tableRows?.columns[columnIndex] ?? "";
@@ -382,7 +412,7 @@ export function DbTab({
     if (isEditingThisCell && editing.phase === "preview") {
       const { text: oldText } = cellDisplay(value);
       return (
-        <div className="flex items-center gap-1">
+        <div className={expandedEditorClass}>
           <span className="text-danger line-through">{oldText}</span>
           <span aria-hidden className="text-text-faint">
             →
@@ -390,7 +420,7 @@ export function DbTab({
           {editing.draft === null ? (
             <span className="italic text-success">NULL</span>
           ) : (
-            <span className="truncate font-semibold text-success">{editing.draft}</span>
+            <span className="font-semibold text-success">{editing.draft}</span>
           )}
           {/* Both buttons lock once a commit/rollback request is in flight —
               once that round trip is actually running, there's no honest
@@ -409,7 +439,7 @@ export function DbTab({
             aria-label="Commit edit"
             disabled={editing.pending}
             onClick={() => void commitEdit()}
-            className={actionButtonClass}
+            className={acceptButtonClass}
           >
             <CheckIcon />
           </button>
@@ -418,31 +448,29 @@ export function DbTab({
     }
 
     if (isEditingThisCell) {
-      const isNull = editing.draft === null;
       return (
-        <div className="flex items-center gap-1">
+        <div className={expandedEditorClass}>
           <input
             autoFocus
-            disabled={isNull || editing.pending}
+            // Named for the column it edits: without this the editor is an
+            // anonymous textbox, indistinguishable to a screen reader (and to
+            // a test) from the grid's filter box.
+            aria-label={`Edit ${column}`}
+            disabled={editing.pending}
+            // Sized in characters from the draft itself — the point of the
+            // expansion is to show the whole value, and a mono face makes `ch`
+            // exact. Bounded so one enormous cell can't span the whole grid.
+            size={Math.min(Math.max((editing.draft ?? "").length + 1, 12), 60)}
             value={editing.draft ?? ""}
             onChange={(e) => setEditing({ ...editing, draft: e.target.value })}
-            className="min-w-0 flex-1 rounded border border-accent bg-bg px-1.5 py-0.75 text-xs text-text disabled:opacity-50"
+            className="min-w-0 rounded border border-accent bg-bg px-1.5 py-0.75 text-xs text-text disabled:opacity-50"
           />
-          <label className="flex shrink-0 items-center gap-1 text-[10.5px] text-text-faint">
-            <input
-              type="checkbox"
-              checked={isNull}
-              disabled={editing.pending}
-              onChange={(e) => setEditing({ ...editing, draft: e.target.checked ? null : "" })}
-            />
-            NULL
-          </label>
           <button
             type="button"
             aria-label="Preview change"
             disabled={editing.pending}
             onClick={() => void previewEdit()}
-            className={actionButtonClass}
+            className={acceptButtonClass}
           >
             <CheckIcon />
           </button>
@@ -470,15 +498,20 @@ export function DbTab({
     // edit in flight at a time keeps two concurrent commits from racing to
     // apply their own stale `tableRows` snapshot over each other.
     const anyEditPending = editing !== null && editing.pending;
-    const { className } = cellDisplay(value);
+    // The mockup exempts the identity column from the numeric right-align
+    // (`col !== 'id'`), read here as the general rule it stands for: a primary
+    // key is a label that happens to be digits, not a quantity to compare down
+    // a column. Query results keep the plain numeric rule — they declare no key.
+    const { className, kind } = cellDisplay(value);
+    const alignClass = kind === "number" && column === tableRows?.pk_column ? "" : className;
     return (
       <button
         type="button"
         disabled={!editable || anyEditPending}
         onClick={() => editable && startEdit(rowIndex, columnIndex, value)}
-        className={`group flex w-full items-center gap-1 text-left ${editable ? "hover:cursor-text hover:bg-surface-2" : ""}`}
+        className={`group flex w-full min-w-0 items-center gap-1 text-left ${editable ? "hover:cursor-text hover:bg-surface-2" : ""}`}
       >
-        <span className={`min-w-0 flex-1 truncate ${className}`}>
+        <span className={`min-w-0 flex-1 truncate ${alignClass}`}>
           <CellValue value={value} />
         </span>
         {/* Decorative hover affordance (mirrors the mockup's `::after`
@@ -565,9 +598,9 @@ export function DbTab({
               <DataGrid
                 columns={tableRows.columns}
                 rows={tableRows.rows}
-                sortColumn={sortColumn}
-                sortDescending={sortDescending}
+                sort={sort}
                 onSort={handleSort}
+                layoutKey={`${activeConnectionId}:${table}`}
                 hasPrevPage={page > 0}
                 hasNextPage={hasNextPage}
                 onPrevPage={handlePrevPage}

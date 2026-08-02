@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{Column, PgPool, Row};
 use tauri::State;
 
@@ -126,16 +126,27 @@ pub(crate) async fn get_column_type(pool: &PgPool, table: &str, column: &str) ->
     Ok(row.get::<String, _>("udt_name"))
 }
 
+/// One term of an `ORDER BY`. A list of these rather than a single column so
+/// the grid can express "status, then newest first" — the ordering questions
+/// that actually come up while debugging are rarely single-column.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SortTerm {
+    pub column: String,
+    pub descending: bool,
+}
+
 pub async fn list_table_rows_impl(
     pool: &PgPool,
     table: &str,
-    order_by: Option<(&str, bool)>,
+    order_by: &[SortTerm],
     limit: i64,
     offset: i64,
 ) -> Result<TableRows, String> {
     validate_identifier(table)?;
-    if let Some((column, _)) = order_by {
-        validate_identifier(column)?;
+    // Every term is validated before any is interpolated — these are
+    // identifiers, which Postgres cannot bind as parameters.
+    for term in order_by {
+        validate_identifier(&term.column)?;
     }
 
     // No single-column PK is a normal, common case (junction tables,
@@ -144,8 +155,12 @@ pub async fn list_table_rows_impl(
     let pk_column = get_primary_key_column(pool, table).await.ok();
 
     let mut sql = format!("SELECT * FROM \"{table}\"");
-    if let Some((column, descending)) = order_by {
-        sql.push_str(&format!(" ORDER BY \"{column}\" {}", if descending { "DESC" } else { "ASC" }));
+    if !order_by.is_empty() {
+        let terms: Vec<String> = order_by
+            .iter()
+            .map(|t| format!("\"{}\" {}", t.column, if t.descending { "DESC" } else { "ASC" }))
+            .collect();
+        sql.push_str(&format!(" ORDER BY {}", terms.join(", ")));
     }
     // No other value in this query is bound (table/column are identifiers,
     // which Postgres can't bind — they're interpolated after validation
@@ -182,21 +197,21 @@ pub async fn list_table_rows(
     registry: State<'_, std::sync::Arc<ConnectionRegistry>>,
     connection_id: String,
     table: String,
-    order_by_column: Option<String>,
-    order_by_desc: Option<bool>,
+    order_by: Option<Vec<SortTerm>>,
     limit: i64,
     offset: i64,
 ) -> Result<TableRows, String> {
     let pool = registry.pool_for(&connection_id, &db.pool, secrets.as_ref()).await?;
-    let order_by = order_by_column
-        .as_deref()
-        .map(|column| (column, order_by_desc.unwrap_or(false)));
-    list_table_rows_impl(&pool, &table, order_by, limit, offset).await
+    list_table_rows_impl(&pool, &table, &order_by.unwrap_or_default(), limit, offset).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn asc_on(column: &str) -> SortTerm {
+        SortTerm { column: column.to_string(), descending: false }
+    }
 
     async fn test_pool() -> PgPool {
         let host = std::env::var("PGHOST").unwrap_or_else(|_| "localhost".into());
@@ -291,7 +306,7 @@ mod tests {
     #[tokio::test]
     async fn list_table_rows_rejects_malicious_table_name() {
         let pool = test_pool().await;
-        let result = list_table_rows_impl(&pool, "orders; DROP TABLE users; --", None, 200, 0).await;
+        let result = list_table_rows_impl(&pool, "orders; DROP TABLE users; --", &[], 200, 0).await;
         assert!(result.is_err(), "should reject malicious table name before executing query");
     }
 
@@ -302,7 +317,7 @@ mod tests {
         sqlx::query("CREATE TABLE test_rows_table (id serial PRIMARY KEY, name text)").execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO test_rows_table (name) VALUES ('test_row_1')").execute(&pool).await.unwrap();
 
-        let result = list_table_rows_impl(&pool, "test_rows_table", None, 200, 0).await;
+        let result = list_table_rows_impl(&pool, "test_rows_table", &[], 200, 0).await;
         assert!(result.is_ok(), "should successfully list rows from valid table");
 
         let table_rows = result.unwrap();
@@ -319,7 +334,7 @@ mod tests {
         sqlx::query("DROP TABLE IF EXISTS no_pk_test").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE no_pk_test (a int, b int)").execute(&pool).await.unwrap();
 
-        let result = list_table_rows_impl(&pool, "no_pk_test", None, 200, 0).await.unwrap();
+        let result = list_table_rows_impl(&pool, "no_pk_test", &[], 200, 0).await.unwrap();
         assert_eq!(result.pk_column, None, "no single-column PK means not editable, not an error");
 
         sqlx::query("DROP TABLE no_pk_test").execute(&pool).await.unwrap();
@@ -334,23 +349,84 @@ mod tests {
             sqlx::query("INSERT INTO sort_test (n) VALUES ($1)").bind(n).execute(&pool).await.unwrap();
         }
 
-        let asc = list_table_rows_impl(&pool, "sort_test", Some(("n", false)), 200, 0).await.unwrap();
+        let asc = list_table_rows_impl(&pool, "sort_test", &[asc_on("n")], 200, 0).await.unwrap();
         let n_col = asc.columns.iter().position(|c| c == "n").unwrap();
         let values: Vec<_> = asc.rows.iter().map(|r| r[n_col].clone()).collect();
         assert_eq!(values, vec![Some("1".to_string()), Some("2".to_string()), Some("3".to_string())]);
 
-        let paged = list_table_rows_impl(&pool, "sort_test", Some(("n", false)), 1, 1).await.unwrap();
+        let paged = list_table_rows_impl(&pool, "sort_test", &[asc_on("n")], 1, 1).await.unwrap();
         assert_eq!(paged.rows.len(), 1, "LIMIT 1 must return exactly one row");
         assert_eq!(paged.rows[0][n_col], Some("2".to_string()), "OFFSET 1 must skip the first sorted row");
 
         sqlx::query("DROP TABLE sort_test").execute(&pool).await.unwrap();
     }
 
+    // Order within the term list is the tie-break order, so the second term
+    // only shows up where the first one ties — which is exactly what makes a
+    // multi-sort worth having, and exactly what a naive join would get wrong.
+    #[tokio::test]
+    async fn multiple_sort_terms_are_applied_in_order() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS multisort_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE multisort_test (id serial PRIMARY KEY, grp text, n int)")
+            .execute(&pool).await.unwrap();
+        for (grp, n) in [("b", 1), ("a", 2), ("b", 2), ("a", 1)] {
+            sqlx::query("INSERT INTO multisort_test (grp, n) VALUES ($1, $2)")
+                .bind(grp).bind(n).execute(&pool).await.unwrap();
+        }
+
+        let sorted = list_table_rows_impl(
+            &pool,
+            "multisort_test",
+            &[asc_on("grp"), SortTerm { column: "n".into(), descending: true }],
+            200,
+            0,
+        )
+        .await
+        .unwrap();
+
+        let g = sorted.columns.iter().position(|c| c == "grp").unwrap();
+        let n = sorted.columns.iter().position(|c| c == "n").unwrap();
+        let pairs: Vec<(String, String)> = sorted
+            .rows
+            .iter()
+            .map(|r| (r[g].clone().unwrap(), r[n].clone().unwrap()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("a".to_string(), "2".to_string()),
+                ("a".to_string(), "1".to_string()),
+                ("b".to_string(), "2".to_string()),
+                ("b".to_string(), "1".to_string()),
+            ],
+            "grp ascending, then n descending inside each grp"
+        );
+
+        sqlx::query("DROP TABLE multisort_test").execute(&pool).await.unwrap();
+    }
+
+    // Validation must cover every term, not just the first — a second term is
+    // interpolated into the same SQL string and is just as dangerous.
+    #[tokio::test]
+    async fn a_malicious_identifier_in_a_later_sort_term_is_still_rejected() {
+        let pool = test_pool().await;
+        let result = list_table_rows_impl(
+            &pool,
+            "orders",
+            &[asc_on("id"), asc_on("n; DROP TABLE users; --")],
+            200,
+            0,
+        )
+        .await;
+        assert!(result.is_err(), "a malicious column in any ORDER BY term must be rejected");
+    }
+
     #[tokio::test]
     async fn sort_column_rejects_a_malicious_identifier() {
         let pool = test_pool().await;
         let result =
-            list_table_rows_impl(&pool, "orders", Some(("n; DROP TABLE users; --", false)), 200, 0).await;
+            list_table_rows_impl(&pool, "orders", &[asc_on("n; DROP TABLE users; --")], 200, 0).await;
         assert!(result.is_err(), "a malicious ORDER BY column must be rejected exactly like a malicious table name");
     }
 
@@ -366,7 +442,7 @@ mod tests {
         sqlx::query("INSERT INTO unsupported_type_test (amount, notes) VALUES (42.50, NULL)")
             .execute(&pool).await.unwrap();
 
-        let result = list_table_rows_impl(&pool, "unsupported_type_test", None, 200, 0).await.unwrap();
+        let result = list_table_rows_impl(&pool, "unsupported_type_test", &[], 200, 0).await.unwrap();
         assert_eq!(result.columns, vec!["id", "amount", "notes"]);
         assert_eq!(result.rows[0][1], Some("<unsupported type>".to_string()));
         assert_eq!(result.rows[0][2], None, "a genuine NULL must still render as None");
@@ -383,7 +459,7 @@ mod tests {
         sqlx::query("INSERT INTO datetime_type_test (created_at, birth_date) VALUES ('2025-07-30 12:34:56+00:00', '2025-07-30')")
             .execute(&pool).await.unwrap();
 
-        let result = list_table_rows_impl(&pool, "datetime_type_test", None, 200, 0).await.unwrap();
+        let result = list_table_rows_impl(&pool, "datetime_type_test", &[], 200, 0).await.unwrap();
         assert_eq!(result.columns, vec!["id", "created_at", "birth_date"]);
         assert!(result.rows[0][1].is_some());
         assert_ne!(result.rows[0][1], Some("<unsupported type>".to_string()));
@@ -391,6 +467,28 @@ mod tests {
         assert_ne!(result.rows[0][2], Some("<unsupported type>".to_string()));
 
         sqlx::query("DROP TABLE datetime_type_test").execute(&pool).await.unwrap();
+    }
+
+    // The grid renders a boolean as a pill purely by string-matching "true"/
+    // "false" (see `cellDisplay`), so these exact spellings are a contract, not
+    // an implementation detail — anything else silently degrades to plain text.
+    // A NULL boolean must also stay a genuine None rather than the string
+    // "false", which the grid draws as a bordered pill meaning something else.
+    #[tokio::test]
+    async fn boolean_columns_render_as_true_false_and_keep_null_distinct() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS bool_type_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE bool_type_test (id serial PRIMARY KEY, paid boolean)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO bool_type_test (paid) VALUES (true), (false), (NULL)")
+            .execute(&pool).await.unwrap();
+
+        let result = list_table_rows_impl(&pool, "bool_type_test", &[], 200, 0).await.unwrap();
+        assert_eq!(result.rows[0][1], Some("true".to_string()));
+        assert_eq!(result.rows[1][1], Some("false".to_string()));
+        assert_eq!(result.rows[2][1], None, "a NULL boolean must not become the string \"false\"");
+
+        sqlx::query("DROP TABLE bool_type_test").execute(&pool).await.unwrap();
     }
 
     #[tokio::test]

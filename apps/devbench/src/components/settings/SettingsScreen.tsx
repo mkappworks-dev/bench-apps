@@ -1,5 +1,5 @@
-import { useState } from "react";
 import { Tabs } from "../ui/Tabs";
+import { useAppStore, type SettingsPane } from "../../store/useAppStore";
 import { GeneralPane } from "./GeneralPane";
 import { AppearancePane } from "./AppearancePane";
 import { ProviderPane } from "./ProviderPane";
@@ -7,7 +7,7 @@ import { ConnectionsPane } from "./ConnectionsPane";
 import { McpPane } from "./McpPane";
 import { ArchivePane } from "./ArchivePane";
 
-type PaneId = "general" | "appearance" | "provider" | "connections" | "mcp" | "archive";
+type PaneId = SettingsPane;
 
 const PANES: { id: PaneId; label: string }[] = [
   { id: "general", label: "General" },
@@ -26,7 +26,8 @@ const PANES: { id: PaneId; label: string }[] = [
  * Session picker satisfies by being glass.
  */
 export function SettingsScreen({ onBack }: { onBack: () => void }) {
-  const [pane, setPane] = useState<PaneId>("general");
+  const pane = useAppStore((s) => s.settingsPane);
+  const setPane = useAppStore((s) => s.setSettingsPane);
 
   return (
     <div className="flex min-h-0 flex-1">

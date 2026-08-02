@@ -202,16 +202,21 @@ export interface TableRows {
   pk_column: string | null;
 }
 
+/** One `ORDER BY` term. The grid sends a list so a sort can tie-break. */
+export interface SortTerm {
+  column: string;
+  descending: boolean;
+}
+
 export function invokeListTableRows(
   connectionId: string,
   table: string,
-  options?: { orderByColumn?: string | null; orderByDesc?: boolean; limit?: number; offset?: number },
+  options?: { orderBy?: SortTerm[]; limit?: number; offset?: number },
 ): Promise<TableRows> {
   return invoke("list_table_rows", {
     connectionId,
     table,
-    orderByColumn: options?.orderByColumn ?? null,
-    orderByDesc: options?.orderByDesc ?? false,
+    orderBy: options?.orderBy ?? [],
     limit: options?.limit ?? 100,
     offset: options?.offset ?? 0,
   });

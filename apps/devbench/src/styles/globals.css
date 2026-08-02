@@ -30,9 +30,12 @@ body {
   font-family: var(--font-sans);
 }
 
-/* Covers both glass surfaces (NewSessionDialog, Menu) — they share this blur class. */
+/* Every glass surface (Menu, NewSessionDialog, ConnectionModal) — they share
+   this blur class, which is what this selector has to name. It previously read
+   `.backdrop-blur-\[24px\]`, a class no component uses, so DESIGN.md's required
+   solid fallback matched nothing and never applied. */
 @media (prefers-reduced-transparency: reduce) {
-  .backdrop-blur-\[24px\] {
+  .backdrop-blur-xl {
     backdrop-filter: none;
     background: var(--surface) !important;
   }

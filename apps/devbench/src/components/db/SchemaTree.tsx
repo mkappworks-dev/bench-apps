@@ -6,6 +6,7 @@ import {
   type TableInfo,
 } from "../../lib/tauri";
 import { Menu, ChevronIcon } from "../ui/Menu";
+import { useAppStore } from "../../store/useAppStore";
 
 export function SchemaTree({
   connectionId,
@@ -27,6 +28,8 @@ export function SchemaTree({
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const setRoute = useAppStore((s) => s.setRoute);
+  const setSettingsPane = useAppStore((s) => s.setSettingsPane);
 
   useEffect(() => {
     invokeListConnections()
@@ -54,20 +57,30 @@ export function SchemaTree({
   }
 
   const current = connections.find((c) => c.id === connectionId);
-  const connectionOptions = connections.map((c) => ({ value: c.id, label: c.name }));
+  // The host line is what tells two same-named connections apart — and, more
+  // to the point, what stops someone browsing prod thinking it's local.
+  const connectionOptions = connections.map((c) => ({
+    value: c.id,
+    label: c.name,
+    description: `${c.host}:${c.port}/${c.database}`,
+    icon: <PlugIcon />,
+  }));
 
   return (
     <aside className="w-52.5 min-w-52.5 min-h-0 overflow-y-auto border-r border-border">
-      <div className="border-b border-border p-2">
+      {/* h-11, matching the pane strip and the sessions header: this head used
+          to be padding-sized (46px), which put its rule 2px below every other
+          top divider in the shell — visible as a kink across the full width. */}
+      <div className="flex h-11 items-center border-b border-border px-2">
         {connectionsError ? (
           <div
-            className="rounded-sm border border-border bg-danger-bg px-2 py-1.5 text-xs font-bold text-danger"
+            className="w-full truncate rounded-sm border border-border bg-danger-bg px-2 py-1.5 text-xs font-bold text-danger"
             title={connectionsError}
           >
             Couldn't load connections
           </div>
         ) : connections.length === 0 ? (
-          <div className="px-1 py-1.5 text-xs font-bold text-text-faint">No connections</div>
+          <div className="w-full px-1 py-1.5 text-xs font-bold text-text-faint">No connections</div>
         ) : (
           <Menu
             label="Connection"
@@ -81,6 +94,12 @@ export function SchemaTree({
               </>
             }
             triggerClassName="flex h-7.5 w-full items-center justify-between gap-2 rounded-sm border border-border bg-surface pl-2.75 pr-2 text-xs font-semibold text-text transition-colors duration-150 hover:border-text-faint hover:bg-surface-2"
+            footerLabel="Manage connections…"
+            footerIcon={<GearIcon />}
+            onFooterSelect={() => {
+              setSettingsPane("connections");
+              setRoute("settings");
+            }}
           />
         )}
       </div>
@@ -140,6 +159,24 @@ export function SchemaTree({
 // (response status, the rollup's partial-failure warning) ... never for
 // decoration or generic interactivity" — a watch toggle is closer to the
 // latter, so it follows the same text/text-faint mapping as everything else.
+function PlugIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 2v6M15 2v6M6 8h12l-1 5a5 5 0 0 1-10 0z" />
+      <path d="M12 17v5" />
+    </svg>
+  );
+}
+
+function GearIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.7">
+      <circle cx="12" cy="12" r="3.2" />
+      <path d="M12 2.5v3M12 18.5v3M21.5 12h-3M5.5 12h-3M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1M18.7 18.7l-2.1-2.1M7.4 7.4L5.3 5.3" />
+    </svg>
+  );
+}
+
 function EyeIcon() {
   return (
     <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.7">

@@ -4,6 +4,7 @@ export type ToolKind = "api" | "db" | "log" | "email";
 export type Pane = "left" | "right";
 export type ThemePref = "dark" | "light" | "system";
 export type AppRoute = "workspace" | "settings";
+export type SettingsPane = "general" | "appearance" | "provider" | "connections" | "mcp" | "archive";
 
 export interface Tab {
   id: string;
@@ -50,6 +51,11 @@ interface AppState {
   setChatOpen: (open: boolean) => void;
   route: AppRoute;
   setRoute: (route: AppRoute) => void;
+  /** Which section Settings opens on. Lives here rather than inside
+   *  SettingsScreen so a deep link like the connection picker's "Manage
+   *  connections…" can land on the pane it actually means. */
+  settingsPane: SettingsPane;
+  setSettingsPane: (pane: SettingsPane) => void;
   activeSessionId: string | null;
   setActiveSessionId: (id: string | null) => void;
   activeConnectionId: string | null;
@@ -127,6 +133,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setChatOpen: (open) => set({ chatOpen: open }),
   route: "workspace",
   setRoute: (route) => set({ route }),
+  settingsPane: "general",
+  setSettingsPane: (settingsPane) => set({ settingsPane }),
   activeSessionId: null,
   setActiveSessionId: (id) => set({ activeSessionId: id }),
   activeConnectionId: null,

@@ -88,7 +88,7 @@
 
   .body-grid { flex: 1; display: flex; min-height: 0; }
   .sidebar { width: 218px; min-width: 218px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
-  .side-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 10px 10px 12px; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+  .side-head { height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 10px 0 12px; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
   .side-list { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
   .side-item { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: var(--radius-sm); cursor: pointer; color: var(--text-muted); font-size: var(--fs-sm); border: 0; background: transparent; width: 100%; text-align: left; }
   .side-item:hover { background: var(--surface-2); }
@@ -130,7 +130,10 @@
 
   /* DB tab left rail: connection picker replaces the plain "devbench_test" label */
   .rail { width: 210px; min-width: 210px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
-  .rail-head { padding: 8px; border-bottom: 1px solid var(--border); }
+  /* 44px, the same as .pane-strip and .side-head, so the shell's first
+     horizontal rule is one unbroken line across every column instead of
+     stepping 1-2px at each boundary. */
+  .rail-head { height: 44px; display: flex; align-items: center; padding: 0 8px; border-bottom: 1px solid var(--border); }
   .rail-list { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
 
   .db-content { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
@@ -155,16 +158,54 @@
 
   /* Grid */
   .grid-wrap { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
-  table.data { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: var(--fs-sm); }
-  table.data th { position: relative; text-align: left; padding: 0; color: var(--text-faint); font-weight: 600; border-bottom: 1px solid var(--border); background: var(--surface-2); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .04em; user-select: none; }
-  .th-btn { display: flex; align-items: center; gap: 5px; width: 100%; padding: 7px 14px 7px 12px; background: transparent; border: 0; cursor: pointer; color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit; text-align: left; }
+
+  /* Filter narrows the rows already fetched — it is not a WHERE clause, so it
+     says "this page" rather than implying it searched the whole table. */
+  .grid-toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
+  .grid-toolbar input { flex: 1; min-width: 0; height: 26px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); padding: 0 8px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text); outline: none; }
+  .grid-toolbar input::placeholder { color: var(--text-faint); }
+  .grid-toolbar .count { flex-shrink: 0; font-size: var(--fs-sm); color: var(--text-faint); }
+  .grid-toolbar .reset { flex-shrink: 0; appearance: none; border: 0; background: transparent; cursor: pointer; border-radius: var(--radius-sm); padding: 2px 8px; font-size: var(--fs-sm); color: var(--text-faint); }
+  .grid-toolbar .reset:hover { background: var(--surface-2); color: var(--text); }
+
+  /* `separate` rather than `collapse`: a collapsed border belongs to the table,
+     not the cell, so it does not travel with a position:sticky frozen column.
+     With 0 spacing and borders only on the right/bottom edges the result is
+     visually identical to the collapsed grid. */
+  table.data { width: 100%; border-collapse: separate; border-spacing: 0; font-family: var(--font-mono); font-size: var(--fs-sm); }
+  table.data th { position: relative; text-align: left; padding: 0; color: var(--text-faint); font-weight: 600; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); background: var(--surface-2); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .04em; user-select: none; }
+  table.data th:last-child, table.data td:last-child { border-right: 0; }
+  .th-inner { display: flex; align-items: center; }
+  .th-btn { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; padding: 7px 4px 7px 12px; background: transparent; border: 0; cursor: pointer; color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit; text-align: left; }
   .th-btn:hover { color: var(--text); }
   .th-btn .chev { opacity: 0; color: var(--text-faint); }
   th[data-sort]:not([data-sort="none"]) .chev, .th-btn:hover .chev { opacity: 1; }
   th[data-sort="desc"] .chev { transform: rotate(180deg); }
+  /* Which term ties first when several columns are sorted at once. */
+  .th-btn .ord { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  /* `visibility` rather than opacity so an unrevealed pin cannot be clicked,
+     while the header still reserves its space and nothing shifts on hover. */
+  .th-pin { display: flex; flex-shrink: 0; margin-right: 10px; padding: 2px; border: 0; background: transparent; cursor: pointer; color: var(--text-faint); visibility: hidden; }
+  th:hover .th-pin { visibility: visible; }
+  .th-pin:hover { color: var(--text); }
+  .th-pin.on { visibility: visible; color: var(--text); }
+  /* A frozen column slides over its neighbours, so it carries its own opaque
+     fill — including the row hover fill, or hovering would punch a hole in it. */
+  /* `table.data th` above is (0,1,2) and sets position:relative, so the frozen
+     header needs at least that weight to win — a bare `th.pinned` loses. */
+  table.data th.pinned, table.data td.pinned { position: sticky; z-index: 2; }
+  table.data th.pinned { background: var(--surface-2); }
+  table.data td.pinned { background: var(--bg); }
+  table.data tr:hover td.pinned { background: var(--surface-2); }
+  th[draggable="true"] { cursor: grab; }
+  th.dragging { opacity: .5; }
   .th-resize { position: absolute; top: 0; right: 0; bottom: 0; width: 5px; cursor: col-resize; }
   .th-resize:hover { background: var(--accent); opacity: .5; }
-  table.data td { padding: 7px 12px; border-bottom: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
+  /* Column rules as well as row rules: with a dozen columns scrolling
+     horizontally, a vertical hairline is what keeps a value tied to its
+     header. Same --border weight as the row rule so the grid reads as one
+     structure rather than two competing ones. */
+  table.data td { padding: 7px 12px; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
   table.data tr:last-child td { border-bottom: 0; }
   table.data tr:hover td { background: var(--surface-2); }
   .cell-num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -175,8 +216,14 @@
   .cell-bool.f { background: var(--surface); border: 1px solid var(--border); color: var(--text-faint); }
   td.editable:hover { background: var(--surface-2); cursor: text; }
   td.editable:hover::after { content: '✎'; float: right; color: var(--text-faint); font-size: var(--fs-xs); }
-  .cell-edit, .cell-diff-inline { display: flex; align-items: center; gap: 4px; }
-  .cell-edit input { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--accent); border-radius: 4px; padding: 3px 6px; color: var(--text); font: inherit; }
+  /* The editor sizes to its value and floats over the columns to its right —
+     a cell is usually far narrower than what it holds. Absolute against the
+     cell so nothing reflows and the header stays aligned; opaque because it is
+     genuinely covering the cells underneath. Below the sticky header (z-3),
+     above ordinary cells. */
+  td { position: relative; }
+  .cell-edit, .cell-diff-inline { position: absolute; left: 0; top: 50%; transform: translateY(-50%); z-index: 3; display: flex; align-items: center; gap: 4px; width: max-content; min-width: 100%; padding: 4px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); box-shadow: var(--shadow); }
+  .cell-edit input { min-width: 0; background: var(--bg); border: 1px solid var(--accent); border-radius: 4px; padding: 3px 6px; color: var(--text); font: inherit; }
   .cell-edit button, .cell-diff-inline button { appearance: none; border: 0; cursor: pointer; width: 20px; height: 20px; border-radius: 4px; display: grid; place-items: center; flex-shrink: 0; }
   .cell-edit .save, .cell-diff-inline .save { background: var(--success-bg); color: var(--success); }
   .cell-edit .cancel, .cell-diff-inline .cancel { background: var(--surface-2); color: var(--text-faint); }
@@ -226,6 +273,7 @@ const I = {
   plug: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6M15 2v6M6 8h12l-1 5a5 5 0 0 1-10 0z"/><path d="M12 17v5"/></svg>',
   gear: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M21.5 12h-3M5.5 12h-3M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1M18.7 18.7l-2.1-2.1M7.4 7.4L5.3 5.3"/></svg>',
   back: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
+  pin: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6l-1 6 3 3H7l3-3-1-6z"/><path d="M12 12v9"/></svg>',
 };
 
 /* ---------------------------------------------------------------- data */
@@ -287,6 +335,11 @@ const S = {
   activeTable: 'orders',
   menu: null,
   editingCell: null,     // {ri, ci, phase: 'editing'|'preview', draft}
+  sort: [],              // [{col, desc}] — outermost term first; shift-click appends
+  filter: '',            // narrows the fetched page only, never a WHERE clause
+  pinned: [],            // column names frozen to the left edge
+  colOrder: {},          // table -> column names in on-screen order
+  dragCol: null,
   queryExample: 'select',
   queryPhase: 'idle',    // 'idle' | 'preview' | 'committed' — nothing runs for real until Commit
   consoleOpen: false,
@@ -355,13 +408,40 @@ function eyeIcon() {
   return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12s3.8-6.5 10-6.5S22 12 22 12s-3.8 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg>';
 }
 
+/* On-screen column order: the saved order for this table, minus columns it no
+   longer has, plus any it gained — then pinned columns hoisted to the front so
+   "pinned" and "leftmost" cannot disagree. */
+function visualCols(table) {
+  const cols = SCHEMAS[table].cols;
+  const saved = (S.colOrder[table] || []).filter(c => cols.includes(c));
+  const ordered = [...saved, ...cols.filter(c => !saved.includes(c))];
+  return [...ordered.filter(c => S.pinned.includes(c)), ...ordered.filter(c => !S.pinned.includes(c))];
+}
+
+/* Rows keep their original index so an edit still resolves against the row the
+   user clicked, not its position in the filtered view. */
+function visibleRows(table) {
+  const indexed = ROWS[table].map((row, index) => ({ row, index }));
+  const needle = S.filter.trim().toLowerCase();
+  if (!needle) return indexed;
+  return indexed.filter(({ row }) => row.some(v => displayValue(v).toLowerCase().includes(needle)));
+}
+
 function browseBody() {
   const schema = SCHEMAS[S.activeTable];
+  const shown = visibleRows(S.activeTable);
+  const total = ROWS[S.activeTable].length;
+  const customised = S.pinned.length > 0 || (S.colOrder[S.activeTable] || []).length > 0;
   return `
     <div class="grid-wrap">
-      ${grid(schema.cols, ROWS[S.activeTable], schema.pk)}
+      <div class="grid-toolbar">
+        <input id="grid-filter" placeholder="Filter this page…" value="${S.filter}" spellcheck="false" />
+        ${S.filter.trim() ? `<span class="count">${shown.length} of ${total}</span>` : ''}
+        ${customised ? '<button class="reset" data-act="reset-layout">Reset layout</button>' : ''}
+      </div>
+      ${grid(visualCols(S.activeTable), shown, schema.pk)}
       <div class="grid-pager">
-        <span>Showing 1–${ROWS[S.activeTable].length} · ${S.activeTable}</span>
+        <span>Showing 1–${shown.length} · ${S.activeTable}</span>
         <div class="btns">
           <button class="ghost-btn" disabled style="opacity:.4">Prev</button>
           <button class="ghost-btn">Next</button>
@@ -402,7 +482,7 @@ function renderQueryPhase(ex) {
   if (S.queryPhase === 'preview') {
     return `
       <div class="sql-meta"><span class="pill muted">PREVIEW</span><span>held in an open transaction — not yet committed</span></div>
-      ${ex.diff ? ex.diff.map(diffCard).join('') : (ex.columns.length ? `<div class="grid-wrap">${grid(ex.columns, ex.rows, null)}</div>` : `<div class="grid-note" style="margin-top:0">No rows matched.</div>`)}
+      ${ex.diff ? ex.diff.map(diffCard).join('') : (ex.columns.length ? `<div class="grid-wrap">${grid(ex.columns, ex.rows.map((row, index) => ({ row, index })), null)}</div>` : `<div class="grid-note" style="margin-top:0">No rows matched.</div>`)}
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="ghost-btn" data-act="rollback-query" style="border:1px solid var(--border)">Rollback</button>
         <button class="primary" data-act="commit-query">Commit</button>
@@ -416,7 +496,7 @@ function renderQueryPhase(ex) {
       ${'rowsAffected' in ex ? `<span><b>${ex.rowsAffected}</b> row affected</span>` : `<span><b>${ex.rows.length}</b> rows</span>`}
       <span>·</span><span>${ex.meta.split('·')[1] || ''}</span>
     </div>
-    ${!('rowsAffected' in ex) && ex.columns.length ? `<div class="grid-wrap">${grid(ex.columns, ex.rows, null)}</div>` : ''}
+    ${!('rowsAffected' in ex) && ex.columns.length ? `<div class="grid-wrap">${grid(ex.columns, ex.rows.map((row, index) => ({ row, index })), null)}</div>` : ''}
   `;
 }
 
@@ -427,13 +507,38 @@ function diffCard(d) {
   </div>`;
 }
 
-function grid(cols, rows, pkCol) {
-  return `<table class="data">
-    <thead><tr>${cols.map(c => `<th data-sort="${c === pkCol ? 'asc' : 'none'}">
-      <button class="th-btn" data-sort-col="${c}">${c}${I.chev}</button>
+/* `cols` is the on-screen order; `dataCols` is the order the row arrays are
+   indexed by. Every cell resolves its value (and its edit target) through the
+   DATA index, so reordering can never redirect an edit to another column. */
+function grid(cols, rows, pkCol, dataCols) {
+  const data = dataCols || cols;
+  let pinLeft = 0;
+  const offsets = {};
+  for (const c of cols) {
+    if (!S.pinned.includes(c)) break;
+    offsets[c] = pinLeft;
+    pinLeft += 140;
+  }
+  const th = (c) => {
+    const term = S.sort.find(t => t.col === c);
+    const ord = S.sort.length > 1 && term ? `<span class="ord">${S.sort.indexOf(term) + 1}</span>` : '';
+    const pinned = S.pinned.includes(c);
+    const style = pinned ? ` style="left:${offsets[c]}px"` : '';
+    return `<th data-sort="${term ? (term.desc ? 'desc' : 'asc') : 'none'}" data-col="${c}" draggable="true"
+                class="${pinned ? 'pinned' : ''} ${S.dragCol === c ? 'dragging' : ''}"${style}>
+      <div class="th-inner">
+        <button class="th-btn" data-sort-col="${c}" title="Click to sort, shift-click to add a sort, drag to reorder">${c}${I.chev}${ord}</button>
+        <button class="th-pin ${pinned ? 'on' : ''}" data-pin-col="${c}" title="${pinned ? 'Unfreeze' : 'Freeze'} ${c}">${I.pin}</button>
+      </div>
       <span class="th-resize"></span>
-    </th>`).join('')}</tr></thead>
-    <tbody>${rows.map((r, ri) => `<tr>${r.map((v, ci) => cell(v, cols[ci], pkCol, ri, ci, r)).join('')}</tr>`).join('')}</tbody>
+    </th>`;
+  };
+  const body = rows.map(({ row, index }) => `<tr>${cols
+    .map(c => cell(row[data.indexOf(c)], c, pkCol, index, data.indexOf(c), offsets))
+    .join('')}</tr>`).join('');
+  return `<table class="data">
+    <thead><tr>${cols.map(th).join('')}</tr></thead>
+    <tbody>${body}</tbody>
   </table>`;
 }
 
@@ -443,19 +548,26 @@ function displayValue(v) {
   return String(v);
 }
 
-function cell(v, col, pkCol, ri, ci, row) {
+function cell(v, col, pkCol, ri, ci, offsets) {
   const editable = pkCol && col !== pkCol;
   const editing = S.editingCell && S.editingCell.ri === ri && S.editingCell.ci === ci;
+  const pinned = S.pinned.includes(col);
+  const pinAttrs = pinned ? ` style="left:${offsets[col]}px"` : '';
+  const pinClass = pinned ? 'pinned' : '';
   if (editing && S.editingCell.phase === 'preview') {
-    return `<td><div class="cell-diff-inline">
+    return `<td class="${pinClass}"${pinAttrs}><div class="cell-diff-inline">
       <span class="cell-diff-old">${displayValue(v)}</span><span style="color:var(--text-faint)">→</span><span class="cell-diff-new">${S.editingCell.draft}</span>
       <button class="cancel" data-act="rollback-cell" title="Rollback">${I.x}</button>
       <button class="save" data-act="commit-cell" title="Commit">${I.check}</button>
     </div></td>`;
   }
   if (editing) {
-    return `<td><div class="cell-edit">
-      <input value="${v === null ? '' : (v && v.unsupported ? '' : v)}" autofocus />
+    // `size` from the value itself: the point of the expansion is to show the
+    // whole thing, and a mono face makes `ch` exact.
+    const raw = v === null ? '' : (v && v.unsupported ? '' : String(v));
+    const size = Math.min(Math.max(raw.length + 1, 12), 60);
+    return `<td class="${pinClass}"${pinAttrs}><div class="cell-edit">
+      <input value="${raw}" size="${size}" autofocus />
       <button class="save" data-act="preview-cell" title="Preview change">${I.check}</button>
       <button class="cancel" data-act="cancel-cell" title="Cancel">${I.x}</button>
     </div></td>`;
@@ -466,7 +578,7 @@ function cell(v, col, pkCol, ri, ci, row) {
   else if (v === true || v === false) inner = `<span class="cell-bool ${v ? 't' : 'f'}">${v}</span>`;
   else if (/^-?\d+$/.test(String(v)) && col !== 'id') inner = `<span class="cell-num">${v}</span>`;
   else inner = v;
-  return `<td class="${editable ? 'editable' : ''}" ${editable ? `data-edit-cell="${ri}:${ci}"` : ''}>${inner}</td>`;
+  return `<td class="${editable ? 'editable' : ''} ${pinClass}"${pinAttrs} ${editable ? `data-edit-cell="${ri}:${ci}"` : ''}>${inner}</td>`;
 }
 
 /* ---------------------------------------------------------------- settings */
@@ -620,12 +732,88 @@ function renderMenu() {
 }
 
 /* ------------------------------------------------------------ listeners */
+/* Plain click replaces the sort; shift-click builds one up. A term cycles
+   asc -> desc -> gone so a column can be dropped out of a multi-sort without
+   clearing the whole thing. */
+function applySort(col, additive) {
+  const existing = S.sort.find(t => t.col === col);
+  if (!additive) {
+    S.sort = existing && !existing.desc ? [{ col, desc: true }] : [{ col, desc: false }];
+  } else if (!existing) {
+    S.sort = [...S.sort, { col, desc: false }];
+  } else if (!existing.desc) {
+    S.sort = S.sort.map(t => t.col === col ? { col, desc: true } : t);
+  } else {
+    S.sort = S.sort.filter(t => t.col !== col);
+  }
+}
+
+/* Removing the column first shifts everything after it left by one, so a
+   rightward move has to land AFTER the target to actually go anywhere. */
+function moveColumn(col, target) {
+  if (col === target) return;
+  const cols = visualCols(S.activeTable);
+  const from = cols.indexOf(col), to = cols.indexOf(target);
+  if (from < 0 || to < 0) return;
+  const next = cols.filter(c => c !== col);
+  const anchor = next.indexOf(target);
+  next.splice(from < to ? anchor + 1 : anchor, 0, col);
+  S.colOrder[S.activeTable] = next;
+}
+
+document.addEventListener('input', e => {
+  if (e.target.id === 'grid-filter') {
+    S.filter = e.target.value;
+    S.editingCell = null;
+    const start = e.target.selectionStart;
+    render();
+    // Re-focus after the re-render so typing is uninterrupted.
+    const next = document.getElementById('grid-filter');
+    if (next) { next.focus(); next.setSelectionRange(start, start); }
+  }
+});
+
+document.addEventListener('dragstart', e => {
+  const th = e.target.closest('th[data-col]');
+  if (!th) return;
+  S.dragCol = th.dataset.col;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', th.dataset.col);
+});
+document.addEventListener('dragover', e => { if (e.target.closest('th[data-col]')) e.preventDefault(); });
+document.addEventListener('drop', e => {
+  const th = e.target.closest('th[data-col]');
+  if (!th || !S.dragCol) return;
+  e.preventDefault();
+  moveColumn(S.dragCol, th.dataset.col);
+  S.dragCol = null;
+  render();
+});
+document.addEventListener('dragend', () => { if (S.dragCol) { S.dragCol = null; render(); } });
+
 document.addEventListener('click', e => {
+  const sortBtn = e.target.closest('[data-sort-col]');
+  if (sortBtn) { applySort(sortBtn.dataset.sortCol, e.shiftKey); S.editingCell = null; render(); return; }
+
+  const pinBtn = e.target.closest('[data-pin-col]');
+  if (pinBtn) {
+    const col = pinBtn.dataset.pinCol;
+    S.pinned = S.pinned.includes(col) ? S.pinned.filter(c => c !== col) : [...S.pinned, col];
+    S.editingCell = null;
+    render(); return;
+  }
+
   const menuBtn = e.target.closest('[data-menu]');
   if (menuBtn) { S.menu = { kind: menuBtn.dataset.menu, rect: menuBtn.getBoundingClientRect() }; render(); return; }
 
   const table = e.target.closest('[data-table]');
-  if (table) { S.activeTable = table.dataset.table; S.editingCell = null; render(); return; }
+  if (table) {
+    S.activeTable = table.dataset.table;
+    // A new table's rows and columns are different data — the previous
+    // table's sort, filter and frozen columns do not describe them.
+    S.editingCell = null; S.sort = []; S.filter = ''; S.pinned = [];
+    render(); return;
+  }
 
   const editCell = e.target.closest('[data-edit-cell]');
   if (editCell) { const [ri, ci] = editCell.dataset.editCell.split(':').map(Number); S.editingCell = { ri, ci, phase: 'editing' }; render(); return; }
@@ -654,6 +842,7 @@ document.addEventListener('click', e => {
       ROWS[S.activeTable][ri][ci] = draft;
       S.editingCell = null;
     }
+    if (a === 'reset-layout') { S.pinned = []; S.colOrder[S.activeTable] = []; }
     if (a === 'add-connection') S.connectionModal = { mode: 'add' };
     render(); return;
   }

@@ -51,7 +51,7 @@ describe("DbTab", () => {
       expect(listRows).toHaveBeenCalledWith(
         "c1",
         "orders",
-        expect.objectContaining({ orderByColumn: null, orderByDesc: false, offset: 0 }),
+        expect.objectContaining({ orderBy: [], offset: 0 }),
       ),
     );
   });
@@ -113,7 +113,7 @@ describe("DbTab", () => {
       expect(listRows).toHaveBeenLastCalledWith(
         "c1",
         "orders",
-        expect.objectContaining({ orderByColumn: "status", orderByDesc: false, offset: 0 }),
+        expect.objectContaining({ orderBy: [{ column: "status", descending: false }], offset: 0 }),
       ),
     );
   });
@@ -130,9 +130,9 @@ describe("DbTab", () => {
 
     const sortButton = await screen.findByRole("button", { name: "Sort by status" });
     fireEvent.click(sortButton);
-    await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ orderByDesc: false })));
+    await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ orderBy: [{ column: "status", descending: false }] })));
     fireEvent.click(sortButton);
-    await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ orderByDesc: true })));
+    await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ orderBy: [{ column: "status", descending: true }] })));
   });
 
   // The backend never returns a total count, so a request for PAGE_SIZE+1
@@ -182,7 +182,7 @@ describe("DbTab", () => {
     await waitFor(() => expect(listRows).toHaveBeenCalled());
     fireEvent.click(await screen.findByRole("button", { name: "Sort by status" }));
     await waitFor(() =>
-      expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ orderByColumn: "status" })),
+      expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ orderBy: [{ column: "status", descending: false }] })),
     );
 
     await act(async () => {
@@ -193,7 +193,7 @@ describe("DbTab", () => {
       expect(listRows).toHaveBeenLastCalledWith(
         "c2",
         "orders",
-        expect.objectContaining({ orderByColumn: null, offset: 0 }),
+        expect.objectContaining({ orderBy: [], offset: 0 }),
       ),
     );
   });
@@ -220,7 +220,7 @@ describe("DbTab", () => {
       expect(listRows).toHaveBeenLastCalledWith(
         "c1",
         "payments",
-        expect.objectContaining({ orderByColumn: null, offset: 0 }),
+        expect.objectContaining({ orderBy: [], offset: 0 }),
       ),
     );
   });
@@ -267,7 +267,7 @@ describe("DbTab", () => {
     expect(deferredPaymentsFetch.resolve).not.toBeNull();
     deferredPaymentsFetch.resolve?.({ columns: ["id"], rows: [["1"]], pk_column: "id" });
     await waitFor(() => expect(screen.getByRole("button", { name: "Next" })).toBeDisabled());
-    expect(listRows).toHaveBeenLastCalledWith("c1", "payments", expect.objectContaining({ orderByColumn: null, offset: 0 }));
+    expect(listRows).toHaveBeenLastCalledWith("c1", "payments", expect.objectContaining({ orderBy: [], offset: 0 }));
   });
 
   // Regression guard for the race a naive implementation hits: firing a sort
@@ -279,12 +279,12 @@ describe("DbTab", () => {
     // site below; a holder object sidesteps that.
     const deferredStatusFetch: { resolve: ((value: TableRows) => void) | null } = { resolve: null };
     vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation((_conn, _table, opts) => {
-      if (opts?.orderByColumn === "status") {
+      if (opts?.orderBy?.[0]?.column === "status") {
         return new Promise<TableRows>((resolve) => {
           deferredStatusFetch.resolve = resolve;
         });
       }
-      if (opts?.orderByColumn === "id") {
+      if (opts?.orderBy?.[0]?.column === "id") {
         return Promise.resolve({ columns: ["id", "status"], rows: [["1", "by-id"]], pk_column: "id" });
       }
       return Promise.resolve({ columns: ["id", "status"], rows: [["1", "unsorted"]], pk_column: "id" });
@@ -429,7 +429,7 @@ describe("DbTab", () => {
       await waitFor(() => screen.getByText("t1"));
 
       fireEvent.click(screen.getByText("t1"));
-      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+      expect(screen.queryByRole("textbox", { name: /^Edit / })).not.toBeInTheDocument();
       expect(screen.getByText(/No single-column primary key/)).toBeInTheDocument();
     });
 
@@ -454,14 +454,14 @@ describe("DbTab", () => {
       fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
 
       fireEvent.click(screen.getByText("<unsupported type>"));
-      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+      expect(screen.queryByRole("textbox", { name: /^Edit / })).not.toBeInTheDocument();
     });
 
     // NULL and "" are different values on the wire (preview_cell_edit takes
-    // `value: string | null`) — a NULL cell must default to an explicit NULL
-    // toggle rather than silently becoming an empty string the moment it's
-    // opened for editing.
-    it("editing a NULL cell defaults the NULL toggle on, and previewing sends null rather than an empty string", async () => {
+    // `value: string | null`), so opening a NULL cell must not silently turn
+    // it into an empty string. The editor carries no NULL control — an
+    // untouched draft simply stays null all the way to the request.
+    it("editing a NULL cell previews null rather than an empty string when the draft is untouched", async () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"],
         rows: [["1", null]],
@@ -478,9 +478,10 @@ describe("DbTab", () => {
       await waitFor(() => screen.getByText("NULL"));
 
       fireEvent.click(screen.getByText("NULL"));
-      const checkbox = await screen.findByRole("checkbox", { name: "NULL" });
-      expect(checkbox).toBeChecked();
-      expect(screen.getByRole("textbox")).toBeDisabled();
+      const input = await screen.findByRole("textbox", { name: /^Edit / });
+      expect(input).toBeEnabled();
+      expect(input).toHaveValue("");
+      expect(screen.queryByRole("checkbox", { name: "NULL" })).not.toBeInTheDocument();
 
       fireEvent.click(screen.getByRole("button", { name: "Preview change" }));
       await waitFor(() => expect(preview).toHaveBeenCalledWith("c1", "orders", "id", "1", "status", null));

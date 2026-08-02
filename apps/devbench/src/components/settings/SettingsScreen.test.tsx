@@ -2,6 +2,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { SettingsScreen } from "./SettingsScreen";
 import * as tauriLib from "../../lib/tauri";
+import { useAppStore } from "../../store/useAppStore";
 
 const settings = {
   theme: "dark",
@@ -14,6 +15,11 @@ const settings = {
 
 describe("SettingsScreen", () => {
   beforeEach(() => {
+    // The selected pane is app state now (so "Manage connections…" can deep
+    // link into it), which means it survives between tests in this file —
+    // without this reset, "starts on General" would only pass by virtue of
+    // running before the test that switches panes.
+    useAppStore.setState({ settingsPane: "general" });
     vi.restoreAllMocks();
     vi.spyOn(tauriLib, "invokeGetSettings").mockResolvedValue(settings);
     vi.spyOn(tauriLib, "invokeListArchivedSessions").mockResolvedValue([]);
@@ -37,6 +43,13 @@ describe("SettingsScreen", () => {
   it("starts on General", async () => {
     render(<SettingsScreen onBack={() => {}} />);
     await waitFor(() => expect(screen.getByRole("heading", { name: "General" })).toBeInTheDocument());
+  });
+
+  it("opens on the pane the caller asked for, so a deep link lands where it means to", async () => {
+    useAppStore.setState({ settingsPane: "connections" });
+    render(<SettingsScreen onBack={() => {}} />);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Connections" })).toBeInTheDocument());
+    expect(screen.queryByRole("heading", { name: "General" })).not.toBeInTheDocument();
   });
 
   it("switches panes", async () => {
