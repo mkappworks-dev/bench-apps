@@ -573,6 +573,20 @@ impl LogState {
         LogPage { lines, next_id, dropped }
     }
 
+    /// Reconciles the in-memory id counter with what's already durable in
+    /// SQLite after a restart (a fresh `LogState` otherwise starts back at
+    /// 1, colliding with a previous session's still-persisted `log_lines`
+    /// primary keys). Only ever moves the counter forward — a lower `next`
+    /// is ignored so a call racing after some lines were already captured
+    /// can't regress it and reopen the exact collision this exists to close.
+    pub fn seed_next_id(&self, next: u64) {
+        if let Ok(mut inner) = self.inner.lock() {
+            if next > inner.next_id {
+                inner.next_id = next;
+            }
+        }
+    }
+
     pub fn next_line_id(&self) -> u64 {
         match self.inner.lock() {
             Ok(inner) => inner.next_id,
@@ -1224,5 +1238,19 @@ mod tests {
         let third_batch = state.take_unflushed();
         assert_eq!(third_batch.len(), 1);
         assert_eq!(third_batch[0].message, "three");
+    }
+
+    #[test]
+    fn seed_next_id_moves_the_counter_forward_but_never_backward() {
+        let state = LogState::new();
+        assert_eq!(state.next_line_id(), 1);
+
+        state.seed_next_id(100);
+        assert_eq!(state.next_line_id(), 100);
+
+        // A lower value must not regress a counter that's already ahead —
+        // e.g. a line captured before seeding happened to run.
+        state.seed_next_id(5);
+        assert_eq!(state.next_line_id(), 100);
     }
 }

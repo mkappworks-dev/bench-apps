@@ -81,7 +81,13 @@ fn main() {
             // screen instead (via `StartupStatus`, always managed either way).
             let smtp_target = match init_result {
                 Ok((db, smtp_port)) => {
-                    tauri::async_runtime::block_on(devbench::commands::logs::restore_persisted_sources(&db.pool, &logs));
+                    // Seed before restore: a restored command can immediately assign log IDs.
+                    tauri::async_runtime::block_on(async {
+                        if let Err(e) = devbench::commands::logs::seed_log_id_counter(&db.pool, &logs).await {
+                            eprintln!("failed to seed log line id counter: {e}");
+                        }
+                        devbench::commands::logs::restore_persisted_sources(&db.pool, &logs).await;
+                    });
                     let db_pool_for_flush = db.pool.clone();
                     let logs_for_flush = Arc::clone(&logs);
                     tauri::async_runtime::spawn(async move {
@@ -257,7 +263,9 @@ fn main() {
                 let logs = app_handle.state::<Arc<LogState>>();
                 tauri::async_runtime::block_on(async {
                     if let Some(db) = app_handle.try_state::<LocalDb>() {
-                        let _ = devbench::commands::logs::flush_new_lines(&db.pool, &logs).await;
+                        if let Err(e) = devbench::commands::logs::flush_new_lines(&db.pool, &logs).await {
+                            eprintln!("final log flush on shutdown failed: {e}");
+                        }
                     }
                     logs.kill_all_commands().await;
                 });

@@ -240,8 +240,31 @@ pub async fn add_log_source_impl(
 /// same pattern as `DEFAULT_CORRELATION_WINDOW_MS`.
 pub const MAX_PERSISTED_LINES: i64 = 100_000;
 
+/// Reconciles `LogState`'s in-memory id counter with whatever is already
+/// durable in `log_lines`, so a restarted session's freshly-assigned ids
+/// (which start back at 1 in a brand new `LogState`) never collide with a
+/// previous session's still-persisted primary keys. Must run before any line
+/// can be captured or flushed — `restore_persisted_sources` can immediately
+/// start emitting lines from respawned command sources, so this has to run
+/// BEFORE that call, not merely "alongside" it.
+pub async fn seed_log_id_counter(pool: &SqlitePool, logs: &LogState) -> Result<(), String> {
+    let max_id: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM log_lines")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("failed to read the highest persisted log line id: {e}"))?;
+    logs.seed_next_id(max_id as u64 + 1);
+    Ok(())
+}
+
+/// Batched in one transaction, not one implicit commit per row: a bursty
+/// tick's lines land atomically (all or none) and pay one fsync-equivalent
+/// instead of one per line.
 pub async fn flush_new_lines(pool: &SqlitePool, logs: &LogState) -> Result<usize, String> {
     let batch = logs.take_unflushed();
+    if batch.is_empty() {
+        return Ok(0);
+    }
+    let mut tx = pool.begin().await.map_err(|e| format!("failed to begin log flush transaction: {e}"))?;
     let mut written = 0;
     for line in &batch {
         sqlx::query(
@@ -254,11 +277,12 @@ pub async fn flush_new_lines(pool: &SqlitePool, logs: &LogState) -> Result<usize
         .bind(&line.level)
         .bind(&line.message)
         .bind(&line.raw)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| format!("failed to flush log line {}: {e}", line.id))?;
         written += 1;
     }
+    tx.commit().await.map_err(|e| format!("failed to commit log line flush: {e}"))?;
     Ok(written)
 }
 
@@ -778,5 +802,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(remaining_ids, vec![7, 8, 9, 10]);
+    }
+
+    // Reproduces a restart: a previous session already persisted a row with
+    // id 1. A fresh LogState (exactly what main.rs constructs on every
+    // launch) starts its id counter at 1 too, unless seeded — so the very
+    // first line captured this session collides with that old row's primary
+    // key. Without `seed_log_id_counter`, this test fails: `flush_new_lines`
+    // returns Err on the collision, and because `take_unflushed` already
+    // advanced its cursor before the INSERT ran, that line is gone for good.
+    #[tokio::test]
+    async fn seeding_the_id_counter_prevents_a_restarted_session_from_colliding_with_persisted_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO log_lines (id, source_id, captured_at_ms, timestamp, level, message, raw) VALUES (1, 'src-old', 1000, NULL, NULL, 'from last session', 'from last session')",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let state = LogState::new();
+        seed_log_id_counter(&db.pool, &state).await.unwrap();
+
+        let path = dir.path().join("app.log");
+        std::fs::write(&path, "").unwrap();
+        state.add_source("app.log".into(), crate::log_state::SourceKind::File { path: path.clone() }).unwrap();
+        state.poll_all(1_000);
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(f, "from this session").unwrap();
+        f.flush().unwrap();
+        state.poll_all(2_000);
+
+        let written = flush_new_lines(&db.pool, &state).await.expect("flush must not collide with a previous session's ids");
+        assert_eq!(written, 1);
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM log_lines").fetch_one(&db.pool).await.unwrap();
+        assert_eq!(count, 2, "the previous session's row and the new one must both survive");
     }
 }
