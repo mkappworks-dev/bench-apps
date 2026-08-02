@@ -489,7 +489,7 @@ export function DbTab({
   }
 
   return (
-    <div className="-m-6 flex h-full">
+    <div className="flex h-full w-full min-h-0">
       <SchemaTree
         connectionId={activeConnectionId}
         watchedTables={watchedTables}

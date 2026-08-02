@@ -31,6 +31,16 @@ export function SplitContent({
   const activeTabId = useAppStore((s) => s.activeTabId);
   const splitOpen = tabs.some((t) => t.pane === "right");
 
+  // DB is the one tool that manages its own edge-to-edge layout and internal
+  // scrolling (the schema divider and query console both need to reach the
+  // pane's true bottom, and the grid needs to run flush to whatever's next
+  // door) — so the pane hosting an active DB tab drops the shared p-6/scroll
+  // that every other tool still depends on, rather than fighting it with
+  // negative margins.
+  function paneOwnsDbLayout(pane: Pane): boolean {
+    return tabs.find((t) => t.pane === pane && t.id === activeTabId[pane])?.kind === "db";
+  }
+
   function renderPane(pane: Pane) {
     const paneTabs = tabs.filter((t) => t.pane === pane).sort((a, b) => a.ordinal - b.ordinal);
     if (paneTabs.length === 0) {
@@ -58,9 +68,19 @@ export function SplitContent({
 
   return (
     <div className="flex min-h-0 flex-1">
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6">{renderPane("left")}</main>
+      <main
+        className={`flex min-h-0 min-w-0 flex-1 flex-col ${
+          paneOwnsDbLayout("left") ? "overflow-hidden" : "overflow-y-auto p-6"
+        }`}
+      >
+        {renderPane("left")}
+      </main>
       {splitOpen ? (
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto border-l border-border p-6">
+        <main
+          className={`flex min-h-0 min-w-0 flex-1 flex-col border-l border-border ${
+            paneOwnsDbLayout("right") ? "overflow-hidden" : "overflow-y-auto p-6"
+          }`}
+        >
           {renderPane("right")}
         </main>
       ) : null}

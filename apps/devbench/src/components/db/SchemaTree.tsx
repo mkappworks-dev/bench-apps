@@ -57,7 +57,7 @@ export function SchemaTree({
   const connectionOptions = connections.map((c) => ({ value: c.id, label: c.name }));
 
   return (
-    <aside className="w-50 min-w-50 border-r border-border">
+    <aside className="w-50 min-w-50 min-h-0 overflow-y-auto border-r border-border">
       <div className="border-b border-border p-2">
         {connectionsError ? (
           <div
