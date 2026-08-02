@@ -9,7 +9,7 @@ function csvField(value: string | null): string {
 export function toCsv(columns: string[], rows: (string | null)[][]): string {
   const header = columns.map(csvField).join(",");
   const body = rows.map((row) => row.map(csvField).join(",")).join("\n");
-  return body ? `${header}\n${body}` : header;
+  return rows.length ? `${header}\n${body}` : header;
 }
 
 export function toJson(columns: string[], rows: (string | null)[][]): string {

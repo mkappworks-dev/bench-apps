@@ -17,6 +17,13 @@ describe("toCsv", () => {
   it("writes NULL as an empty field and the empty string as quoted", () => {
     expect(toCsv(["a", "b"], [[null, ""]])).toBe('a,b\n,""');
   });
+
+  // A single row that serializes to "" must not look like zero rows — the
+  // truthiness of `body` alone can't tell those cases apart.
+  it("keeps a single all-null row distinct from having no rows at all", () => {
+    expect(toCsv(["notes"], [[null]])).toBe("notes\n");
+    expect(toCsv(["notes"], [])).toBe("notes");
+  });
 });
 
 describe("toJson", () => {
