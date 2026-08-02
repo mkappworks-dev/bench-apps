@@ -78,7 +78,7 @@ export function FilterPopover({
             </select>
             {needsValue ? (
               <input
-                aria-label="Filter value"
+                aria-label={`Filter value, condition ${index + 1}`}
                 value={condition.value ?? ""}
                 onChange={(e) => update(index, { value: e.target.value })}
                 placeholder="value"

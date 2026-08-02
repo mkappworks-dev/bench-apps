@@ -26,7 +26,7 @@ describe("FilterPopover", () => {
     const { onApply } = renderPopover();
     fireEvent.click(screen.getByRole("button", { name: /add filter/i }));
     fireEvent.change(screen.getByRole("combobox", { name: /^Filter column/ }), { target: { value: "status" } });
-    fireEvent.change(screen.getByRole("textbox", { name: "Filter value" }), { target: { value: "paid" } });
+    fireEvent.change(screen.getByRole("textbox", { name: /^Filter value/ }), { target: { value: "paid" } });
     expect(onApply).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
@@ -78,7 +78,7 @@ describe("FilterPopover", () => {
 
   it("hides the value field for an operator that takes none", () => {
     renderPopover([{ column: "status", op: "is_null", value: null, enabled: true }]);
-    expect(screen.queryByRole("textbox", { name: "Filter value" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /^Filter value/ })).not.toBeInTheDocument();
   });
 
   // Each row's column and operator pickers need their own accessible names, or

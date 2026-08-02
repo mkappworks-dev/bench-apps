@@ -205,7 +205,7 @@ describe("DbTab", () => {
     // FilterPopover disambiguates per-row controls as "Filter column, condition
     // N" (a11y fix from an earlier task) — a plain-string match here would miss.
     fireEvent.change(screen.getByRole("combobox", { name: /^Filter column/ }), { target: { value: "status" } });
-    fireEvent.change(screen.getByRole("textbox", { name: "Filter value" }), { target: { value: "paid" } });
+    fireEvent.change(screen.getByRole("textbox", { name: /^Filter value/ }), { target: { value: "paid" } });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
     const expected = [{ column: "status", op: "eq", value: "paid", enabled: true }];

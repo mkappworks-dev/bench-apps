@@ -52,17 +52,27 @@ export function writeLayout(key: string | undefined, layout: GridLayout): void {
   }
 }
 
-/** On-screen order: saved order, minus columns this table no longer has, plus
- *  any it gained, minus hidden ones — then pinned hoisted to the front. */
-export function visualColumns(columns: string[], layout: GridLayout): string[] {
+/** Saved order, minus columns this table no longer has, plus any it gained —
+ *  then pinned hoisted to the front. Visibility is the callers' business. */
+function arrange(columns: string[], layout: GridLayout): string[] {
   const known = layout.order.filter((c) => columns.includes(c));
-  const ordered = [...known, ...columns.filter((c) => !known.includes(c))].filter(
-    (c) => !layout.hidden.includes(c),
-  );
+  const ordered = [...known, ...columns.filter((c) => !known.includes(c))];
   return [
     ...ordered.filter((c) => layout.pinned.includes(c)),
     ...ordered.filter((c) => !layout.pinned.includes(c)),
   ];
+}
+
+/** On-screen order — `arrange`, minus the columns the user has hidden. */
+export function visualColumns(columns: string[], layout: GridLayout): string[] {
+  return arrange(columns, layout).filter((c) => !layout.hidden.includes(c));
+}
+
+/** Export order — `arrange`, keeping hidden columns. Hiding is a view concern
+ *  (spec §5): a hidden column is still fetched, filterable, sortable and
+ *  exported, so an export must not quietly drop the user's data. */
+export function exportColumnOrder(columns: string[], layout: GridLayout): string[] {
+  return arrange(columns, layout);
 }
 
 export function widthOf(column: string, layout: GridLayout): number {

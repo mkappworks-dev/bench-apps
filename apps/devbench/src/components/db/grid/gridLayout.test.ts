@@ -1,5 +1,13 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { EMPTY_LAYOUT, readLayout, writeLayout, visualColumns, pinOffsets, MIN_COLUMN_PX } from "./gridLayout";
+import {
+  EMPTY_LAYOUT,
+  readLayout,
+  writeLayout,
+  visualColumns,
+  exportColumnOrder,
+  pinOffsets,
+  MIN_COLUMN_PX,
+} from "./gridLayout";
 
 beforeEach(() => localStorage.clear());
 
@@ -23,6 +31,36 @@ describe("visualColumns", () => {
   it("omits hidden columns", () => {
     const layout = { ...EMPTY_LAYOUT, hidden: ["notes"] };
     expect(visualColumns(["id", "notes"], layout)).toEqual(["id"]);
+  });
+});
+
+describe("exportColumnOrder", () => {
+  it("keeps the saved order and appends columns the table has gained", () => {
+    const layout = { ...EMPTY_LAYOUT, order: ["status", "id"] };
+    expect(exportColumnOrder(["id", "status", "notes"], layout)).toEqual(["status", "id", "notes"]);
+  });
+
+  it("drops columns the table no longer has", () => {
+    const layout = { ...EMPTY_LAYOUT, order: ["gone", "id"] };
+    expect(exportColumnOrder(["id"], layout)).toEqual(["id"]);
+  });
+
+  it("hoists pinned columns to the front regardless of saved order", () => {
+    const layout = { ...EMPTY_LAYOUT, order: ["status", "id"], pinned: ["id"] };
+    expect(exportColumnOrder(["id", "status"], layout)).toEqual(["id", "status"]);
+  });
+
+  // The one deliberate difference from visualColumns: hiding is a view concern
+  // (spec §5), so an export still carries every column.
+  it("keeps hidden columns, unlike visualColumns", () => {
+    const layout = { ...EMPTY_LAYOUT, hidden: ["notes"] };
+    expect(exportColumnOrder(["id", "notes"], layout)).toEqual(["id", "notes"]);
+    expect(visualColumns(["id", "notes"], layout)).toEqual(["id"]);
+  });
+
+  it("keeps a hidden column in its pinned position", () => {
+    const layout = { ...EMPTY_LAYOUT, pinned: ["notes"], hidden: ["notes"] };
+    expect(exportColumnOrder(["id", "notes"], layout)).toEqual(["notes", "id"]);
   });
 });
 
