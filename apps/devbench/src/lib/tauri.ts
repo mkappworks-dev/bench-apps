@@ -187,6 +187,13 @@ export function invokeCollectCorrelationWindow(
   return invoke("collect_correlation_window", { correlationId, historyId });
 }
 
+/** Wire-compatible with the Rust `QualifiedTable`. A table's full identity —
+ *  a bare name is ambiguous once more than one schema is in play. */
+export interface QualifiedTable {
+  schema: string;
+  name: string;
+}
+
 export interface TableInfo {
   schema: string;
   name: string;
@@ -207,7 +214,7 @@ import type { FilterCondition, SortTerm } from "../components/db/grid/types";
 
 export function invokeListTableRows(
   connectionId: string,
-  table: string,
+  table: QualifiedTable,
   options?: { filter?: FilterCondition[]; orderBy?: SortTerm[]; limit?: number; offset?: number },
 ): Promise<TableRows> {
   return invoke("list_table_rows", {
@@ -222,17 +229,17 @@ export function invokeListTableRows(
 
 export function invokeCountTableRows(
   connectionId: string,
-  table: string,
+  table: QualifiedTable,
   filter: FilterCondition[] = [],
 ): Promise<number> {
   return invoke("count_table_rows", { connectionId, table, filter });
 }
 
-export function invokeListWatchedTables(connectionId: string): Promise<string[]> {
+export function invokeListWatchedTables(connectionId: string): Promise<QualifiedTable[]> {
   return invoke("list_watched_tables", { connectionId });
 }
 
-export function invokeSetWatchedTable(connectionId: string, table: string, watched: boolean): Promise<void> {
+export function invokeSetWatchedTable(connectionId: string, table: QualifiedTable, watched: boolean): Promise<void> {
   return invoke("set_watched_table", { connectionId, table, watched });
 }
 
@@ -249,7 +256,7 @@ export function invokePreviewQuery(connectionId: string, sql: string): Promise<Q
 
 export function invokePreviewCellEdit(
   connectionId: string,
-  table: string,
+  table: QualifiedTable,
   pkColumn: string,
   pkValue: string,
   column: string,

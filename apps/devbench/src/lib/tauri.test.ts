@@ -8,6 +8,7 @@ import {
   invokeListHistory,
   invokeListTableRows,
   invokeRunCorrelatedRequest,
+  invokeSetWatchedTable,
 } from "./tauri";
 
 /**
@@ -241,6 +242,45 @@ describe("invokeListTableRows with a filter", () => {
       orderBy: [{ column: "id", descending: true, enabled: true }],
       limit: 25,
       offset: 50,
+    });
+  });
+});
+
+describe("qualified table wrappers", () => {
+  beforeEach(() => {
+    invoked.mockClear();
+    invoked.mockResolvedValue({ columns: [], rows: [], pk_column: null });
+  });
+
+  it("sends the table as a {schema, name} object", async () => {
+    await invokeListTableRows("c1", { schema: "alt", name: "orders" }, { limit: 25 });
+    expect(lastInvoke()[1]).toEqual({
+      connectionId: "c1",
+      table: { schema: "alt", name: "orders" },
+      filter: [],
+      orderBy: [],
+      limit: 25,
+      offset: 0,
+    });
+  });
+
+  it("sends the same table shape to the count", async () => {
+    invoked.mockResolvedValue(0);
+    await invokeCountTableRows("c1", { schema: "alt", name: "orders" });
+    expect(lastInvoke()[1]).toEqual({
+      connectionId: "c1",
+      table: { schema: "alt", name: "orders" },
+      filter: [],
+    });
+  });
+
+  it("sends the same table shape when watching", async () => {
+    invoked.mockResolvedValue(undefined);
+    await invokeSetWatchedTable("c1", { schema: "public", name: "orders" }, true);
+    expect(lastInvoke()[1]).toEqual({
+      connectionId: "c1",
+      table: { schema: "public", name: "orders" },
+      watched: true,
     });
   });
 });
