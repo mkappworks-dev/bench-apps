@@ -18,6 +18,9 @@
     --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.5);
     --glass-bg: rgba(18,20,25,.72); --glass-border: rgba(255,255,255,.08);
     --glass-hi: inset 0 1px 0 rgba(255,255,255,.06);
+    /* Secondary buttons on glass: a hairline of the surface's own light, not a
+       --border hairline, which disappears against a translucent panel. */
+    --btn-ghost-border: rgba(255,255,255,.16); --btn-ghost-bg: rgba(255,255,255,.04);
     --radius-sm: 6px; --radius-lg: 12px;
     --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
     --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Consolas, monospace;
@@ -33,6 +36,7 @@
     --shadow:0 1px 2px rgba(16,21,31,.05), 0 10px 28px rgba(16,21,31,.09);
     --glass-bg: rgba(255,255,255,.78); --glass-border: rgba(16,21,31,.07);
     --glass-hi: inset 0 1px 0 rgba(255,255,255,.6);
+    --btn-ghost-border: rgba(16,21,31,.18); --btn-ghost-bg: rgba(16,21,31,.03);
   }
 
   * { box-sizing: border-box; }
@@ -159,14 +163,113 @@
   /* Grid */
   .grid-wrap { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
 
-  /* Filter narrows the rows already fetched — it is not a WHERE clause, so it
-     says "this page" rather than implying it searched the whole table. */
-  .grid-toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
-  .grid-toolbar input { flex: 1; min-width: 0; height: 26px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); padding: 0 8px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text); outline: none; }
-  .grid-toolbar input::placeholder { color: var(--text-faint); }
-  .grid-toolbar .count { flex-shrink: 0; font-size: var(--fs-sm); color: var(--text-faint); }
-  .grid-toolbar .reset { flex-shrink: 0; appearance: none; border: 0; background: transparent; cursor: pointer; border-radius: var(--radius-sm); padding: 2px 8px; font-size: var(--fs-sm); color: var(--text-faint); }
-  .grid-toolbar .reset:hover { background: var(--surface-2); color: var(--text); }
+  /* Write actions bracket the row (Insert left, Pending right of the view
+     controls); view controls group in the middle; paging sits far right. */
+  /* Always one row. When the pane is too narrow for labels, the buttons drop to
+     icons rather than wrapping to a second line — the toolbar's height staying
+     constant matters more than its words, and every icon keeps its tooltip. */
+  .grid-toolbar { display: flex; align-items: center; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--border); background: var(--surface); container-type: inline-size; }
+  @container (max-width: 620px) {
+    .grid-toolbar .tb-btn span:not(.tb-count):not(.caret) { display: none; }
+    .grid-toolbar .tb-btn { padding: 0 6px; gap: 3px; }
+    .grid-toolbar .tb-sep { margin: 0 2px; }
+  }
+  /* The table scrolls inside the card, so the toolbar and pager above and
+     below it are never pushed out of view by a wide table. */
+  .grid-scroll { overflow-x: auto; }
+  .tb-btn { appearance: none; border: 1px solid transparent; background: transparent; cursor: pointer; height: 26px; padding: 0 8px; border-radius: var(--radius-sm); display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: var(--fs-sm); font-weight: 500; white-space: nowrap; }
+  .tb-btn:hover { background: var(--surface-2); color: var(--text); }
+  .tb-btn[aria-expanded="true"] { background: var(--surface-2); color: var(--text); }
+  .tb-btn.icon { width: 26px; padding: 0; justify-content: center; }
+  .tb-btn .caret { color: var(--text-faint); }
+  /* Insert is the one action that creates data, so it carries the accent —
+     the same inversion `.primary` uses for a primary action. */
+  .tb-btn.primary-btn { background: var(--accent); color: var(--accent-on); font-weight: 700; }
+  .tb-btn.primary-btn:hover { background: var(--accent-strong); }
+  /* An active rule set changes the button rather than hiding behind a caret:
+     a filtered grid must never look like an unfiltered one. */
+  .tb-btn.active { background: var(--surface-2); color: var(--text); border-color: var(--border); }
+  .tb-btn.active .caret { color: var(--text-muted); }
+  .tb-count { min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: var(--accent-on); font-size: var(--fs-xs); font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+  .tb-sep { width: 1px; height: 16px; background: var(--border); flex-shrink: 0; margin: 0 4px; }
+  .tb-spacer { flex: 1; min-width: 8px; }
+  /* Count badge — hidden entirely at zero rather than advertising an empty state. */
+  .tb-badge { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: var(--accent-on); font-size: var(--fs-xs); font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+  /* Arrows, field text and "of N" all sit at --fs-sm so the pager reads as one
+     control rather than three different sizes stacked next to each other. */
+  .pager { display: flex; align-items: center; gap: 2px; font-size: var(--fs-sm); color: var(--text-faint); }
+  .pager .step { width: 22px; height: 24px; padding: 0; justify-content: center; font-size: var(--fs-sm); line-height: 1; }
+  .pager input { width: 34px; height: 24px; text-align: center; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font-family: var(--font-mono); font-size: var(--fs-sm); outline: none; padding: 0; }
+  .pager .of { padding: 0 6px; white-space: nowrap; font-size: var(--fs-sm); }
+  .pager select { height: 24px; font-size: var(--fs-sm); }
+
+  /* Toolbar popovers reuse the .menu glass primitive. */
+  .pop { position: absolute; z-index: 50; min-width: 330px; padding: 10px; background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: var(--radius-lg); box-shadow: var(--shadow), var(--glass-hi); backdrop-filter: blur(22px) saturate(155%); -webkit-backdrop-filter: blur(22px) saturate(155%); }
+  .pop-head { font-size: var(--fs-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 8px; }
+  .pop-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  /* `:not([type=checkbox])` matters: this rule outweighs `.rule-on` on
+     specificity, so without the exclusion it stretches the tick box into a
+     26px-tall flex-filling field. */
+  .pop-row select, .pop-row input:not([type="checkbox"]) { height: 26px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font-size: var(--fs-sm); padding: 0 6px; outline: none; min-width: 0; }
+  .pop-row select { flex: 1; } .pop-row input:not([type="checkbox"]) { flex: 1; font-family: var(--font-mono); }
+  .pop-row .drop { appearance: none; border: 0; background: transparent; cursor: pointer; color: var(--text-faint); display: flex; padding: 3px; border-radius: var(--radius-sm); font-size: var(--fs-sm); line-height: 1; }
+  .pop-row .drop:hover { color: var(--danger); background: var(--danger-bg); }
+  .pop-row .rule-move .drop:hover { color: var(--text); background: var(--surface-2); }
+  /* Drawn rather than native: a UA checkbox is ~16px, square-ish and platform
+     coloured, which reads as a form control dropped into a dense rule row. */
+  .rule-on { appearance: none; -webkit-appearance: none; flex-shrink: 0; margin: 0; width: 14px; height: 14px; border: 1px solid var(--text-faint); border-radius: 4px; background: transparent; cursor: pointer; display: grid; place-items: center; transition: background-color 120ms ease, border-color 120ms ease; }
+  .rule-on:hover { border-color: var(--text-muted); }
+  .rule-on:checked { background: var(--accent); border-color: var(--accent); }
+  .rule-on:checked::after { content: ''; width: 7px; height: 3.5px; border-left: 1.6px solid var(--accent-on); border-bottom: 1.6px solid var(--accent-on); transform: rotate(-45deg) translate(1px, -1px); }
+  /* An excluded term has no place in the ORDER BY, so it shows a dash rather
+     than a number it does not have. */
+  .rule-rank { flex-shrink: 0; width: 14px; text-align: center; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text); }
+  .rule-rank.off { color: var(--text-faint); }
+  .rule-move { display: flex; flex-shrink: 0; }
+  /* Fixed width: ASC and DESC are different lengths, so an auto-sized toggle
+     shifts every control to its right each time the direction flips. */
+  .rule-dir { flex-shrink: 0; width: 52px; justify-content: center; padding: 0; font-family: var(--font-mono); }
+  /* Add sits on the same line as Cancel/Apply: all three act on the rule set as
+     a whole, so they read as one decision row rather than a stray link above it. */
+  .pop-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; }
+  /* The one secondary button in the app: a hairline of the surface's own light
+     rather than a --border hairline, which vanishes on a translucent panel.
+     Paired with .primary everywhere, so the two always sit side by side. */
+  .btn-secondary { appearance: none; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: var(--radius-sm); border: 1px solid var(--btn-ghost-border); background: var(--btn-ghost-bg); color: var(--text-muted); font-size: var(--fs-sm); font-weight: 500; white-space: nowrap; }
+  .btn-secondary:hover { color: var(--text); border-color: var(--text-faint); }
+  .btn-secondary[aria-pressed="true"] { background: var(--surface-2); color: var(--text); }
+  /* A secondary and a primary in the same footer must be the same height, so
+     the footer sets it for both rather than each button carrying its own. */
+  .pop-foot .btn-secondary, .pop-foot .primary { height: 26px; }
+  .dock-foot .btn-secondary, .dock-foot .primary { height: 30px; font-size: var(--fs-sm); }
+  .pop-item { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: var(--radius-sm); font-size: var(--fs-sm); color: var(--text-muted); cursor: pointer; }
+  .pop-item:hover { background: var(--surface-2); color: var(--text); }
+  .pop-item .grip { margin-left: auto; color: var(--text-faint); cursor: grab; }
+
+  /* Foreign keys: the link icon is information about the data, not a hover
+     affordance, so it is always visible. */
+  .fk-link { margin-left: auto; flex-shrink: 0; color: var(--text-faint); background: transparent; border: 0; cursor: pointer; display: flex; padding: 1px; border-radius: 3px; }
+  .fk-link:hover { color: var(--text); background: var(--surface); }
+  .fk-pop { position: absolute; z-index: 60; min-width: 280px; padding: 0; background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: var(--radius-lg); box-shadow: var(--shadow), var(--glass-hi); backdrop-filter: blur(22px) saturate(155%); -webkit-backdrop-filter: blur(22px) saturate(155%); overflow: hidden; }
+  .fk-pop-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text); }
+  .fk-pop-head .acts { margin-left: auto; display: flex; gap: 2px; }
+  .fk-pop-body { padding: 6px 10px 10px; }
+  .fk-row { display: flex; gap: 12px; padding: 3px 0; font-family: var(--font-mono); font-size: var(--fs-sm); }
+  .fk-row .k { color: var(--text-faint); min-width: 96px; }
+  .fk-row .v { color: var(--text-muted); }
+
+  /* A boolean is a checkbox, not a word: it is the one column type whose whole
+     value space fits in a control, so toggling it needs no editor at all. */
+  .cell-check { appearance: none; -webkit-appearance: none; margin: 0 auto; display: grid; place-items: center; width: 14px; height: 14px; border: 1px solid var(--text-faint); border-radius: 4px; background: transparent; cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease; }
+  .cell-check:hover:not(:disabled) { border-color: var(--text-muted); }
+  .cell-check:checked { background: var(--accent); border-color: var(--accent); }
+  .cell-check:checked::after { content: ''; width: 7px; height: 3.5px; border-left: 1.6px solid var(--accent-on); border-bottom: 1.6px solid var(--accent-on); transform: rotate(-45deg) translate(1px, -1px); }
+  .cell-check:disabled { cursor: default; opacity: .5; }
+
+  /* A staged cell shows its pending value, marked so it is never mistaken for
+     what is actually in the database. --warning because "changed but not
+     written" is real state, which is the only thing semantic colour is for. */
+  table.data td.staged { box-shadow: inset 2px 0 0 var(--warning); }
 
   /* `separate` rather than `collapse`: a collapsed border belongs to the table,
      not the cell, so it does not travel with a position:sticky frozen column.
@@ -234,9 +337,35 @@
   .diff-row { display: flex; gap: 10px; align-items: center; font-family: var(--font-mono); font-size: var(--fs-sm); padding: 3px 0; }
   .diff-row .col { color: var(--text-faint); min-width: 70px; }
 
-  .grid-pager { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); font-size: var(--fs-sm); color: var(--text-faint); }
-  .grid-pager .btns { display: flex; gap: 6px; }
   .grid-note { margin-top: 10px; font-size: var(--fs-sm); color: var(--text-faint); }
+
+  /* One dock, three occupants (chat | pending | insert). Sharing the slot is
+     what keeps two side panels from ever competing for the same edge. */
+  .dock { width: 320px; min-width: 320px; border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+  .dock-head { height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 14px; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+  .dock-head .acts { margin-left: auto; display: flex; gap: 2px; }
+  .dock-body { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .dock-foot { border-top: 1px solid var(--border); padding: 10px 12px; display: flex; gap: 8px; }
+
+  /* Staged change: the same old -> new treatment the inline diff already uses. */
+  .pend { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); padding: 8px 10px; }
+  .pend .top { display: flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-faint); margin-bottom: 5px; }
+  .pend .top .kind { text-transform: uppercase; font-weight: 700; letter-spacing: .05em; }
+  .pend .top .kind.update { color: var(--warning); }
+  .pend .top .kind.insert { color: var(--success); }
+  .pend .top .kind.delete { color: var(--danger); }
+  .pend .top .kind.sql { color: var(--text-muted); }
+  .pend .top button { margin-left: auto; appearance: none; border: 0; background: transparent; cursor: pointer; color: var(--text-faint); display: flex; padding: 2px; border-radius: var(--radius-sm); }
+  .pend .top button:hover { color: var(--danger); background: var(--danger-bg); }
+  .pend .body { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .pend-group { font-size: var(--fs-xs); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+
+  /* Insert panel fields */
+  .field-row { display: flex; flex-direction: column; gap: 4px; }
+  .field-row label { font-size: var(--fs-xs); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text-faint); display: flex; align-items: center; gap: 6px; }
+  .field-row label .req { color: var(--danger); }
+  .field-row label .gen { font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text-faint); font-size: var(--fs-xs); }
+  .field-row input[readonly] { color: var(--text-faint); background: var(--surface-2); cursor: not-allowed; }
 
   /* Settings > Connections */
   .conn-list { display: flex; flex-direction: column; gap: 8px; margin: 18px 0; }
@@ -274,6 +403,20 @@ const I = {
   gear: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M21.5 12h-3M5.5 12h-3M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1M18.7 18.7l-2.1-2.1M7.4 7.4L5.3 5.3"/></svg>',
   back: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
   pin: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6l-1 6 3 3H7l3-3-1-6z"/><path d="M12 12v9"/></svg>',
+  caret: '<svg class="caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
+  plus: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  refresh: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>',
+  funnel: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h18l-7 8v6l-4 2v-8z"/></svg>',
+  sortIcon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h12M4 12h8M4 17h4"/></svg>',
+  columns: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="7" height="16" rx="1"/><rect x="14" y="4" width="7" height="16" rx="1"/></svg>',
+  download: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M4 20h16"/></svg>',
+  stack: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>',
+  link: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>',
+  openIn: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>',
+  trash: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>',
+  grip: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 7h.01M8 12h.01M8 17h.01M16 7h.01M16 12h.01M16 17h.01"/></svg>',
+  tick: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
+  cross: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
 };
 
 /* ---------------------------------------------------------------- data */
@@ -286,10 +429,42 @@ const CONNECTIONS = [
 const TABLES = ['orders', 'payments', 'users'];
 const WATCHED = new Set(['orders', 'payments']);
 
+/* `meta` is what `describe_columns` returns: one query yields the type,
+   nullability, default and identity flag the Insert panel needs AND the
+   foreign-key target the grid needs for its link icons. */
 const SCHEMAS = {
-  orders:   { pk: 'id', cols: ['id','user_id','status','amount','paid','created_at','notes'] },
-  payments: { pk: null, cols: ['tenant_id','item_id','status','amount'] },
-  users:    { pk: 'id', cols: ['id','email','status'] },
+  orders: {
+    pk: 'id',
+    cols: ['id','user_id','status','amount','paid','created_at','notes'],
+    meta: {
+      id:         { type: 'int4', identity: true,  nullable: false },
+      user_id:    { type: 'text', nullable: false, fk: { schema: 'public', table: 'users', column: 'id' } },
+      status:     { type: 'text', nullable: false, default: "'pending'" },
+      amount:     { type: 'numeric', nullable: true },
+      paid:       { type: 'bool', nullable: true,  default: 'false' },
+      created_at: { type: 'timestamptz', nullable: false, default: 'now()' },
+      notes:      { type: 'text', nullable: true },
+    },
+  },
+  payments: {
+    pk: null,
+    cols: ['tenant_id','item_id','status','amount'],
+    meta: {
+      tenant_id: { type: 'text', nullable: false },
+      item_id:   { type: 'text', nullable: false },
+      status:    { type: 'text', nullable: false },
+      amount:    { type: 'numeric', nullable: true },
+    },
+  },
+  users: {
+    pk: 'id',
+    cols: ['id','email','status'],
+    meta: {
+      id:     { type: 'text', nullable: false },
+      email:  { type: 'text', nullable: false },
+      status: { type: 'text', nullable: false, default: "'active'" },
+    },
+  },
 };
 
 const ROWS = {
@@ -334,12 +509,27 @@ const S = {
   activeConnectionId: 'c1',
   activeTable: 'orders',
   menu: null,
-  editingCell: null,     // {ri, ci, phase: 'editing'|'preview', draft}
-  sort: [],              // [{col, desc}] — outermost term first; shift-click appends
-  filter: '',            // narrows the fetched page only, never a WHERE clause
+  editingCell: null,     // {ri, ci, draft} — staged on accept, never written directly
+  /* Applied vs draft. What the grid queries is the APPLIED set; the popovers
+     edit a draft copy so adding a half-typed rule never re-runs the query.
+     Apply promotes draft -> applied and refetches; Cancel throws the draft away. */
+  sort: [],              // applied [{col, desc, on}] — outermost term first
+  sortDraft: null,
+  conds: [],             // applied [{col, op, val, on}] — AND-joined, a real WHERE
+  condsDraft: null,
   pinned: [],            // column names frozen to the left edge
+  hidden: [],            // column names hidden from the grid (still fetched/exported)
   colOrder: {},          // table -> column names in on-screen order
   dragCol: null,
+  popover: null,         // 'filter' | 'sort' | 'columns' | 'export' — toolbar dropdowns
+  fkPopover: null,       // {col, value, rect} — the referenced-row card
+  page: 1,
+  limit: 100,
+  /* One dock, three occupants. The Pending panel has to be reachable from any
+     tab and the pending set spans tables, so this is app state, not tab state. */
+  dock: 'chat',          // 'chat' | 'pending' | 'insert' | null
+  pending: [],           // staged changes; nothing is written until Apply
+  insertDraft: {},
   queryExample: 'select',
   queryPhase: 'idle',    // 'idle' | 'preview' | 'committed' — nothing runs for real until Commit
   consoleOpen: false,
@@ -392,8 +582,14 @@ function dbTab() {
   <div class="db-content">
     <div class="pane-strip">
       <span style="font-size:var(--fs-sm);font-weight:600;color:var(--text-muted)">${S.activeTable}</span>
-      <div style="margin-left:auto">
-        <button class="ghost-btn" data-act="toggle-console" aria-pressed="${S.consoleOpen}">
+      <div style="margin-left:auto;display:flex;align-items:center;gap:4px">
+        <!-- Pending sits with the console, not in the grid toolbar: both are
+             pane-level surfaces about work in flight, and the pending set
+             spans tables rather than belonging to the one grid below. -->
+        ${S.pending.length ? `<button class="btn-secondary" data-act="open-pending" aria-pressed="${S.dock === 'pending'}">
+          ${I.stack}<span>Pending</span><span class="tb-badge">${S.pending.length}</span>
+        </button>` : ''}
+        <button class="btn-secondary" data-act="toggle-console" aria-pressed="${S.consoleOpen}">
           <span style="display:inline-flex;transform:rotate(${S.consoleOpen ? 180 : 0}deg)">${I.chev}</span>
           <span>Query console</span>
         </button>
@@ -414,39 +610,105 @@ function eyeIcon() {
 function visualCols(table) {
   const cols = SCHEMAS[table].cols;
   const saved = (S.colOrder[table] || []).filter(c => cols.includes(c));
-  const ordered = [...saved, ...cols.filter(c => !saved.includes(c))];
+  const ordered = [...saved, ...cols.filter(c => !saved.includes(c))]
+    // Hiding is a view concern only — a hidden column is still fetched, still
+    // filterable and sortable, and still exported.
+    .filter(c => !S.hidden.includes(c));
   return [...ordered.filter(c => S.pinned.includes(c)), ...ordered.filter(c => !S.pinned.includes(c))];
 }
 
-/* Rows keep their original index so an edit still resolves against the row the
-   user clicked, not its position in the filtered view. */
+/* The conditions are a real WHERE — applied server-side — so this stands in for
+   the filtered result set the backend would return, not a view of one page. */
+/* Applied, ticked, and actually complete. A condition with no value yet is
+   inert — without that, a rule empties the grid the moment it is added, before
+   you have said what you are looking for. An unticked rule is kept but not run,
+   so a filter can be switched off without being retyped. */
+function activeConds() {
+  const valueless = ['is null', 'is not null', 'is true', 'is false'];
+  return S.conds.filter(c => c.on !== false && (valueless.includes(c.op) || (c.val || '').trim() !== ''));
+}
+
+function activeSort() {
+  return S.sort.filter(t => t.on !== false);
+}
+
 function visibleRows(table) {
-  const indexed = ROWS[table].map((row, index) => ({ row, index }));
-  const needle = S.filter.trim().toLowerCase();
-  if (!needle) return indexed;
-  return indexed.filter(({ row }) => row.some(v => displayValue(v).toLowerCase().includes(needle)));
+  const cols = SCHEMAS[table].cols;
+  const rows = ROWS[table]
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => activeConds().every(c => matchCond(row[cols.indexOf(c.col)], c)));
+  const terms = activeSort();
+  if (terms.length) {
+    rows.sort((a, b) => {
+      for (const t of terms) {
+        const i = cols.indexOf(t.col);
+        const cmp = displayValue(a.row[i]).localeCompare(displayValue(b.row[i]), undefined, { numeric: true });
+        if (cmp !== 0) return t.desc ? -cmp : cmp;
+      }
+      return 0;
+    });
+  }
+  return rows;
+}
+
+function matchCond(v, { op, val }) {
+  const text = displayValue(v).toLowerCase();
+  const needle = (val || '').toLowerCase();
+  switch (op) {
+    case 'is null': return v === null;
+    case 'is not null': return v !== null;
+    case 'is true': return v === true;
+    case 'is false': return v === false;
+    case '≠': return text !== needle;
+    case 'contains': return text.includes(needle);
+    case 'starts with': return text.startsWith(needle);
+    case '>': return parseFloat(text) > parseFloat(needle);
+    case '<': return parseFloat(text) < parseFloat(needle);
+    default: return text === needle;
+  }
+}
+
+const LIMITS = [25, 50, 100, 250, 500, 1000];
+
+function toolbar(total) {
+  const pages = Math.max(1, Math.ceil(total / S.limit));
+  // A rule count lives on the button itself: a filtered or sorted grid should
+  // announce that from the toolbar, not only from the chips below it.
+  // Every label is mirrored in `title`, so collapsing to icons at narrow widths
+  // costs discoverability but never meaning.
+  const pop = (id, icon, label, count = 0) =>
+    `<button class="tb-btn ${count ? 'active' : ''}" data-pop="${id}" aria-expanded="${S.popover === id}" title="${label}">
+      ${icon}<span>${label}</span>${count ? `<span class="tb-count">${count}</span>` : ''}${I.caret}</button>`;
+  return `<div class="grid-toolbar">
+    <button class="tb-btn primary-btn" data-act="open-insert" title="Insert row">${I.plus}<span>Insert</span></button>
+    <button class="tb-btn icon" data-act="refresh" title="Refresh">${I.refresh}</button>
+    <div class="tb-sep"></div>
+    <!-- Counts are of applied AND ticked rules only: a rule switched off is not
+         acting on the grid, so counting it would overstate what is happening. -->
+    ${pop('filter', I.funnel, 'Filter', activeConds().length)}
+    ${pop('sort', I.sortIcon, 'Sort', activeSort().length)}
+    ${pop('columns', I.columns, 'Columns', S.hidden.length)}
+    ${pop('export', I.download, 'Export')}
+    <div class="tb-spacer"></div>
+    <div class="pager">
+      <button class="tb-btn step" data-act="prev-page" ${S.page <= 1 ? 'disabled style="opacity:.4"' : ''}>‹</button>
+      <input id="page-field" value="${S.page}" />
+      <span class="of">of ${pages}</span>
+      <button class="tb-btn step" data-act="next-page" ${S.page >= pages ? 'disabled style="opacity:.4"' : ''}>›</button>
+      <select id="limit-select" class="tb-btn" style="padding:0 4px">
+        ${LIMITS.map(n => `<option ${n === S.limit ? 'selected' : ''}>${n}</option>`).join('')}
+      </select>
+    </div>
+  </div>`;
 }
 
 function browseBody() {
   const schema = SCHEMAS[S.activeTable];
   const shown = visibleRows(S.activeTable);
-  const total = ROWS[S.activeTable].length;
-  const customised = S.pinned.length > 0 || (S.colOrder[S.activeTable] || []).length > 0;
   return `
     <div class="grid-wrap">
-      <div class="grid-toolbar">
-        <input id="grid-filter" placeholder="Filter this page…" value="${S.filter}" spellcheck="false" />
-        ${S.filter.trim() ? `<span class="count">${shown.length} of ${total}</span>` : ''}
-        ${customised ? '<button class="reset" data-act="reset-layout">Reset layout</button>' : ''}
-      </div>
-      ${grid(visualCols(S.activeTable), shown, schema.pk)}
-      <div class="grid-pager">
-        <span>Showing 1–${shown.length} · ${S.activeTable}</span>
-        <div class="btns">
-          <button class="ghost-btn" disabled style="opacity:.4">Prev</button>
-          <button class="ghost-btn">Next</button>
-        </div>
-      </div>
+      ${toolbar(shown.length)}
+      <div class="grid-scroll">${grid(visualCols(S.activeTable), shown, schema.pk)}</div>
     </div>
     ${schema.pk ? '' : `<div class="grid-note">No single-column primary key on <b style="color:var(--text-muted)">${S.activeTable}</b> — cells are read-only (same rule correlation watching already uses).</div>`}
   `;
@@ -484,15 +746,15 @@ function renderQueryPhase(ex) {
       <div class="sql-meta"><span class="pill muted">PREVIEW</span><span>held in an open transaction — not yet committed</span></div>
       ${ex.diff ? ex.diff.map(diffCard).join('') : (ex.columns.length ? `<div class="grid-wrap">${grid(ex.columns, ex.rows.map((row, index) => ({ row, index })), null)}</div>` : `<div class="grid-note" style="margin-top:0">No rows matched.</div>`)}
       <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button class="ghost-btn" data-act="rollback-query" style="border:1px solid var(--border)">Rollback</button>
-        <button class="primary" data-act="commit-query">Commit</button>
+        <button class="ghost-btn" data-act="rollback-query" style="border:1px solid var(--border)">Discard</button>
+        <button class="primary" data-act="stage-query">Add to pending</button>
       </div>
     `;
   }
-  // committed
+  // staged — the preview transaction is rolled back and the statement recorded
   return `
     <div class="sql-meta">
-      <span class="pill ok">✓ COMMITTED</span>
+      <span class="pill ok">✓ STAGED</span>
       ${'rowsAffected' in ex ? `<span><b>${ex.rowsAffected}</b> row affected</span>` : `<span><b>${ex.rows.length}</b> rows</span>`}
       <span>·</span><span>${ex.meta.split('·')[1] || ''}</span>
     </div>
@@ -533,11 +795,22 @@ function grid(cols, rows, pkCol, dataCols) {
       <span class="th-resize"></span>
     </th>`;
   };
+  // Deleting needs a single-column primary key for a safe WHERE target — the
+  // same rule that already decides whether a cell is editable.
+  const rowActions = !!pkCol;
+  // Draws the staged value where one exists, so a toggled checkbox visibly
+  // stays toggled instead of appearing to do nothing until Apply.
   const body = rows.map(({ row, index }) => `<tr>${cols
-    .map(c => cell(row[data.indexOf(c)], c, pkCol, index, data.indexOf(c), offsets))
-    .join('')}</tr>`).join('');
+    .map(c => {
+      const ci = data.indexOf(c);
+      const v = pkCol ? cellValue(S.activeTable, index, ci) : row[ci];
+      return cell(v, c, pkCol, index, ci, offsets);
+    })
+    .join('')}${rowActions ? `<td style="width:34px;text-align:center">
+      <button class="fk-link" data-del-row="${index}" title="Stage delete" style="margin:0 auto">${I.trash}</button>
+    </td>` : ''}</tr>`).join('');
   return `<table class="data">
-    <thead><tr>${cols.map(th).join('')}</tr></thead>
+    <thead><tr>${cols.map(th).join('')}${rowActions ? '<th style="width:34px"></th>' : ''}</tr></thead>
     <tbody>${body}</tbody>
   </table>`;
 }
@@ -548,37 +821,258 @@ function displayValue(v) {
   return String(v);
 }
 
+/* ------------------------------------------------------- cell staging */
+/* A pending change is a DIFF against the database, not a log of keystrokes.
+   One entry per cell, and setting a cell back to its stored value removes the
+   entry rather than adding a second one that cancels the first — otherwise
+   toggling a checkbox twice would leave "pending: 2" and apply a no-op. */
+function pkWhere(table, ri) {
+  const pk = SCHEMAS[table].pk;
+  return `${pk} = ${ROWS[table][ri][SCHEMAS[table].cols.indexOf(pk)]}`;
+}
+
+function pendingIndexFor(table, ri, ci) {
+  const where = pkWhere(table, ri), col = SCHEMAS[table].cols[ci];
+  return S.pending.findIndex(p => p.kind === 'update' && p.table === table && p.where === where && p.col === col);
+}
+
+/** The value to draw: the staged one if this cell has a pending change. */
+function cellValue(table, ri, ci) {
+  const i = pendingIndexFor(table, ri, ci);
+  return i >= 0 ? S.pending[i].value : ROWS[table][ri][ci];
+}
+
+function sameValue(a, b) {
+  if (a === null || b === null) return a === b;
+  if (typeof a === 'boolean' || typeof b === 'boolean') return a === b;
+  return String(a) === String(b);
+}
+
+function stageCell(table, ri, ci, next) {
+  const stored = ROWS[table][ri][ci];
+  const i = pendingIndexFor(table, ri, ci);
+  if (sameValue(stored, next)) {
+    if (i >= 0) S.pending.splice(i, 1);   // back to its stored value: no change to apply
+    return;
+  }
+  const entry = {
+    kind: 'update', table, where: pkWhere(table, ri), col: SCHEMAS[table].cols[ci],
+    before: displayValue(stored), after: displayValue(next), value: next,
+  };
+  if (i >= 0) S.pending[i] = entry; else S.pending.push(entry);
+}
+
 function cell(v, col, pkCol, ri, ci, offsets) {
   const editable = pkCol && col !== pkCol;
   const editing = S.editingCell && S.editingCell.ri === ri && S.editingCell.ci === ci;
   const pinned = S.pinned.includes(col);
   const pinAttrs = pinned ? ` style="left:${offsets[col]}px"` : '';
-  const pinClass = pinned ? 'pinned' : '';
-  if (editing && S.editingCell.phase === 'preview') {
-    return `<td class="${pinClass}"${pinAttrs}><div class="cell-diff-inline">
-      <span class="cell-diff-old">${displayValue(v)}</span><span style="color:var(--text-faint)">→</span><span class="cell-diff-new">${S.editingCell.draft}</span>
-      <button class="cancel" data-act="rollback-cell" title="Rollback">${I.x}</button>
-      <button class="save" data-act="commit-cell" title="Commit">${I.check}</button>
-    </div></td>`;
+  const staged = pendingIndexFor(S.activeTable, ri, ci) >= 0;
+  const pinClass = `${pinned ? 'pinned' : ''} ${staged ? 'staged' : ''}`;
+
+  // A boolean is toggled in place — the checkbox IS the editor, so it gets no
+  // text field and no confirm/cancel buttons.
+  if (typeof v === 'boolean') {
+    return `<td class="${pinClass}"${pinAttrs} style="text-align:center${pinned ? `;left:${offsets[col]}px` : ''}">
+      <input type="checkbox" class="cell-check" ${v ? 'checked' : ''} ${editable ? `data-toggle-bool="${ri}:${ci}"` : 'disabled'}
+        title="${editable ? 'Toggle — staged until you Apply' : 'Read-only'}" />
+    </td>`;
   }
   if (editing) {
     // `size` from the value itself: the point of the expansion is to show the
-    // whole thing, and a mono face makes `ch` exact.
+    // whole thing, and a mono face makes `ch` exact. Accepting stages the
+    // change — nothing is written until Apply in the Pending panel.
     const raw = v === null ? '' : (v && v.unsupported ? '' : String(v));
     const size = Math.min(Math.max(raw.length + 1, 12), 60);
     return `<td class="${pinClass}"${pinAttrs}><div class="cell-edit">
       <input value="${raw}" size="${size}" autofocus />
-      <button class="save" data-act="preview-cell" title="Preview change">${I.check}</button>
+      <button class="save" data-act="stage-cell" title="Stage change">${I.check}</button>
       <button class="cancel" data-act="cancel-cell" title="Cancel">${I.x}</button>
     </div></td>`;
   }
   let inner;
   if (v === null) inner = `<span class="cell-null">NULL</span>`;
   else if (v && v.unsupported) inner = `<span class="cell-unsupported">&lt;unsupported type&gt;</span>`;
-  else if (v === true || v === false) inner = `<span class="cell-bool ${v ? 't' : 'f'}">${v}</span>`;
   else if (/^-?\d+$/.test(String(v)) && col !== 'id') inner = `<span class="cell-num">${v}</span>`;
   else inner = v;
-  return `<td class="${editable ? 'editable' : ''} ${pinClass}"${pinAttrs} ${editable ? `data-edit-cell="${ri}:${ci}"` : ''}>${inner}</td>`;
+
+  // An FK column links to its referenced row. Always visible: it describes the
+  // data, it is not an affordance that appears on hover.
+  const fk = (SCHEMAS[S.activeTable].meta || {})[col]?.fk;
+  const link = fk && v !== null && !(v && v.unsupported)
+    ? `<button class="fk-link" data-fk="${col}:${v}" title="${fk.schema}.${fk.table}.${fk.column}">${I.link}</button>`
+    : '';
+  const inlineWrap = link ? `<span style="display:flex;align-items:center;gap:6px">${inner}${link}</span>` : inner;
+  return `<td class="${editable ? 'editable' : ''} ${pinClass}"${pinAttrs} ${editable ? `data-edit-cell="${ri}:${ci}"` : ''}>${inlineWrap}</td>`;
+}
+
+/* ------------------------------------------------------------------ dock */
+/* One slot, three occupants. Insert and Pending borrow the chat's dock rather
+   than opening panels of their own, so two side panels can never compete for
+   the same edge — and they inherit its width and resize behaviour for free. */
+function dock() {
+  if (!S.dock) return '';
+  if (S.dock === 'insert') return insertPanel();
+  if (S.dock === 'pending') return pendingPanel();
+  return `<aside class="dock">
+    <div class="dock-head">AI Assistant
+      <div class="acts"><button class="ghost-btn icon-only" data-act="close-dock">${I.x}</button></div>
+    </div>
+    <div class="dock-body"><span style="font-size:var(--fs-sm);color:var(--text-faint)">Ask about this session, or anything DevBench observed.</span></div>
+  </aside>`;
+}
+
+function insertPanel() {
+  const schema = SCHEMAS[S.activeTable];
+  const meta = schema.meta || {};
+  const missing = schema.cols.some(c => {
+    const m = meta[c] || {};
+    return !m.identity && !m.nullable && !m.default && !S.insertDraft[c];
+  });
+  return `<aside class="dock">
+    <div class="dock-head">Insert row · ${S.activeTable}
+      <div class="acts"><button class="ghost-btn icon-only" data-act="close-dock">${I.x}</button></div>
+    </div>
+    <div class="dock-body">
+      ${schema.cols.map(c => {
+        const m = meta[c] || {};
+        // Generated columns stay visible but read-only: the shape of the row
+        // should be honest, and typing an id is not a thing you should do.
+        if (m.identity) return `<div class="field-row">
+          <label>${c} <span class="gen">— assigned by the database</span></label>
+          <input class="field" readonly value="" placeholder="auto" /></div>`;
+        const required = !m.nullable && !m.default;
+        return `<div class="field-row">
+          <label>${c}${required ? ' <span class="req">*</span>' : ''} <span class="gen">${m.type}</span></label>
+          ${m.type === 'bool'
+            ? `<select class="field" data-ins="${c}"><option value="">${m.default ?? 'NULL'} (default)</option><option>true</option><option>false</option></select>`
+            : `<input class="field" data-ins="${c}" value="${S.insertDraft[c] ?? ''}" placeholder="${m.default ? m.default : (m.nullable ? 'NULL' : '')}" />`}
+        </div>`;
+      }).join('')}
+      <div class="grid-note" style="margin-top:2px">Blank means the database decides — defaults are shown as placeholders. Saving stages the insert; nothing is written until you Apply.</div>
+    </div>
+    <div class="dock-foot">
+      <button class="btn-secondary" data-act="close-dock">Cancel</button>
+      <button class="primary" data-act="stage-insert" style="flex:1" ${missing ? 'disabled style="flex:1;opacity:.4"' : ''}>Stage insert</button>
+    </div>
+  </aside>`;
+}
+
+function pendingPanel() {
+  const groups = {};
+  S.pending.forEach((p, i) => { (groups[p.table || 'SQL'] ||= []).push({ ...p, i }); });
+  return `<aside class="dock">
+    <div class="dock-head">Pending changes
+      <div class="acts"><button class="ghost-btn icon-only" data-act="close-dock">${I.x}</button></div>
+    </div>
+    <div class="dock-body">
+      ${S.pending.length === 0
+        ? `<div class="grid-note" style="margin-top:0">Nothing staged. Editing a cell, inserting a row, deleting a row, or adding a console statement collects here — then Apply commits them together in one transaction.</div>`
+        : Object.entries(groups).map(([table, items]) => `
+          <div class="pend-group">${table}</div>
+          ${items.map(p => `<div class="pend">
+            <div class="top">
+              <span class="kind ${p.kind}">${p.kind}</span>
+              <span>${p.where || ''}</span>
+              <button data-drop-pending="${p.i}" title="Discard">${I.trash}</button>
+            </div>
+            <div class="body">${pendBody(p)}</div>
+          </div>`).join('')}
+        `).join('')}
+    </div>
+    ${S.pending.length ? `<div class="dock-foot">
+      <button class="btn-secondary" data-act="discard-all">Discard all</button>
+      <button class="primary" data-act="apply-pending" style="flex:1">Apply ${S.pending.length}</button>
+    </div>` : ''}
+  </aside>`;
+}
+
+function pendBody(p) {
+  if (p.kind === 'update') return `<span style="color:var(--text-faint)">${p.col}</span>
+    <span class="cell-diff-old">${p.before}</span>
+    <span style="color:var(--text-faint)">→</span>
+    <span class="cell-diff-new">${p.after}</span>`;
+  if (p.kind === 'insert') return Object.entries(p.values).map(([k, v]) =>
+    `<span style="color:var(--text-faint)">${k}</span><span class="cell-diff-new">${v}</span>`).join(' ');
+  if (p.kind === 'delete') return `<span class="cell-diff-old">${p.where}</span>`;
+  // A staged statement is re-run at Apply, so the effect the preview reported
+  // is kept alongside it — a divergence should be visible, not silent.
+  return `<span style="white-space:pre-wrap">${p.statement}</span>
+    <span style="color:var(--text-faint)">· ${p.previewedEffect} when previewed</span>`;
+}
+
+/* ------------------------------------------------------------- popovers */
+function popoverHtml(kind) {
+  const cols = SCHEMAS[S.activeTable].cols;
+  const meta = SCHEMAS[S.activeTable].meta || {};
+  if (kind === 'filter') {
+    const opsFor = (c) => {
+      const t = (meta[c] || {}).type || 'text';
+      if (t === 'bool') return ['is true', 'is false', 'is null', 'is not null'];
+      if (t === 'numeric' || t.startsWith('int') || t.startsWith('timestamp')) return ['=', '≠', '>', '<', 'is null', 'is not null'];
+      return ['=', '≠', 'contains', 'starts with', 'is null', 'is not null'];
+    };
+    const d = S.condsDraft || [];
+    return `<div class="pop-head">Filter — applied as a WHERE clause</div>
+      ${d.length === 0 ? '<div class="grid-note" style="margin:0 0 8px">No conditions yet.</div>' : ''}
+      ${d.map((c, i) => `<div class="pop-row">
+        <input type="checkbox" class="rule-on" data-cond-on="${i}" ${c.on !== false ? 'checked' : ''} title="Include this condition" />
+        <select data-cond-col="${i}">${cols.map(x => `<option ${x === c.col ? 'selected' : ''}>${x}</option>`).join('')}</select>
+        <select data-cond-op="${i}">${opsFor(c.col).map(o => `<option ${o === c.op ? 'selected' : ''}>${o}</option>`).join('')}</select>
+        ${['is null','is not null','is true','is false'].includes(c.op) ? '' : `<input data-cond-val="${i}" value="${c.val || ''}" placeholder="value" />`}
+        <button class="drop" data-drop-cond="${i}">${I.x}</button>
+      </div>`).join('')}
+      <div class="pop-foot">
+        <button class="btn-secondary" data-act="add-cond">+ Add filter</button>
+        <span style="display:flex;gap:8px">
+          <button class="btn-secondary" data-act="cancel-pop">Cancel</button>
+          <button class="primary" data-act="apply-conds" style="height:26px;padding:0 12px;font-size:var(--fs-sm)">Apply</button>
+        </span>
+      </div>`;
+  }
+  if (kind === 'sort') {
+    const d = S.sortDraft || [];
+    // Priority numbers count only ticked rows: an excluded term has no place
+    // in the ORDER BY, so giving it a number would be a lie.
+    let rank = 0;
+    return `<div class="pop-head">Sort — priority runs top to bottom</div>
+      ${d.length === 0 ? '<div class="grid-note" style="margin:0 0 8px">No sort yet.</div>' : ''}
+      ${d.map((t, i) => {
+        const on = t.on !== false;
+        if (on) rank++;
+        return `<div class="pop-row">
+        <input type="checkbox" class="rule-on" data-sort-on="${i}" ${on ? 'checked' : ''} title="Include this sort" />
+        <span class="rule-rank ${on ? '' : 'off'}">${on ? rank : '—'}</span>
+        <select data-sort-col-sel="${i}">${cols.map(x => `<option ${x === t.col ? 'selected' : ''}>${x}</option>`).join('')}</select>
+        <button class="btn-secondary rule-dir" data-toggle-dir="${i}" style="height:26px">${t.desc ? 'DESC' : 'ASC'}</button>
+        <span class="rule-move">
+          <button class="drop" data-move-sort="${i}:-1" ${i === 0 ? 'disabled style="opacity:.3"' : ''} title="Higher priority">↑</button>
+          <button class="drop" data-move-sort="${i}:1" ${i === d.length - 1 ? 'disabled style="opacity:.3"' : ''} title="Lower priority">↓</button>
+        </span>
+        <button class="drop" data-drop-sort="${i}">${I.x}</button>
+      </div>`;
+      }).join('')}
+      <div class="pop-foot">
+        <button class="btn-secondary" data-act="add-sort">+ Add sort</button>
+        <span style="display:flex;gap:8px">
+          <button class="btn-secondary" data-act="cancel-pop">Cancel</button>
+          <button class="primary" data-act="apply-sort" style="height:26px;padding:0 12px;font-size:var(--fs-sm)">Apply</button>
+        </span>
+      </div>`;
+  }
+  if (kind === 'columns') {
+    return `<div class="pop-head">Columns</div>
+      ${SCHEMAS[S.activeTable].cols.map(c => `<div class="pop-item" data-toggle-col="${c}">
+        <span style="width:12px;display:inline-flex;color:${S.hidden.includes(c) ? 'transparent' : 'var(--text)'}">${I.check}</span>
+        <span>${c}</span>
+        <span class="grip">${I.grip}</span>
+      </div>`).join('')}
+      <div class="pop-foot"><button class="btn-secondary" data-act="show-all-cols">Show all</button><span></span></div>`;
+  }
+  return `<div class="pop-head">Export — this page</div>
+    <div class="pop-item">${I.download}<span>CSV</span></div>
+    <div class="pop-item">${I.download}<span>JSON</span></div>
+    <div class="grid-note" style="margin-top:6px">Exports the ${visibleRows(S.activeTable).length} rows on this page, in the column order shown.</div>`;
 }
 
 /* ---------------------------------------------------------------- settings */
@@ -669,12 +1163,14 @@ function renderConnectionModal() {
 
 /* ---------------------------------------------------------------- render */
 function render() {
-  document.querySelectorAll('.menu, .scrim, .modal-scrim').forEach(e => e.remove());
+  document.querySelectorAll('.menu, .scrim, .modal-scrim, .pop, .fk-pop').forEach(e => e.remove());
   const root = document.getElementById('root');
   root.innerHTML = `${strip()}<div class="body-grid">
-    ${S.route === 'settings' ? settingsScreen() : `${sidebar()}<div class="panes"><div class="pane">${dbTab()}</div></div>`}
+    ${S.route === 'settings' ? settingsScreen() : `${sidebar()}<div class="panes"><div class="pane">${dbTab()}</div></div>${dock()}`}
   </div>`;
   if (S.menu) renderMenu();
+  if (S.popover) renderPopover();
+  if (S.fkPopover) renderFkPopover();
   if (S.connectionModal) renderConnectionModal();
   wireDrawerDrag();
 }
@@ -703,6 +1199,70 @@ function wireDrawerDrag() {
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   });
+}
+
+/* Closing without Apply throws the draft away — dismissing a popover must not
+   quietly commit half-finished rules. */
+function closePopover(applied) {
+  S.popover = null;
+  S.condsDraft = null;
+  S.sortDraft = null;
+  void applied;
+}
+
+function renderPopover() {
+  const trigger = document.querySelector(`[data-pop="${S.popover}"]`);
+  if (!trigger) return;
+  const scrim = document.createElement('div');
+  scrim.className = 'scrim';
+  scrim.onclick = () => { closePopover(false); render(); };
+  const el = document.createElement('div');
+  el.className = 'pop';
+  el.innerHTML = popoverHtml(S.popover);
+  document.body.append(scrim, el);
+  const r = trigger.getBoundingClientRect();
+  el.style.top = (r.bottom + 6) + 'px';
+  el.style.left = Math.min(r.left, window.innerWidth - el.offsetWidth - 10) + 'px';
+}
+
+function renderFkPopover() {
+  const { col, value, rect } = S.fkPopover;
+  const fk = SCHEMAS[S.activeTable].meta[col].fk;
+  const target = SCHEMAS[fk.table];
+  const idx = target.cols.indexOf(fk.column);
+  const row = ROWS[fk.table].find(r => String(r[idx]) === String(value));
+  const scrim = document.createElement('div');
+  scrim.className = 'scrim';
+  scrim.onclick = () => { S.fkPopover = null; render(); };
+  const el = document.createElement('div');
+  el.className = 'fk-pop';
+  el.innerHTML = `
+    <div class="fk-pop-head">
+      ${I.link}<span>${fk.schema}.${fk.table}.${fk.column}</span>
+      <div class="acts">
+        <button class="ghost-btn icon-only" data-act="fk-open" title="Open ${fk.table} at this row">${I.openIn}</button>
+        <button class="ghost-btn icon-only" data-act="fk-close">${I.x}</button>
+      </div>
+    </div>
+    <div class="fk-pop-body">
+      ${row
+        ? target.cols.map((c, i) => `<div class="fk-row"><span class="k">${c}</span><span class="v">${displayValue(row[i])}</span></div>`).join('')
+        // A key that points nowhere is a fact worth stating, not an empty card.
+        : `<div class="grid-note" style="margin-top:0">No matching row in ${fk.schema}.${fk.table}.</div>`}
+    </div>`;
+  document.body.append(scrim, el);
+  el.style.top = (rect.bottom + 6) + 'px';
+  el.style.left = Math.min(rect.left, window.innerWidth - el.offsetWidth - 10) + 'px';
+  el.querySelector('[data-act="fk-close"]').onclick = () => { S.fkPopover = null; render(); };
+  el.querySelector('[data-act="fk-open"]').onclick = () => {
+    // Jump = switch table + pin a row filter. Always lands on the row, under
+    // any sort or page size, with no positional query.
+    S.activeTable = fk.table;
+    S.conds = [{ col: fk.column, op: '=', val: String(value), on: true }];
+    S.sort = []; S.pinned = []; S.hidden = []; S.page = 1;
+    S.fkPopover = null; S.editingCell = null;
+    render();
+  };
 }
 
 function renderMenu() {
@@ -736,13 +1296,15 @@ function renderMenu() {
    asc -> desc -> gone so a column can be dropped out of a multi-sort without
    clearing the whole thing. */
 function applySort(col, additive) {
+  // Header clicks are direct manipulation — they apply at once rather than
+  // going through the popover's draft.
   const existing = S.sort.find(t => t.col === col);
   if (!additive) {
-    S.sort = existing && !existing.desc ? [{ col, desc: true }] : [{ col, desc: false }];
+    S.sort = existing && !existing.desc ? [{ col, desc: true, on: true }] : [{ col, desc: false, on: true }];
   } else if (!existing) {
-    S.sort = [...S.sort, { col, desc: false }];
+    S.sort = [...S.sort, { col, desc: false, on: true }];
   } else if (!existing.desc) {
-    S.sort = S.sort.map(t => t.col === col ? { col, desc: true } : t);
+    S.sort = S.sort.map(t => t.col === col ? { col, desc: true, on: true } : t);
   } else {
     S.sort = S.sort.filter(t => t.col !== col);
   }
@@ -761,17 +1323,41 @@ function moveColumn(col, target) {
   S.colOrder[S.activeTable] = next;
 }
 
+/* Popover edits land on the DRAFT, so nothing refetches until Apply. Typing a
+   value needs no re-render at all — the input already holds it. */
 document.addEventListener('input', e => {
-  if (e.target.id === 'grid-filter') {
-    S.filter = e.target.value;
-    S.editingCell = null;
-    const start = e.target.selectionStart;
+  const t = e.target;
+  if (t.dataset.condVal !== undefined) { S.condsDraft[+t.dataset.condVal].val = t.value; return; }
+  if (t.dataset.ins !== undefined) { S.insertDraft[t.dataset.ins] = t.value; return; }
+});
+
+document.addEventListener('change', e => {
+  const t = e.target;
+  if (t.dataset.condOn !== undefined) { S.condsDraft[+t.dataset.condOn].on = t.checked; render(); return; }
+  if (t.dataset.sortOn !== undefined) { S.sortDraft[+t.dataset.sortOn].on = t.checked; render(); return; }
+  // Changing the column resets the operator: the old one may not exist for the
+  // new column's type.
+  if (t.dataset.condCol !== undefined) { const c = S.condsDraft[+t.dataset.condCol]; c.col = t.value; c.op = '='; render(); return; }
+  if (t.dataset.condOp !== undefined) { S.condsDraft[+t.dataset.condOp].op = t.value; render(); return; }
+  if (t.dataset.sortColSel !== undefined) { S.sortDraft[+t.dataset.sortColSel].col = t.value; render(); return; }
+  if (t.id === 'limit-select') { S.limit = +t.value; S.page = 1; render(); return; }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.target.id === 'page-field' && e.key === 'Enter') {
+    const pages = Math.max(1, Math.ceil(visibleRows(S.activeTable).length / S.limit));
+    // Out-of-range clamps to the last page rather than erroring.
+    S.page = Math.min(Math.max(1, parseInt(e.target.value, 10) || 1), pages);
     render();
-    // Re-focus after the re-render so typing is uninterrupted.
-    const next = document.getElementById('grid-filter');
-    if (next) { next.focus(); next.setSelectionRange(start, start); }
   }
 });
+
+/* Re-renders the grid without tearing down the open popover, so typing a
+   filter value does not close the popover you are typing into. */
+function refreshGridOnly() {
+  const body = document.querySelector('.db-body');
+  if (body) body.innerHTML = browseBody();
+}
 
 document.addEventListener('dragstart', e => {
   const th = e.target.closest('th[data-col]');
@@ -792,8 +1378,67 @@ document.addEventListener('drop', e => {
 document.addEventListener('dragend', () => { if (S.dragCol) { S.dragCol = null; render(); } });
 
 document.addEventListener('click', e => {
+  const popBtn = e.target.closest('[data-pop]');
+  if (popBtn) {
+    const id = popBtn.dataset.pop;
+    if (S.popover === id) { closePopover(false); }
+    else {
+      // Snapshot the applied set on open — Cancel restores exactly this.
+      S.popover = id; S.fkPopover = null;
+      if (id === 'filter') S.condsDraft = S.conds.map(c => ({ ...c }));
+      if (id === 'sort') S.sortDraft = S.sort.map(t => ({ ...t }));
+    }
+    render(); return;
+  }
+
+  const moveSort = e.target.closest('[data-move-sort]');
+  if (moveSort) {
+    const [i, delta] = moveSort.dataset.moveSort.split(':').map(Number);
+    const to = i + delta;
+    if (to >= 0 && to < S.sortDraft.length) {
+      const d = S.sortDraft;
+      [d[i], d[to]] = [d[to], d[i]];
+    }
+    render(); return;
+  }
+
+  const fkBtn = e.target.closest('[data-fk]');
+  if (fkBtn) {
+    const [col, value] = fkBtn.dataset.fk.split(':');
+    S.fkPopover = { col, value, rect: fkBtn.getBoundingClientRect() };
+    S.popover = null; render(); return;
+  }
+
+  const dropCond = e.target.closest('[data-drop-cond]');
+  if (dropCond) { S.condsDraft.splice(+dropCond.dataset.dropCond, 1); render(); return; }
+
+  const dropSort = e.target.closest('[data-drop-sort]');
+  if (dropSort) { S.sortDraft.splice(+dropSort.dataset.dropSort, 1); render(); return; }
+
+  const dir = e.target.closest('[data-toggle-dir]');
+  if (dir) { const t = S.sortDraft[+dir.dataset.toggleDir]; t.desc = !t.desc; render(); return; }
+
+  const togCol = e.target.closest('[data-toggle-col]');
+  if (togCol) {
+    const c = togCol.dataset.toggleCol;
+    S.hidden = S.hidden.includes(c) ? S.hidden.filter(x => x !== c) : [...S.hidden, c];
+    render(); return;
+  }
+
+  const dropPending = e.target.closest('[data-drop-pending]');
+  if (dropPending) { S.pending.splice(+dropPending.dataset.dropPending, 1); render(); return; }
+
   const sortBtn = e.target.closest('[data-sort-col]');
   if (sortBtn) { applySort(sortBtn.dataset.sortCol, e.shiftKey); S.editingCell = null; render(); return; }
+
+  const delRow = e.target.closest('[data-del-row]');
+  if (delRow) {
+    const ri = +delRow.dataset.delRow;
+    const pk = SCHEMAS[S.activeTable].pk;
+    const pkVal = ROWS[S.activeTable][ri][SCHEMAS[S.activeTable].cols.indexOf(pk)];
+    S.pending.push({ kind: 'delete', table: S.activeTable, where: `${pk} = ${pkVal}` });
+    S.dock = 'pending'; render(); return;
+  }
 
   const pinBtn = e.target.closest('[data-pin-col]');
   if (pinBtn) {
@@ -811,12 +1456,24 @@ document.addEventListener('click', e => {
     S.activeTable = table.dataset.table;
     // A new table's rows and columns are different data — the previous
     // table's sort, filter and frozen columns do not describe them.
-    S.editingCell = null; S.sort = []; S.filter = ''; S.pinned = [];
+    S.editingCell = null; S.sort = []; S.conds = []; S.sortDraft = null; S.condsDraft = null;
+    S.pinned = []; S.hidden = []; S.page = 1; S.popover = null;
+    if (S.dock === 'insert') S.dock = 'chat';
+    render(); return;
+  }
+
+  const boolCell = e.target.closest('[data-toggle-bool]');
+  if (boolCell) {
+    const [ri, ci] = boolCell.dataset.toggleBool.split(':').map(Number);
+    // Toggling against the STORED value, so true -> false -> true clears the
+    // pending entry instead of stacking a second one.
+    stageCell(S.activeTable, ri, ci, !cellValue(S.activeTable, ri, ci));
+    S.editingCell = null;
     render(); return;
   }
 
   const editCell = e.target.closest('[data-edit-cell]');
-  if (editCell) { const [ri, ci] = editCell.dataset.editCell.split(':').map(Number); S.editingCell = { ri, ci, phase: 'editing' }; render(); return; }
+  if (editCell) { const [ri, ci] = editCell.dataset.editCell.split(':').map(Number); S.editingCell = { ri, ci }; render(); return; }
 
   const editConn = e.target.closest('[data-edit-connection]');
   if (editConn) { S.connectionModal = { mode: 'edit', id: editConn.dataset.editConnection }; render(); return; }
@@ -828,21 +1485,52 @@ document.addEventListener('click', e => {
     if (a === 'workspace') S.route = 'workspace';
     if (a === 'toggle-console') { S.consoleOpen = !S.consoleOpen; S.queryPhase = 'idle'; }
     if (a === 'run-query') S.queryPhase = 'preview';
-    if (a === 'commit-query') S.queryPhase = 'committed';
     if (a === 'rollback-query') S.queryPhase = 'idle';
     if (a === 'ex-select') { S.queryExample = 'select'; S.queryPhase = 'idle'; }
     if (a === 'ex-update') { S.queryExample = 'update'; S.queryPhase = 'idle'; }
-    if (a === 'cancel-cell' || a === 'rollback-cell') S.editingCell = null;
-    if (a === 'preview-cell') {
+    // The preview transaction is rolled back and the statement recorded; it is
+    // re-run inside the Apply transaction, so the effect it reported is kept
+    // alongside it and any divergence stays visible.
+    if (a === 'stage-query') {
+      const ex = QUERY_EXAMPLES[S.queryExample];
+      S.pending.push({
+        kind: 'sql', table: null, statement: ex.sql.replace(/\n/g, ' '),
+        previewedEffect: 'rowsAffected' in ex ? `${ex.rowsAffected} row affected` : `${ex.rows.length} rows`,
+      });
+      S.queryPhase = 'committed';
+      S.dock = 'pending';
+    }
+    if (a === 'cancel-cell') S.editingCell = null;
+    if (a === 'stage-cell') {
       const input = act.closest('.cell-edit').querySelector('input');
-      S.editingCell = { ...S.editingCell, phase: 'preview', draft: input.value };
-    }
-    if (a === 'commit-cell') {
-      const { ri, ci, draft } = S.editingCell;
-      ROWS[S.activeTable][ri][ci] = draft;
+      const { ri, ci } = S.editingCell;
+      stageCell(S.activeTable, ri, ci, input.value);
       S.editingCell = null;
+      if (S.pending.length) S.dock = 'pending';
     }
-    if (a === 'reset-layout') { S.pinned = []; S.colOrder[S.activeTable] = []; }
+    if (a === 'open-insert') { S.dock = 'insert'; S.insertDraft = {}; }
+    if (a === 'open-pending') S.dock = 'pending';
+    if (a === 'close-dock') S.dock = 'chat';
+    if (a === 'stage-insert') {
+      const values = {};
+      Object.entries(S.insertDraft).forEach(([k, v]) => { if (v !== '') values[k] = v; });
+      S.pending.push({ kind: 'insert', table: S.activeTable, values });
+      S.insertDraft = {}; S.dock = 'pending';
+    }
+    // One transaction, all or nothing — that is the whole point of staging.
+    if (a === 'apply-pending') { S.pending = []; S.dock = 'chat'; }
+    if (a === 'discard-all') { S.pending = []; }
+    // "+ Add" only grows the draft — the query does not change until Apply.
+    if (a === 'add-cond') S.condsDraft.push({ col: SCHEMAS[S.activeTable].cols[0], op: '=', val: '', on: true });
+    if (a === 'add-sort') S.sortDraft.push({ col: SCHEMAS[S.activeTable].cols[0], desc: false, on: true });
+    if (a === 'apply-conds') { S.conds = S.condsDraft.map(c => ({ ...c })); S.page = 1; closePopover(true); }
+    if (a === 'apply-sort') { S.sort = S.sortDraft.map(t => ({ ...t })); S.page = 1; closePopover(true); }
+    if (a === 'cancel-pop') closePopover(false);
+    if (a === 'show-all-cols') S.hidden = [];
+    if (a === 'close-pop') closePopover(false);
+    if (a === 'prev-page') S.page = Math.max(1, S.page - 1);
+    if (a === 'next-page') S.page = S.page + 1;
+    if (a === 'refresh') { /* refetch — the mockup already renders fresh */ }
     if (a === 'add-connection') S.connectionModal = { mode: 'add' };
     render(); return;
   }
