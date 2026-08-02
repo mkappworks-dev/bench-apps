@@ -215,6 +215,77 @@ describe("DbTab", () => {
     expect(count).toHaveBeenLastCalledWith("c1", "orders", expected);
   });
 
+  // A failing query is usually a filter the user just applied. Replacing the
+  // whole grid with an error box takes the Filter popover away with it, and
+  // switching tables becomes the only escape.
+  it("keeps the toolbar reachable when a filter produces a server error", async () => {
+    const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id", "status"], rows: [["1", "paid"]], pk_column: "id",
+    });
+    renderDb("orders");
+    await waitFor(() => expect(listRows).toHaveBeenCalled());
+
+    listRows.mockRejectedValueOnce(new Error("operator does not exist"));
+    fireEvent.click(await screen.findByRole("button", { name: "Filter" }));
+    fireEvent.click(screen.getByRole("button", { name: /add filter/i }));
+    fireEvent.change(screen.getByRole("textbox", { name: /^Filter value/ }), { target: { value: "boom" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("operator does not exist");
+
+    // The whole point: the user can still get back into the filter and undo it.
+    fireEvent.click(screen.getByRole("button", { name: /^Filter/ }));
+    fireEvent.click(screen.getByRole("button", { name: /remove condition/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() =>
+      expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ filter: [] })),
+    );
+  });
+
+  // The backend derives `columns` from the first row, so zero matches means
+  // zero columns — which must not empty the popovers' column pickers.
+  it("keeps real column names in the popovers after a filter matches no rows", async () => {
+    const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id", "status"], rows: [["1", "paid"]], pk_column: "id",
+    });
+    renderDb("orders");
+    await waitFor(() => expect(listRows).toHaveBeenCalled());
+
+    listRows.mockResolvedValue({ columns: [], rows: [], pk_column: "id" });
+    fireEvent.click(await screen.findByRole("button", { name: "Filter" }));
+    fireEvent.click(screen.getByRole("button", { name: /add filter/i }));
+    fireEvent.change(screen.getByRole("textbox", { name: /^Filter value/ }), { target: { value: "nothing-matches" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(listRows).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(screen.getByRole("button", { name: /^Filter/ }));
+    fireEvent.click(screen.getByRole("button", { name: /add filter/i }));
+    // Condition 2 is the freshly added one, which seeds itself from columns[0]
+    // — the case that used to produce `{ column: undefined }`.
+    const columnPicker = screen.getByRole("combobox", { name: "Filter column, condition 2" });
+    expect(Array.from(columnPicker.querySelectorAll("option")).map((o) => o.textContent)).toEqual(["id", "status"]);
+    expect(columnPicker).toHaveValue("id");
+  });
+
+  // Sampling row 0 alone reports a column as text the moment its first cell is
+  // NULL, which offers "contains" where "is true"/"is false" belong.
+  it("infers a column's operator family from the first non-null value, not row 0", async () => {
+    const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id", "paid"], rows: [["1", null], ["2", "true"]], pk_column: "id",
+    });
+    renderDb("orders");
+    await waitFor(() => expect(listRows).toHaveBeenCalled());
+
+    fireEvent.click(await screen.findByRole("button", { name: "Filter" }));
+    fireEvent.click(screen.getByRole("button", { name: /add filter/i }));
+    fireEvent.change(screen.getByRole("combobox", { name: /^Filter column/ }), { target: { value: "paid" } });
+
+    const operators = screen.getByRole("combobox", { name: /^Filter operator/ });
+    expect(Array.from(operators.querySelectorAll("option")).map((o) => o.textContent)).toEqual([
+      "is true", "is false", "is null", "is not null",
+    ]);
+  });
+
   it("derives the page count from the total, not from the fetched rows", async () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id"], rows: [["1"]], pk_column: "id",

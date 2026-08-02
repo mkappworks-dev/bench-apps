@@ -3,7 +3,7 @@ import { SchemaTree } from "./SchemaTree";
 import { DataGrid, cellDisplay, CellValue } from "./DataGrid";
 import { QueryConsole } from "./QueryConsole";
 import { GridToolbar } from "./grid/GridToolbar";
-import { inferFamily } from "./grid/types";
+import { inferFamily, type ColumnFamily } from "./grid/types";
 import { readLayout, writeLayout, type GridLayout } from "./grid/gridLayout";
 import {
   invokeListTableRows,
@@ -86,6 +86,11 @@ export function DbTab({
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
 
   const [tableRows, setTableRows] = useState<TableRows | null>(null);
+  // The backend derives `columns` from the first returned row, so a filter that
+  // matches nothing comes back with none — which would empty every popover's
+  // column picker and leave "+ Add filter" building a condition on `undefined`.
+  // The toolbar reads this instead: the last shape this table actually returned.
+  const [lastKnownColumns, setLastKnownColumns] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   // A list, outermost term first — "status, then newest first" is a normal
@@ -200,9 +205,15 @@ export function DbTab({
       });
       if (requestId !== requestIdRef.current) return;
       setTableRows(result);
+      if (result.columns.length > 0) setLastKnownColumns(result.columns);
     } catch (err) {
       if (requestId !== requestIdRef.current) return;
-      setTableRows(null);
+      // `tableRows` is deliberately left alone. A failing query is usually a
+      // filter the user just applied, and clearing the rows would unmount the
+      // toolbar along with them — taking away the Filter popover that is the
+      // only way to undo it. The error renders above the grid instead, and the
+      // stale rows stay visible and labelled by that error. On the very first
+      // load there is nothing to keep, so the error box stands alone.
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       if (requestId === requestIdRef.current) setLoading(false);
@@ -231,6 +242,7 @@ export function DbTab({
     limitRef.current = 100;
     setTotal(0);
     setTableRows(null);
+    setLastKnownColumns([]);
     setError(null);
     if (table && activeConnectionId) {
       void fetchRows(table, activeConnectionId, [], [], 0, 100);
@@ -564,6 +576,18 @@ export function DbTab({
     );
   }
 
+  // Samples the first NON-NULL value in the column across the fetched page,
+  // not just row 0 — a NULL there would report the column as text and offer
+  // "contains"/"starts with" where "is true"/"is false" belong. Still a
+  // heuristic; Slice 2 replaces the whole thing with describe_columns' real
+  // type metadata.
+  function familyOfColumn(column: string): ColumnFamily {
+    const index = tableRows?.columns.indexOf(column) ?? -1;
+    if (index < 0) return "text";
+    const sample = (tableRows?.rows ?? []).map((row) => row[index]).find((v) => v !== null);
+    return inferFamily(sample ?? null);
+  }
+
   // Watch state is scoped per connection, not just per app. Re-hydrating
   // whenever activeConnectionId changes keeps it in sync with the picker.
   useEffect(() => {
@@ -623,76 +647,87 @@ export function DbTab({
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           {!activeConnectionId ? (
             <div className="text-sm text-text-faint">Select a connection to browse its data.</div>
-          ) : error ? (
-            <div className="rounded-lg border border-border bg-danger-bg p-3 text-sm text-danger">{error}</div>
-          ) : tableRows ? (
-            <div className={loading ? "opacity-60 transition-opacity duration-200" : undefined}>
-              {editError ? (
-                <div role="alert" className="mb-2 rounded-sm border border-border bg-danger-bg px-3 py-1.5 text-xs text-danger">
-                  {editError}
+          ) : (
+            <>
+              {/* Above the grid, never instead of it — see fetchRows' catch. */}
+              {error ? (
+                <div role="alert" className="mb-2 rounded-lg border border-border bg-danger-bg p-3 text-sm text-danger">
+                  {error}
                 </div>
               ) : null}
-              <DataGrid
-                columns={tableRows.columns}
-                rows={tableRows.rows}
-                sort={sort}
-                onSort={handleSort}
-                renderCell={renderCell}
-                layout={layout}
-                onLayoutChange={updateLayout}
-                toolbar={
-                  <GridToolbar
+              {tableRows ? (
+                <div className={loading ? "opacity-60 transition-opacity duration-200" : undefined}>
+                  {editError ? (
+                    <div role="alert" className="mb-2 rounded-sm border border-border bg-danger-bg px-3 py-1.5 text-xs text-danger">
+                      {editError}
+                    </div>
+                  ) : null}
+                  <DataGrid
                     columns={tableRows.columns}
                     rows={tableRows.rows}
+                    sort={sort}
+                    onSort={handleSort}
+                    renderCell={renderCell}
                     layout={layout}
                     onLayoutChange={updateLayout}
-                    filter={filter}
-                    onFilterChange={(next) => {
-                      abandonEditForQueryChange();
-                      setFilter(next);
-                      setPage(0);
-                      void fetchRows(table!, activeConnectionId!, next, sort, 0, limitRef.current);
-                    }}
-                    sort={sort}
-                    onSortChange={(next) => {
-                      abandonEditForQueryChange();
-                      setSort(next);
-                      setPage(0);
-                      void fetchRows(table!, activeConnectionId!, filter, next, 0, limitRef.current);
-                    }}
-                    page={page + 1}
-                    pageCount={Math.max(1, Math.ceil(total / limit))}
-                    onPageChange={(next) => {
-                      abandonEditForQueryChange();
-                      setPage(next - 1);
-                      void fetchRows(table!, activeConnectionId!, filter, sort, next - 1, limitRef.current);
-                    }}
-                    limit={limit}
-                    onLimitChange={(next) => {
-                      abandonEditForQueryChange();
-                      limitRef.current = next;
-                      setLimit(next);
-                      setPage(0);
-                      void fetchRows(table!, activeConnectionId!, filter, sort, 0, next);
-                    }}
-                    onRefresh={() => {
-                      abandonEditForQueryChange();
-                      void fetchRows(table!, activeConnectionId!, filter, sort, page, limitRef.current);
-                    }}
-                    familyOf={(column) => inferFamily(tableRows.rows[0]?.[tableRows.columns.indexOf(column)] ?? null)}
+                    toolbar={
+                      <GridToolbar
+                        // Not tableRows.columns: a filter matching zero rows
+                        // returns none, which would blank every popover's
+                        // column picker (see lastKnownColumns).
+                        columns={tableRows.columns.length > 0 ? tableRows.columns : lastKnownColumns}
+                        rows={tableRows.rows}
+                        layout={layout}
+                        onLayoutChange={updateLayout}
+                        filter={filter}
+                        onFilterChange={(next) => {
+                          abandonEditForQueryChange();
+                          setFilter(next);
+                          setPage(0);
+                          void fetchRows(table!, activeConnectionId!, next, sort, 0, limitRef.current);
+                        }}
+                        sort={sort}
+                        onSortChange={(next) => {
+                          abandonEditForQueryChange();
+                          setSort(next);
+                          setPage(0);
+                          void fetchRows(table!, activeConnectionId!, filter, next, 0, limitRef.current);
+                        }}
+                        page={page + 1}
+                        pageCount={Math.max(1, Math.ceil(total / limit))}
+                        onPageChange={(next) => {
+                          abandonEditForQueryChange();
+                          setPage(next - 1);
+                          void fetchRows(table!, activeConnectionId!, filter, sort, next - 1, limitRef.current);
+                        }}
+                        limit={limit}
+                        onLimitChange={(next) => {
+                          abandonEditForQueryChange();
+                          limitRef.current = next;
+                          setLimit(next);
+                          setPage(0);
+                          void fetchRows(table!, activeConnectionId!, filter, sort, 0, next);
+                        }}
+                        onRefresh={() => {
+                          abandonEditForQueryChange();
+                          void fetchRows(table!, activeConnectionId!, filter, sort, page, limitRef.current);
+                        }}
+                        familyOf={familyOfColumn}
+                      />
+                    }
                   />
-                }
-              />
-              {!tableRows.pk_column ? (
-                <div className="mt-2.5 text-xs text-text-faint">
-                  No single-column primary key on <span className="font-semibold text-text-muted">{table}</span> — cells are
-                  read-only.
+                  {!tableRows.pk_column ? (
+                    <div className="mt-2.5 text-xs text-text-faint">
+                      No single-column primary key on <span className="font-semibold text-text-muted">{table}</span> — cells
+                      are read-only.
+                    </div>
+                  ) : null}
                 </div>
+              ) : loading ? (
+                <div className="text-sm text-text-faint">Loading…</div>
               ) : null}
-            </div>
-          ) : loading ? (
-            <div className="text-sm text-text-faint">Loading…</div>
-          ) : null}
+            </>
+          )}
         </div>
         {consoleOpen && activeConnectionId ? <QueryConsole connectionId={activeConnectionId} /> : null}
       </div>
