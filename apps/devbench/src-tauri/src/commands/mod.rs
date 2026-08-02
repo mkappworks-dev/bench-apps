@@ -2,6 +2,7 @@ pub mod chat;
 pub mod connections;
 pub mod correlation;
 pub mod db;
+pub mod db_filter;
 pub mod email;
 pub mod history;
 pub mod logs;
