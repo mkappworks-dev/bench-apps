@@ -8,3 +8,4 @@ pub mod mcp_client;
 pub mod preview_state;
 pub mod secrets;
 pub mod smtp_catcher;
+pub mod startup_state;

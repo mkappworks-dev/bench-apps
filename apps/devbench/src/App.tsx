@@ -1,12 +1,20 @@
 import { useEffect, useState } from "react";
 import { useAppStore, type Pane, type ThemePref, type ToolKind } from "./store/useAppStore";
 import { AppStrip } from "./components/shell/AppStrip";
+import { BrandLockup } from "./components/shell/Logo";
 import { TABS } from "./components/shell/tools";
 import { SessionsSidebar } from "./components/shell/SessionsSidebar";
 import { ChatDock } from "./components/shell/ChatDock";
 import { SettingsScreen } from "./components/settings/SettingsScreen";
 import { SplitContent } from "./components/shell/SplitContent";
-import { invokeGetSettings, invokeListConnections, invokeListWatchedTables } from "./lib/tauri";
+import { StartupErrorScreen } from "./components/shell/StartupErrorScreen";
+import {
+  invokeGetSettings,
+  invokeGetStartupStatus,
+  invokeListConnections,
+  invokeListWatchedTables,
+  type DbInitError,
+} from "./lib/tauri";
 import { useTabController } from "./store/useTabController";
 
 export { TABS };
@@ -24,10 +32,14 @@ export default function App() {
   // Ephemeral: never persisted to tab.state. Only the email deep link sets
   // it, and it targets one specific tab instance — see SplitContent.
   const [emailFocusRequest, setEmailFocusRequest] = useState<{ tabId: string; emailId: number | null } | null>(null);
+  // History's mirror of emailFocusRequest above, for the reverse direction.
+  const [historyFocusRequest, setHistoryFocusRequest] = useState<{ tabId: string; requestId: string } | null>(null);
 
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
   const activeConnectionId = useAppStore((s) => s.activeConnectionId);
   const setActiveConnectionId = useAppStore((s) => s.setActiveConnectionId);
+
+  const [dbError, setDbError] = useState<DbInitError | null>(null);
 
   function onAddTab(pane: Pane, kind: ToolKind) {
     tabController.addTab(kind, pane);
@@ -35,6 +47,15 @@ export default function App() {
   function onToggleSplit(): boolean {
     return tabController.splitActiveTab();
   }
+
+  // Fire-and-forget, checked once on mount: the normal (no `db_error`) case
+  // never touches this state after the initial render, so a healthy startup
+  // renders the workspace immediately with no wait and no flash.
+  useEffect(() => {
+    invokeGetStartupStatus()
+      .then((status) => setDbError(status.db_error))
+      .catch(() => {});
+  }, []);
 
   // Restore the persisted theme at launch — otherwise it stays invisible
   // until the user happens to open Settings > Appearance. A failed read
@@ -82,10 +103,16 @@ export default function App() {
     else root.setAttribute("data-theme", theme);
   }, [theme]);
 
+  if (dbError) {
+    return <StartupErrorScreen error={dbError} />;
+  }
+
   if (route === "settings") {
     return (
       <div className="flex h-screen flex-col">
-        <div data-tauri-drag-region aria-hidden="true" className="h-11 shrink-0 border-b border-border" />
+        <div data-tauri-drag-region className="flex h-11 shrink-0 items-center border-b border-border">
+          <BrandLockup />
+        </div>
         <SettingsScreen onBack={() => setRoute("workspace")} />
       </div>
     );
@@ -118,6 +145,11 @@ export default function App() {
             setEmailFocusRequest({ tabId: targetId, emailId });
           }}
           emailFocusRequest={emailFocusRequest}
+          onOpenHistory={(requestId) => {
+            const targetId = tabController.focusOrCreateTab("api");
+            setHistoryFocusRequest({ tabId: targetId, requestId });
+          }}
+          historyFocusRequest={historyFocusRequest}
         />
         {chatOpen ? <ChatDock onClose={() => setChatOpen(false)} /> : null}
       </div>

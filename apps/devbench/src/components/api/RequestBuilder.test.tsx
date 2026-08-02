@@ -17,6 +17,7 @@ describe("RequestBuilder", () => {
       response: { status_code: 201, body: '{"id":8841}', duration_ms: 142 },
       table_diffs: [{ table: "orders", inserted: 1, updated: 0, deleted: 0 }],
       db_error: null,
+      history_id: "hist-1",
     });
 
     render(
@@ -37,6 +38,7 @@ describe("RequestBuilder", () => {
         response: { status_code: 201, body: '{"id":8841}', duration_ms: 142 },
         table_diffs: [{ table: "orders", inserted: 1, updated: 0, deleted: 0 }],
         db_error: null,
+        history_id: "hist-1",
       }),
     );
     expect(tauriLib.invokeRunCorrelatedRequest).toHaveBeenCalledWith({
@@ -53,6 +55,7 @@ describe("RequestBuilder", () => {
       response: { status_code: 200, body: "{}", duration_ms: 5 },
       table_diffs: [],
       db_error: null,
+      history_id: "hist-3",
     });
 
     render(
@@ -104,6 +107,7 @@ describe("RequestBuilder", () => {
       response: { status_code: 200, body: "{}", duration_ms: 5 },
       table_diffs: [],
       db_error: null,
+      history_id: "hist-2",
     });
     await waitFor(() => expect(onResult).toHaveBeenCalledTimes(1));
   });

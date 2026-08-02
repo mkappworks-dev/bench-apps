@@ -32,7 +32,7 @@ pub struct HistoryEntry {
 pub async fn save_history_entry_impl(
     pool: &sqlx::SqlitePool,
     entry: HistoryEntryInput,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();
     let fired_at = Utc::now().to_rfc3339();
 
@@ -52,7 +52,7 @@ pub async fn save_history_entry_impl(
     .await
     .map_err(|e| format!("failed to save history entry: {e}"))?;
 
-    Ok(())
+    Ok(id)
 }
 
 pub async fn list_history_impl(
@@ -101,7 +101,8 @@ pub async fn save_history_entry(
     db: State<'_, LocalDb>,
     entry: HistoryEntryInput,
 ) -> Result<(), String> {
-    save_history_entry_impl(&db.pool, entry).await
+    save_history_entry_impl(&db.pool, entry).await?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -305,5 +306,27 @@ mod tests {
         let restored = list_history_impl(&db.pool, Some(&session.id)).await.unwrap();
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].url, "/orders");
+    }
+
+    #[tokio::test]
+    async fn returns_the_generated_id_so_callers_can_link_to_it_later() {
+        let (_dir, db) = db().await;
+        let id = save_history_entry_impl(
+            &db.pool,
+            HistoryEntryInput {
+                method: "POST".to_string(),
+                url: "/api/orders".to_string(),
+                status_code: 201,
+                response_body: "{}".to_string(),
+                duration_ms: 12,
+                session_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let entries = list_history_impl(&db.pool, None).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, id, "the returned id must be the row's actual primary key");
     }
 }

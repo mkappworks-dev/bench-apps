@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Tabs } from "../ui/Tabs";
 import { Menu } from "../ui/Menu";
+import { BrandLockup } from "./Logo";
 import { TABS, TOOL_MENU_OPTIONS } from "./tools";
 import { isSplitOpen, type Pane, type Tab, type ToolKind } from "../../store/useAppStore";
 
@@ -54,7 +55,7 @@ export function AppStrip({
       style={{ gridTemplateColumns: `var(--w-sidebar) 1fr ${chatOpen ? "var(--w-chat)" : "auto"}` }}
       className="grid h-11 shrink-0 border-b border-border"
     >
-      <div aria-hidden="true" data-tauri-drag-region />
+      <BrandLockup />
 
       <div className="flex min-w-0">
         <TabGroup

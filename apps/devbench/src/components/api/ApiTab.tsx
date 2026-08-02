@@ -24,12 +24,15 @@ export function ApiTab({
   onOpenDb,
   onOpenLog,
   onOpenEmail,
+  focusHistoryId,
 }: {
   tab: Tab;
   onPatchState: (patch: Record<string, unknown>) => void;
   onOpenDb: (table: string) => void;
   onOpenLog: () => void;
   onOpenEmail: (emailId: number | null) => void;
+  /** Deep-linked from Email's "Sent by" chip — forwarded to HistorySidebar. */
+  focusHistoryId?: string | null;
 }) {
   const watchedTables = useAppStore((s) => s.watchedTables);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
@@ -93,7 +96,7 @@ export function ApiTab({
     setHistoryRefreshKey((k) => k + 1);
 
     try {
-      const window = await invokeCollectCorrelationWindow(correlation.correlation_id);
+      const window = await invokeCollectCorrelationWindow(correlation.correlation_id, correlation.history_id);
       // Re-checked after the await: a whole window has passed, so the user may
       // have moved on.
       if (!belongsToCurrentSession(sendSessionId)) return;
@@ -159,6 +162,7 @@ export function ApiTab({
         onSelect={handleHistorySelect}
         refreshKey={historyRefreshKey}
         sessionId={activeSessionId}
+        focusId={focusHistoryId}
       />
       <div className="mx-auto flex max-w-180 flex-1 flex-col gap-4 overflow-y-auto p-6">
         <RequestBuilder

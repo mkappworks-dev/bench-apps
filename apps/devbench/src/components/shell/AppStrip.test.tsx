@@ -21,9 +21,9 @@ const BASE = {
 };
 
 describe("AppStrip", () => {
-  it("carries no product wordmark", () => {
+  it("carries the product lockup in the column beside the traffic lights", () => {
     render(<AppStrip {...BASE} />);
-    expect(screen.queryByText("DevBench")).not.toBeInTheDocument();
+    expect(screen.getByText("Dev Bench")).toBeInTheDocument();
   });
 
   it("offers no theme control", () => {
