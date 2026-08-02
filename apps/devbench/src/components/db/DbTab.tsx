@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { SchemaTree } from "./SchemaTree";
-import { DataGrid, cellDisplay } from "./DataGrid";
+import { DataGrid, cellDisplay, CellValue } from "./DataGrid";
 import { QueryConsole } from "./QueryConsole";
 import {
   invokeListTableRows,
@@ -367,7 +367,12 @@ export function DbTab({
   // state, and a confirm/cancel affordance is generic interactivity, not
   // state. The diff's red-strikethrough/green-new-value text below is the
   // legitimate use of semantic color: it reports a real fact (old vs. new).
-  const actionButtonClass = "shrink-0 rounded-sm p-0.5 text-text-faint hover:bg-surface-2 hover:text-text disabled:opacity-40";
+  // (Deviates from the mockup, which fills these `.save`/`.cancel` buttons
+  // with success-bg/neutral-bg — same documented tradeoff as SchemaTree's
+  // watch-icon and the console toggle's aria-pressed highlighting.) Sizing
+  // (20x20, 4px radius) still follows the mockup's `.cell-edit button`.
+  const actionButtonClass =
+    "grid h-5 w-5 shrink-0 place-items-center rounded text-text-faint hover:bg-surface-2 hover:text-text disabled:opacity-40";
 
   function renderCell(rowIndex: number, columnIndex: number, value: string | null) {
     const column = tableRows?.columns[columnIndex] ?? "";
@@ -377,7 +382,7 @@ export function DbTab({
     if (isEditingThisCell && editing.phase === "preview") {
       const { text: oldText } = cellDisplay(value);
       return (
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1">
           <span className="text-danger line-through">{oldText}</span>
           <span aria-hidden className="text-text-faint">
             →
@@ -415,15 +420,15 @@ export function DbTab({
     if (isEditingThisCell) {
       const isNull = editing.draft === null;
       return (
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1">
           <input
             autoFocus
             disabled={isNull || editing.pending}
             value={editing.draft ?? ""}
             onChange={(e) => setEditing({ ...editing, draft: e.target.value })}
-            className="min-w-0 flex-1 rounded-sm border border-accent bg-bg px-1.5 py-0.5 text-sm text-text disabled:opacity-50"
+            className="min-w-0 flex-1 rounded border border-accent bg-bg px-1.5 py-0.75 text-xs text-text disabled:opacity-50"
           />
-          <label className="flex shrink-0 items-center gap-1 text-[11px] text-text-faint">
+          <label className="flex shrink-0 items-center gap-1 text-[10.5px] text-text-faint">
             <input
               type="checkbox"
               checked={isNull}
@@ -465,15 +470,26 @@ export function DbTab({
     // edit in flight at a time keeps two concurrent commits from racing to
     // apply their own stale `tableRows` snapshot over each other.
     const anyEditPending = editing !== null && editing.pending;
-    const { text, className } = cellDisplay(value);
+    const { className } = cellDisplay(value);
     return (
       <button
         type="button"
         disabled={!editable || anyEditPending}
         onClick={() => editable && startEdit(rowIndex, columnIndex, value)}
-        className={`w-full truncate text-left ${editable ? "cursor-text hover:bg-surface-2" : ""} ${className}`}
+        className={`group flex w-full items-center gap-1 text-left ${editable ? "hover:cursor-text hover:bg-surface-2" : ""}`}
       >
-        {text}
+        <span className={`min-w-0 flex-1 truncate ${className}`}>
+          <CellValue value={value} />
+        </span>
+        {/* Decorative hover affordance (mirrors the mockup's `::after`
+            pencil) — a real DOM node marked `aria-hidden` rather than CSS
+            generated content, so it can never bleed into the button's
+            accessible name the way `::after` text sometimes does. */}
+        {editable ? (
+          <span aria-hidden className="hidden shrink-0 text-[10.5px] text-text-faint group-hover:inline">
+            ✎
+          </span>
+        ) : null}
       </button>
     );
   }
@@ -559,7 +575,7 @@ export function DbTab({
                 renderCell={renderCell}
               />
               {!tableRows.pk_column ? (
-                <div className="mt-2 text-xs text-text-faint">
+                <div className="mt-2.5 text-xs text-text-faint">
                   No single-column primary key on <span className="font-semibold text-text-muted">{table}</span> — cells are
                   read-only.
                 </div>

@@ -37,6 +37,14 @@ describe("DataGrid", () => {
     expect(screen.getByText("<unsupported type>")).toBeInTheDocument();
   });
 
+  // Matches the mockup's `.cell-bool` pill treatment (filled success for
+  // true, outlined neutral for false) rather than plain text.
+  it("renders boolean-looking values as a pill, styled by which boolean it is", () => {
+    render(<DataGrid columns={["paid"]} rows={[["true"], ["false"]]} />);
+    expect(screen.getByText("true")).toHaveClass("bg-success-bg", "text-success");
+    expect(screen.getByText("false")).toHaveClass("bg-surface", "text-text-faint");
+  });
+
   it("calls onSort with the clicked column", () => {
     const onSort = vi.fn();
     render(<DataGrid columns={["id", "status"]} rows={[]} onSort={onSort} />);
@@ -44,9 +52,16 @@ describe("DataGrid", () => {
     expect(onSort).toHaveBeenCalledWith("status");
   });
 
-  it("shows the sort direction indicator on the active column", () => {
-    render(<DataGrid columns={["id"]} rows={[]} sortColumn="id" sortDescending={false} />);
-    expect(screen.getByText("▲")).toBeInTheDocument();
+  // The mockup uses one chevron that rotates 180° for desc rather than two
+  // distinct glyphs — the indicator is a decorative SVG (aria-hidden; sort
+  // state itself is on aria-sort, covered below), so it's queried by
+  // data-testid rather than by text/role.
+  it("shows the sort direction indicator rotated for descending, upright for ascending", () => {
+    const { rerender } = render(<DataGrid columns={["id"]} rows={[]} sortColumn="id" sortDescending={false} />);
+    expect(screen.getByTestId("sort-chevron-id")).not.toHaveClass("rotate-180");
+
+    rerender(<DataGrid columns={["id"]} rows={[]} sortColumn="id" sortDescending />);
+    expect(screen.getByTestId("sort-chevron-id")).toHaveClass("rotate-180");
   });
 
   it("disables Prev on the first page and Next when there is no next page", () => {
@@ -110,6 +125,22 @@ describe("DataGrid", () => {
     const idHeader = screen.getByRole("button", { name: "Sort by id" }).closest('[role="columnheader"]');
     expect(statusHeader).toHaveAttribute("aria-sort", "descending");
     expect(idHeader).not.toHaveAttribute("aria-sort");
+  });
+
+  // Mirrors the mockup's `.th-resize` drag handle: dragging pins that one
+  // column to a fixed px width while every other column stays flexible.
+  it("dragging a column's resize handle fixes that column's width, leaving others flexible", () => {
+    render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
+    const headerRow = screen.getByRole("button", { name: "Sort by id" }).closest('[role="row"]') as HTMLElement;
+    expect(headerRow.style.gridTemplateColumns).toBe("minmax(140px, 1fr) minmax(140px, 1fr) 90px");
+
+    // getBoundingClientRect is mocked (see beforeAll) to always report a
+    // width of 800, so dragging 40px right should pin the column at 840px.
+    fireEvent.mouseDown(screen.getByTestId("resize-handle-id"), { clientX: 0 });
+    fireEvent.mouseMove(window, { clientX: 40 });
+    fireEvent.mouseUp(window);
+
+    expect(headerRow.style.gridTemplateColumns).toBe("840px minmax(140px, 1fr) 90px");
   });
 
   it("shows visible feedback when a clipboard copy fails, instead of failing silently", async () => {
