@@ -234,6 +234,49 @@ pub async fn add_log_source_impl(
     Ok(status)
 }
 
+/// Global cap on persisted lines, mirroring the in-memory ring buffer's own
+/// eviction philosophy: oldest rows go first once the cap is exceeded.
+/// Hardcoded on purpose — a Settings row is a scoped-out future extension,
+/// same pattern as `DEFAULT_CORRELATION_WINDOW_MS`.
+pub const MAX_PERSISTED_LINES: i64 = 100_000;
+
+pub async fn flush_new_lines(pool: &SqlitePool, logs: &LogState) -> Result<usize, String> {
+    let batch = logs.take_unflushed();
+    let mut written = 0;
+    for line in &batch {
+        sqlx::query(
+            "INSERT INTO log_lines (id, source_id, captured_at_ms, timestamp, level, message, raw) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(line.id as i64)
+        .bind(&line.source_id)
+        .bind(line.captured_at_ms)
+        .bind(&line.timestamp)
+        .bind(&line.level)
+        .bind(&line.message)
+        .bind(&line.raw)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("failed to flush log line {}: {e}", line.id))?;
+        written += 1;
+    }
+    Ok(written)
+}
+
+pub async fn prune_log_lines(pool: &SqlitePool) -> Result<u64, String> {
+    prune_log_lines_to_cap(pool, MAX_PERSISTED_LINES).await
+}
+
+/// Split out from `prune_log_lines` so a test can prune to a small cap
+/// without waiting to accumulate 100,000 real rows.
+async fn prune_log_lines_to_cap(pool: &SqlitePool, cap: i64) -> Result<u64, String> {
+    let result = sqlx::query("DELETE FROM log_lines WHERE id <= (SELECT COALESCE(MAX(id), 0) - ? FROM log_lines)")
+        .bind(cap)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("failed to prune log_lines: {e}"))?;
+    Ok(result.rows_affected())
+}
+
 pub fn read_log_lines_impl(state: &LogState, input: ReadLogLinesInput) -> LogPage {
     state.read_since(
         input.after_id,
@@ -678,5 +721,62 @@ mod tests {
             .unwrap();
         assert_eq!(source_count, 1);
         assert_eq!(line_count, 1);
+    }
+
+    #[tokio::test]
+    async fn flush_new_lines_writes_exactly_the_unflushed_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        let path = dir.path().join("app.log");
+        std::fs::write(&path, "").unwrap();
+
+        let state = LogState::new();
+        state.add_source("app.log".into(), crate::log_state::SourceKind::File { path: path.clone() }).unwrap();
+        state.poll_all(1_000);
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(f, "one").unwrap();
+        writeln!(f, "two").unwrap();
+        f.flush().unwrap();
+        state.poll_all(2_000);
+
+        let written = flush_new_lines(&db.pool, &state).await.unwrap();
+        assert_eq!(written, 2);
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM log_lines").fetch_one(&db.pool).await.unwrap();
+        assert_eq!(count, 2);
+
+        // A second flush with nothing new writes nothing.
+        let written_again = flush_new_lines(&db.pool, &state).await.unwrap();
+        assert_eq!(written_again, 0);
+    }
+
+    #[tokio::test]
+    async fn prune_log_lines_keeps_only_the_most_recent_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+
+        for i in 1..=10i64 {
+            sqlx::query(
+                "INSERT INTO log_lines (id, source_id, captured_at_ms, timestamp, level, message, raw) VALUES (?, 'src1', ?, NULL, NULL, ?, ?)",
+            )
+            .bind(i)
+            .bind(1_000 + i)
+            .bind(format!("line {i}"))
+            .bind(format!("line {i}"))
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        }
+
+        // Prune to a cap of 4: rows with id 1..=6 should go, 7..=10 should remain.
+        let deleted = prune_log_lines_to_cap(&db.pool, 4).await.unwrap();
+        assert_eq!(deleted, 6);
+
+        let remaining_ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM log_lines ORDER BY id")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining_ids, vec![7, 8, 9, 10]);
     }
 }
