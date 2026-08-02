@@ -625,6 +625,26 @@ impl LogState {
         }
     }
 
+    /// Collects every line added to every source since that source's last
+    /// flush, and advances each source's flush cursor to match. A line that
+    /// arrives mid-call lands in the NEXT call's batch, never this one and
+    /// never lost — the cursor only advances to what was actually read here.
+    pub fn take_unflushed(&self) -> Vec<LogLine> {
+        let mut inner = match self.inner.lock() {
+            Ok(i) => i,
+            Err(_) => return Vec::new(),
+        };
+        let mut batch = Vec::new();
+        for entry in inner.sources.iter_mut() {
+            let new_lines = entry.buffer.unflushed_since(entry.flushed_through_id);
+            if let Some(last) = new_lines.last() {
+                entry.flushed_through_id = last.id;
+            }
+            batch.extend(new_lines);
+        }
+        batch
+    }
+
     /// Kills every currently-running command source. Called once from the
     /// app's graceful-shutdown hook (Task 5) — `kill_on_drop` on each
     /// `Command` stays set as defense-in-depth, but this is the guarantee
@@ -1172,5 +1192,37 @@ mod tests {
 
         let window = state.collect_window(0, 2_000).expect("sources are running");
         assert_eq!(window.len(), 2);
+    }
+
+    #[test]
+    fn take_unflushed_returns_new_lines_once_and_advances_the_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.log");
+        std::fs::write(&path, "").unwrap();
+        let state = LogState::new();
+        state.add_source("app.log".into(), SourceKind::File { path: path.clone() }).unwrap();
+        state.poll_all(1_000);
+
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(f, "one").unwrap();
+        writeln!(f, "two").unwrap();
+        f.flush().unwrap();
+        state.poll_all(2_000);
+
+        let first_batch = state.take_unflushed();
+        assert_eq!(first_batch.len(), 2);
+
+        // Nothing new since the last call — the cursor advanced, so the
+        // same two lines must not come back.
+        let second_batch = state.take_unflushed();
+        assert_eq!(second_batch.len(), 0);
+
+        writeln!(f, "three").unwrap();
+        f.flush().unwrap();
+        state.poll_all(3_000);
+        let third_batch = state.take_unflushed();
+        assert_eq!(third_batch.len(), 1);
+        assert_eq!(third_batch[0].message, "three");
     }
 }
