@@ -203,22 +203,22 @@ describe("invokeCountTableRows", () => {
   });
 
   it("sends the same filter shape the row query uses", async () => {
-    await invokeCountTableRows("c1", "orders", [
+    await invokeCountTableRows("c1", { schema: "public", name: "orders" }, [
       { column: "status", op: "eq", value: "paid", enabled: true },
     ]);
     expect(lastInvoke()).toEqual([
       "count_table_rows",
       {
         connectionId: "c1",
-        table: "orders",
+        table: { schema: "public", name: "orders" },
         filter: [{ column: "status", op: "eq", value: "paid", enabled: true }],
       },
     ]);
   });
 
   it("defaults to no filter", async () => {
-    await invokeCountTableRows("c1", "orders");
-    expect(lastInvoke()[1]).toEqual({ connectionId: "c1", table: "orders", filter: [] });
+    await invokeCountTableRows("c1", { schema: "public", name: "orders" });
+    expect(lastInvoke()[1]).toEqual({ connectionId: "c1", table: { schema: "public", name: "orders" }, filter: [] });
   });
 });
 
@@ -229,7 +229,7 @@ describe("invokeListTableRows with a filter", () => {
   });
 
   it("passes filter and orderBy through as separate lists", async () => {
-    await invokeListTableRows("c1", "orders", {
+    await invokeListTableRows("c1", { schema: "public", name: "orders" }, {
       filter: [{ column: "paid", op: "is_true", value: null, enabled: true }],
       orderBy: [{ column: "id", descending: true, enabled: true }],
       limit: 25,
@@ -237,7 +237,7 @@ describe("invokeListTableRows with a filter", () => {
     });
     expect(lastInvoke()[1]).toEqual({
       connectionId: "c1",
-      table: "orders",
+      table: { schema: "public", name: "orders" },
       filter: [{ column: "paid", op: "is_true", value: null, enabled: true }],
       orderBy: [{ column: "id", descending: true, enabled: true }],
       limit: 25,
