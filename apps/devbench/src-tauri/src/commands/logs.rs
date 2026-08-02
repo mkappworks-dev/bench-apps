@@ -154,20 +154,30 @@ pub async fn load_persisted_sources(pool: &SqlitePool) -> Result<Vec<PersistedSo
 /// `log_lines` — removing a source stops new capture, it doesn't erase that
 /// source's history from Search.
 pub async fn delete_persisted_source(pool: &SqlitePool, id: &str) -> Result<(), String> {
-    sqlx::query("DELETE FROM log_sources WHERE id = ?")
+    let result = sqlx::query("DELETE FROM log_sources WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await
         .map_err(|e| format!("failed to delete persisted log source {id}: {e}"))?;
+    // A silent no-op here is how a stale/mismatched id (e.g. an in-memory
+    // source whose id diverged from its DB row) used to slip through
+    // undetected instead of surfacing as the bug it is.
+    if result.rows_affected() == 0 {
+        return Err(format!("no persisted log source with id {id}"));
+    }
     Ok(())
 }
 
-/// Deletes the persisted row before touching in-memory state: a `DELETE` on
-/// an unknown id is a harmless no-op, but if this were reversed and the DB
-/// delete failed AFTER the in-memory removal already succeeded, the source
-/// would vanish from `list_sources` while its row stayed behind to resurrect
-/// on the next restart — the exact split-brain this function exists to avoid.
+/// Flushes unflushed lines before anything else: `state.remove_source` drops
+/// the source's whole buffer, and without this a source removed within one
+/// flush interval of capturing a line would take that line down with it.
+/// Then deletes the persisted row before touching in-memory state — if this
+/// were reversed and the DB delete failed AFTER the in-memory removal already
+/// succeeded, the source would vanish from `list_sources` while its row
+/// stayed behind to resurrect on the next restart — the exact split-brain
+/// this ordering exists to avoid.
 pub async fn remove_log_source_impl(state: &LogState, pool: &SqlitePool, id: &str) -> Result<(), String> {
+    flush_new_lines(pool, state).await?;
     delete_persisted_source(pool, id).await?;
     state.remove_source(id)
 }
@@ -187,14 +197,15 @@ pub async fn restore_persisted_sources(pool: &SqlitePool, logs: &Arc<LogState>) 
         }
     };
     for row in rows {
+        let id = row.id.clone();
         let result = match row.kind {
-            crate::log_state::SourceKind::File { .. } => logs.add_source(row.label, row.kind),
+            crate::log_state::SourceKind::File { .. } => logs.add_source_with_id(row.id, row.label, row.kind),
             crate::log_state::SourceKind::Command { program, args, cwd } => {
-                crate::log_state::spawn_command_source(Arc::clone(logs), row.label, program, args, cwd).await
+                crate::log_state::spawn_command_source_with_id(Arc::clone(logs), row.id, row.label, program, args, cwd).await
             }
         };
         if let Err(e) = result {
-            eprintln!("failed to restore log source {}: {e}", row.id);
+            eprintln!("failed to restore log source {id}: {e}");
         }
     }
 }
@@ -230,7 +241,14 @@ pub async fn add_log_source_impl(
             crate::log_state::spawn_command_source(Arc::clone(state), label, program, args, cwd).await?
         }
     };
-    persist_log_source(pool, &status, &kind).await?;
+    // The source is already live (and, for a command, its child already
+    // spawned) at this point — if persisting fails, undo that instead of
+    // returning an error while leaving a source the caller was told doesn't
+    // exist still running and unreachable through any future remove call.
+    if let Err(e) = persist_log_source(pool, &status, &kind).await {
+        let _ = state.remove_source(&status.id);
+        return Err(e);
+    }
     Ok(status)
 }
 
@@ -571,6 +589,40 @@ mod tests {
         assert_eq!(status.label, "sh");
     }
 
+    #[tokio::test]
+    async fn add_log_source_impl_rolls_back_the_in_memory_source_when_persisting_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        let path = dir.path().join("app.log");
+        std::fs::write(&path, "").unwrap();
+        let state = Arc::new(LogState::new());
+
+        // Forces persist_log_source to fail on a real DB error, with no
+        // dependence on guessing the freshly-minted source id.
+        db.pool.close().await;
+
+        let result = add_log_source_impl(
+            &state,
+            &db.pool,
+            AddLogSourceInput {
+                label: "app".into(),
+                path: Some(path.display().to_string()),
+                kind: "file".into(),
+                program: None,
+                args: Vec::new(),
+                cwd: None,
+            },
+        )
+        .await;
+
+        assert!(result.is_err(), "a persist failure must surface as an error");
+        assert_eq!(
+            state.list_sources().len(),
+            0,
+            "the in-memory source must be rolled back, not left live with no persisted row behind it"
+        );
+    }
+
     #[test]
     fn read_log_lines_clamps_an_absurd_limit() {
         let state = LogState::new();
@@ -622,6 +674,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn removing_a_source_flushes_its_unflushed_lines_before_deleting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        let path = dir.path().join("app.log");
+        std::fs::write(&path, "").unwrap();
+
+        let state = Arc::new(LogState::new());
+        let kind = crate::log_state::SourceKind::File { path: path.clone() };
+        let status = state.add_source("app.log".into(), kind.clone()).unwrap();
+        persist_log_source(&db.pool, &status, &kind).await.unwrap();
+
+        state.poll_all(1_000);
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(f, "captured but never flushed").unwrap();
+        f.flush().unwrap();
+        state.poll_all(2_000);
+
+        remove_log_source_impl(&state, &db.pool, &status.id).await.unwrap();
+
+        let line_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM log_lines WHERE source_id = ?")
+            .bind(&status.id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(line_count, 1, "the line captured just before removal must survive, not be discarded along with the buffer");
+    }
+
+    #[tokio::test]
     async fn restore_persisted_sources_re_adds_every_saved_source() {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
@@ -645,6 +726,57 @@ mod tests {
         assert_eq!(sources[0].state, "live");
     }
 
+    #[tokio::test]
+    async fn restore_persisted_sources_keeps_the_persisted_source_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        let path = dir.path().join("app.log");
+        std::fs::write(&path, "").unwrap();
+
+        let kind = crate::log_state::SourceKind::File { path: path.clone() };
+        let bootstrap_state = LogState::new();
+        let status = bootstrap_state.add_source("app.log".into(), kind.clone()).unwrap();
+        persist_log_source(&db.pool, &status, &kind).await.unwrap();
+
+        let fresh_state = Arc::new(LogState::new());
+        restore_persisted_sources(&db.pool, &fresh_state).await;
+
+        let sources = fresh_state.list_sources();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id, status.id, "the restored source must keep the persisted id, not mint a new one");
+    }
+
+    #[tokio::test]
+    async fn a_source_removed_after_a_restart_stays_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        let path = dir.path().join("app.log");
+        std::fs::write(&path, "").unwrap();
+
+        let kind = crate::log_state::SourceKind::File { path: path.clone() };
+        let bootstrap_state = LogState::new();
+        let status = bootstrap_state.add_source("app.log".into(), kind.clone()).unwrap();
+        persist_log_source(&db.pool, &status, &kind).await.unwrap();
+
+        // Simulate a restart, then remove the source using the id the
+        // restored session actually sees (what the frontend would send).
+        let restarted_state = Arc::new(LogState::new());
+        restore_persisted_sources(&db.pool, &restarted_state).await;
+        let restored_id = restarted_state.list_sources()[0].id.clone();
+
+        remove_log_source_impl(&restarted_state, &db.pool, &restored_id).await.unwrap();
+
+        assert!(
+            load_persisted_sources(&db.pool).await.unwrap().is_empty(),
+            "the persisted row must actually be gone, not left behind under a different id"
+        );
+
+        // A second restart must not resurrect it.
+        let second_restart_state = Arc::new(LogState::new());
+        restore_persisted_sources(&db.pool, &second_restart_state).await;
+        assert_eq!(second_restart_state.list_sources().len(), 0);
+    }
+
     // Not in the brief's test list, added because `restore_persisted_sources`'s
     // Command branch (calling `spawn_command_source`) was otherwise untested —
     // only its File branch had coverage.
@@ -658,12 +790,13 @@ mod tests {
             Arc::clone(&bootstrap_state),
             "web".into(),
             "sh".into(),
-            vec!["-c".into(), "echo hello".into()],
+            vec!["-c".into(), "echo restored-hello".into()],
             None,
         )
         .await
         .unwrap();
-        let kind = crate::log_state::SourceKind::Command { program: "sh".into(), args: vec!["-c".into(), "echo hello".into()], cwd: None };
+        let kind =
+            crate::log_state::SourceKind::Command { program: "sh".into(), args: vec!["-c".into(), "echo restored-hello".into()], cwd: None };
         persist_log_source(&db.pool, &status, &kind).await.unwrap();
 
         let fresh_state = Arc::new(LogState::new());
@@ -673,16 +806,23 @@ mod tests {
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].label, "web");
         assert_eq!(sources[0].kind, "command");
+        assert_eq!(sources[0].id, status.id, "restore must keep the persisted id, not mint a new one");
+
+        // len==1/label/kind alone would stay green even if the Command arm
+        // were replaced with a no-op registration that never spawns
+        // anything — only actually observing the respawned process's real
+        // stdout proves the respawn happened.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let page = fresh_state.read_since(0, Some(&sources[0].id), 100);
+        assert!(page.lines.iter().any(|l| l.message == "restored-hello"), "{:?}", page.lines);
     }
 
     #[tokio::test]
-    async fn restore_persisted_sources_surfaces_a_missing_file_as_an_error_state_not_a_silent_drop() {
+    async fn restore_persisted_sources_skips_a_source_whose_file_is_missing() {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
-        let gone_path = dir.path().join("gone.log");
 
-        // Persist a source pointing at a file that will NOT exist on restore.
-        let kind = crate::log_state::SourceKind::File { path: gone_path };
+        // Persists a source pointing at a file that will NOT exist on restore.
         sqlx::query("INSERT INTO log_sources (id, label, kind, path, created_at) VALUES (?, ?, 'file', ?, ?)")
             .bind("src-gone")
             .bind("gone.log")
@@ -691,20 +831,15 @@ mod tests {
             .execute(&db.pool)
             .await
             .unwrap();
-        let _ = kind; // constructed above only to make the SourceKind import obviously used in this test's intent
 
         let state = Arc::new(LogState::new());
         restore_persisted_sources(&db.pool, &state).await;
 
-        // add_source rejects a nonexistent path outright, so restoring a
-        // now-missing file source must not silently vanish it from the list —
-        // this documents that today it simply isn't added (list is empty),
-        // rather than panicking or being silently swallowed with no trace.
         assert_eq!(state.list_sources().len(), 0);
     }
 
     #[tokio::test]
-    async fn migration_0004_creates_usable_log_sources_and_log_lines_tables() {
+    async fn migration_0006_creates_usable_log_sources_and_log_lines_tables() {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
 
