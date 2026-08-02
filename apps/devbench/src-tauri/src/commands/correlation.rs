@@ -53,18 +53,18 @@ pub fn diff_table_snapshots(table: &str, before: &[RowSnapshot], after: &[RowSna
 
 pub async fn snapshot_table(
     pool: &Pool<Postgres>,
-    table: &str,
+    table: &crate::commands::qualified_table::QualifiedTable,
     pk_col: &str,
 ) -> Result<Vec<RowSnapshot>, String> {
-    // Validate both identifiers before using them in SQL — `table` comes straight
-    // from the frontend's `watched_tables` list with no validation upstream, and
-    // `pk_col`, while normally sourced from `information_schema` (trusted), is
-    // validated too as defense-in-depth, matching db.rs's `list_table_rows_impl`.
-    validate_identifier(table)?;
+    // The table is validated by construction. `pk_col`, while normally sourced
+    // from `information_schema` (trusted), is validated too as defense-in-depth,
+    // matching db.rs's `list_table_rows_impl`.
     validate_identifier(pk_col)?;
 
-    // Double-quote both identifiers as defense-in-depth after validation.
-    let sql = format!("SELECT \"{pk_col}\"::text as pk, md5(t::text) as hash FROM \"{table}\" t");
+    let sql = format!(
+        "SELECT \"{pk_col}\"::text as pk, md5(t::text) as hash FROM {} t",
+        table.quoted()
+    );
     let rows = sqlx::query(&sql)
         .fetch_all(pool)
         .await
@@ -98,8 +98,12 @@ async fn snapshot_all(
 ) -> Result<Vec<(String, String, Vec<RowSnapshot>)>, String> {
     let mut snapshots = Vec::with_capacity(watched_tables.len());
     for table in watched_tables {
-        let pk_col = get_primary_key_column(pool, table).await?;
-        let snapshot = snapshot_table(pool, table, &pk_col).await?;
+        // The SQLite watched-tables store returns bare names with no schema
+        // column yet, so every watched table is assumed to live in `public`
+        // until that store carries its own schema.
+        let qualified = crate::commands::qualified_table::QualifiedTable::new("public", table)?;
+        let pk_col = get_primary_key_column(pool, &qualified).await?;
+        let snapshot = snapshot_table(pool, &qualified, &pk_col).await?;
         snapshots.push((table.clone(), pk_col, snapshot));
     }
     Ok(snapshots)
@@ -111,7 +115,9 @@ async fn diff_all(
 ) -> Result<Vec<TableDiff>, String> {
     let mut table_diffs = Vec::with_capacity(before.len());
     for (table, pk_col, before_rows) in before {
-        let after = snapshot_table(pool, &table, &pk_col).await?;
+        // Same `public`-assumption boundary as `snapshot_all` above.
+        let qualified = crate::commands::qualified_table::QualifiedTable::new("public", &table)?;
+        let after = snapshot_table(pool, &qualified, &pk_col).await?;
         let diff = diff_table_snapshots(&table, &before_rows, &after);
         if diff.inserted > 0 || diff.updated > 0 || diff.deleted > 0 {
             table_diffs.push(diff);
@@ -389,6 +395,10 @@ mod tests {
         RowSnapshot { pk: pk.to_string(), hash: hash.to_string() }
     }
 
+    fn public(name: &str) -> crate::commands::qualified_table::QualifiedTable {
+        crate::commands::qualified_table::QualifiedTable::new("public", name).unwrap()
+    }
+
     #[test]
     fn detects_an_insert() {
         let before = vec![snap("1", "a")];
@@ -451,13 +461,13 @@ mod tests {
         sqlx::query("INSERT INTO correlation_test (status) VALUES ('pending')")
             .execute(&pool).await.unwrap();
 
-        let pk_col = get_primary_key_column(&pool, "correlation_test").await.unwrap();
+        let pk_col = get_primary_key_column(&pool, &public("correlation_test")).await.unwrap();
         assert_eq!(pk_col, "id");
 
-        let before = snapshot_table(&pool, "correlation_test", &pk_col).await.unwrap();
+        let before = snapshot_table(&pool, &public("correlation_test"), &pk_col).await.unwrap();
         sqlx::query("UPDATE correlation_test SET status = 'shipped' WHERE id = 1")
             .execute(&pool).await.unwrap();
-        let after = snapshot_table(&pool, "correlation_test", &pk_col).await.unwrap();
+        let after = snapshot_table(&pool, &public("correlation_test"), &pk_col).await.unwrap();
 
         let diff = diff_table_snapshots("correlation_test", &before, &after);
         assert_eq!(diff, TableDiff { table: "correlation_test".into(), inserted: 0, updated: 1, deleted: 0 });
@@ -549,19 +559,21 @@ mod tests {
         sqlx::query("DROP TABLE untouched_e2e").execute(&pool).await.unwrap();
     }
 
-    #[tokio::test]
-    async fn snapshot_table_rejects_a_malicious_table_name() {
-        let pool = test_pool().await;
-
-        let result = snapshot_table(&pool, "orders; DROP TABLE users; --", "id").await;
-        assert!(result.is_err(), "should reject malicious table name before executing SQL");
+    // `snapshot_table` now takes a `&QualifiedTable`, so a malicious table
+    // name can no longer be passed to it at all — the guarantee moved from a
+    // runtime check inside `snapshot_table` to `QualifiedTable::new`.
+    #[test]
+    fn a_malicious_table_name_cannot_construct_a_qualified_table() {
+        let result =
+            crate::commands::qualified_table::QualifiedTable::new("public", "orders; DROP TABLE users; --");
+        assert!(result.is_err(), "should reject malicious table name before it can reach SQL");
     }
 
     #[tokio::test]
     async fn snapshot_table_rejects_a_malicious_pk_column() {
         let pool = test_pool().await;
 
-        let result = snapshot_table(&pool, "orders", "id; DROP TABLE users; --").await;
+        let result = snapshot_table(&pool, &public("orders"), "id; DROP TABLE users; --").await;
         assert!(result.is_err(), "should reject malicious pk column name before executing SQL");
     }
 
@@ -582,7 +594,7 @@ mod tests {
             .unwrap();
         sqlx::query("INSERT INTO \"MixedCaseTable\" (val) VALUES ('x')").execute(&pool).await.unwrap();
 
-        let snapshot = snapshot_table(&pool, "MixedCaseTable", "id").await.unwrap();
+        let snapshot = snapshot_table(&pool, &public("MixedCaseTable"), "id").await.unwrap();
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].pk, "1");
 

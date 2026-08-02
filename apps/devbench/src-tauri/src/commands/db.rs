@@ -97,13 +97,24 @@ pub(crate) fn validate_identifier_labeled(kind: &str, identifier: &str) -> Resul
 /// Relocated from correlation.rs — both correlation snapshotting and grid
 /// edit-target resolution need "does this table have exactly one PK column"
 /// now. Same signature, same error strings.
-pub async fn get_primary_key_column(pool: &PgPool, table: &str) -> Result<String, String> {
+pub async fn get_primary_key_column(
+    pool: &PgPool,
+    table: &crate::commands::qualified_table::QualifiedTable,
+) -> Result<String, String> {
+    // Postgres auto-names single-column PK constraints "<table>_pkey", so two
+    // same-named tables in different schemas (this refactor's whole reason
+    // for existing) can share a constraint_name. The join must also pin
+    // constraint_schema, or the WHERE's table_schema filter still lets the
+    // other schema's same-named constraint's columns leak into the join.
     let rows = sqlx::query(
         "SELECT kcu.column_name FROM information_schema.table_constraints tc \
-         JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name \
-         WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_name = $1",
+         JOIN information_schema.key_column_usage kcu \
+           ON tc.constraint_name = kcu.constraint_name AND tc.constraint_schema = kcu.constraint_schema \
+         WHERE tc.constraint_type = 'PRIMARY KEY' \
+           AND tc.table_name = $1 AND tc.table_schema = $2",
     )
-    .bind(table)
+    .bind(table.name())
+    .bind(table.schema())
     .fetch_all(pool)
     .await
     .map_err(|e| format!("failed to look up primary key for {table}: {e}"))?;
@@ -119,12 +130,18 @@ pub async fn get_primary_key_column(pool: &PgPool, table: &str) -> Result<String
 /// `int4`, `text`, `uuid`) for a column — used by query.rs's cell-edit path
 /// to cast a bound PK value to the PK column's real type (`$2::{pk_type}`)
 /// so the WHERE clause stays sargable instead of casting the column itself.
-pub(crate) async fn get_column_type(pool: &PgPool, table: &str, column: &str) -> Result<String, String> {
+pub(crate) async fn get_column_type(
+    pool: &PgPool,
+    table: &crate::commands::qualified_table::QualifiedTable,
+    column: &str,
+) -> Result<String, String> {
     let row = sqlx::query(
-        "SELECT udt_name FROM information_schema.columns WHERE table_name = $1 AND column_name = $2",
+        "SELECT udt_name FROM information_schema.columns \
+         WHERE table_name = $1 AND column_name = $2 AND table_schema = $3",
     )
-    .bind(table)
+    .bind(table.name())
     .bind(column)
+    .bind(table.schema())
     .fetch_optional(pool)
     .await
     .map_err(|e| format!("failed to look up type for {table}.{column}: {e}"))?
@@ -150,15 +167,13 @@ fn default_enabled() -> bool {
 
 pub async fn list_table_rows_impl(
     pool: &PgPool,
-    table: &str,
+    table: &crate::commands::qualified_table::QualifiedTable,
     filter: &[crate::commands::db_filter::FilterCondition],
     order_by: &[SortTerm],
     limit: i64,
     offset: i64,
 ) -> Result<TableRows, String> {
-    validate_identifier(table)?;
-    // Every term is validated before any is interpolated — these are
-    // identifiers, which Postgres cannot bind as parameters.
+    // The table is validated by construction. Sort columns are not.
     for term in order_by {
         validate_identifier(&term.column)?;
     }
@@ -173,7 +188,7 @@ pub async fn list_table_rows_impl(
     let limit_index = compiled.params.len() + 1;
     let offset_index = compiled.params.len() + 2;
 
-    let mut sql = format!("SELECT * FROM \"{table}\"{}", compiled.where_sql);
+    let mut sql = format!("SELECT * FROM {}{}", table.quoted(), compiled.where_sql);
     let terms: Vec<String> = order_by
         .iter()
         .filter(|t| t.enabled)
@@ -210,12 +225,11 @@ pub async fn list_table_rows_impl(
 
 pub async fn count_table_rows_impl(
     pool: &PgPool,
-    table: &str,
+    table: &crate::commands::qualified_table::QualifiedTable,
     filter: &[crate::commands::db_filter::FilterCondition],
 ) -> Result<i64, String> {
-    validate_identifier(table)?;
     let compiled = crate::commands::db_filter::compile_filter(filter, 1)?;
-    let sql = format!("SELECT COUNT(*) AS n FROM \"{table}\"{}", compiled.where_sql);
+    let sql = format!("SELECT COUNT(*) AS n FROM {}{}", table.quoted(), compiled.where_sql);
 
     let mut query = sqlx::query(&sql);
     for param in &compiled.params {
@@ -237,7 +251,7 @@ pub async fn list_table_rows(
     secrets: State<'_, std::sync::Arc<dyn SecretStore>>,
     registry: State<'_, std::sync::Arc<ConnectionRegistry>>,
     connection_id: String,
-    table: String,
+    table: crate::commands::qualified_table::QualifiedTable,
     filter: Option<Vec<crate::commands::db_filter::FilterCondition>>,
     order_by: Option<Vec<SortTerm>>,
     limit: i64,
@@ -261,7 +275,7 @@ pub async fn count_table_rows(
     secrets: State<'_, std::sync::Arc<dyn SecretStore>>,
     registry: State<'_, std::sync::Arc<ConnectionRegistry>>,
     connection_id: String,
-    table: String,
+    table: crate::commands::qualified_table::QualifiedTable,
     filter: Option<Vec<crate::commands::db_filter::FilterCondition>>,
 ) -> Result<i64, String> {
     let pool = registry.pool_for(&connection_id, &db.pool, secrets.as_ref()).await?;
@@ -384,11 +398,14 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn list_table_rows_rejects_malicious_table_name() {
-        let pool = test_pool().await;
-        let result = list_table_rows_impl(&pool, "orders; DROP TABLE users; --", &[], &[], 200, 0).await;
-        assert!(result.is_err(), "should reject malicious table name before executing query");
+    // `list_table_rows_impl` now takes a `&QualifiedTable`, so a malicious
+    // table name can no longer be passed to it at all — the guarantee moved
+    // to `QualifiedTable::new`.
+    #[test]
+    fn list_table_rows_rejects_malicious_table_name() {
+        let result =
+            crate::commands::qualified_table::QualifiedTable::new("public", "orders; DROP TABLE users; --");
+        assert!(result.is_err(), "should reject malicious table name before it can reach SQL");
     }
 
     #[tokio::test]
@@ -398,7 +415,7 @@ mod tests {
         sqlx::query("CREATE TABLE test_rows_table (id serial PRIMARY KEY, name text)").execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO test_rows_table (name) VALUES ('test_row_1')").execute(&pool).await.unwrap();
 
-        let result = list_table_rows_impl(&pool, "test_rows_table", &[], &[], 200, 0).await;
+        let result = list_table_rows_impl(&pool, &public("test_rows_table"), &[], &[], 200, 0).await;
         assert!(result.is_ok(), "should successfully list rows from valid table");
 
         let table_rows = result.unwrap();
@@ -415,7 +432,7 @@ mod tests {
         sqlx::query("DROP TABLE IF EXISTS no_pk_test").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE no_pk_test (a int, b int)").execute(&pool).await.unwrap();
 
-        let result = list_table_rows_impl(&pool, "no_pk_test", &[], &[], 200, 0).await.unwrap();
+        let result = list_table_rows_impl(&pool, &public("no_pk_test"), &[], &[], 200, 0).await.unwrap();
         assert_eq!(result.pk_column, None, "no single-column PK means not editable, not an error");
 
         sqlx::query("DROP TABLE no_pk_test").execute(&pool).await.unwrap();
@@ -430,12 +447,12 @@ mod tests {
             sqlx::query("INSERT INTO sort_test (n) VALUES ($1)").bind(n).execute(&pool).await.unwrap();
         }
 
-        let asc = list_table_rows_impl(&pool, "sort_test", &[], &[asc_on("n")], 200, 0).await.unwrap();
+        let asc = list_table_rows_impl(&pool, &public("sort_test"), &[], &[asc_on("n")], 200, 0).await.unwrap();
         let n_col = asc.columns.iter().position(|c| c == "n").unwrap();
         let values: Vec<_> = asc.rows.iter().map(|r| r[n_col].clone()).collect();
         assert_eq!(values, vec![Some("1".to_string()), Some("2".to_string()), Some("3".to_string())]);
 
-        let paged = list_table_rows_impl(&pool, "sort_test", &[], &[asc_on("n")], 1, 1).await.unwrap();
+        let paged = list_table_rows_impl(&pool, &public("sort_test"), &[], &[asc_on("n")], 1, 1).await.unwrap();
         assert_eq!(paged.rows.len(), 1, "LIMIT 1 must return exactly one row");
         assert_eq!(paged.rows[0][n_col], Some("2".to_string()), "OFFSET 1 must skip the first sorted row");
 
@@ -458,7 +475,7 @@ mod tests {
 
         let sorted = list_table_rows_impl(
             &pool,
-            "multisort_test",
+            &public("multisort_test"),
             &[],
             &[asc_on("grp"), SortTerm { column: "n".into(), descending: true, enabled: true }],
             200,
@@ -495,7 +512,7 @@ mod tests {
         let pool = test_pool().await;
         let result = list_table_rows_impl(
             &pool,
-            "orders",
+            &public("orders"),
             &[],
             &[asc_on("id"), asc_on("n; DROP TABLE users; --")],
             200,
@@ -509,7 +526,7 @@ mod tests {
     async fn sort_column_rejects_a_malicious_identifier() {
         let pool = test_pool().await;
         let result =
-            list_table_rows_impl(&pool, "orders", &[], &[asc_on("n; DROP TABLE users; --")], 200, 0).await;
+            list_table_rows_impl(&pool, &public("orders"), &[], &[asc_on("n; DROP TABLE users; --")], 200, 0).await;
         assert!(result.is_err(), "a malicious ORDER BY column must be rejected exactly like a malicious table name");
     }
 
@@ -525,7 +542,7 @@ mod tests {
         sqlx::query("INSERT INTO unsupported_type_test (amount, notes) VALUES (42.50, NULL)")
             .execute(&pool).await.unwrap();
 
-        let result = list_table_rows_impl(&pool, "unsupported_type_test", &[], &[], 200, 0).await.unwrap();
+        let result = list_table_rows_impl(&pool, &public("unsupported_type_test"), &[], &[], 200, 0).await.unwrap();
         assert_eq!(result.columns, vec!["id", "amount", "notes"]);
         assert_eq!(result.rows[0][1], Some("<unsupported type>".to_string()));
         assert_eq!(result.rows[0][2], None, "a genuine NULL must still render as None");
@@ -542,7 +559,7 @@ mod tests {
         sqlx::query("INSERT INTO datetime_type_test (created_at, birth_date) VALUES ('2025-07-30 12:34:56+00:00', '2025-07-30')")
             .execute(&pool).await.unwrap();
 
-        let result = list_table_rows_impl(&pool, "datetime_type_test", &[], &[], 200, 0).await.unwrap();
+        let result = list_table_rows_impl(&pool, &public("datetime_type_test"), &[], &[], 200, 0).await.unwrap();
         assert_eq!(result.columns, vec!["id", "created_at", "birth_date"]);
         assert!(result.rows[0][1].is_some());
         assert_ne!(result.rows[0][1], Some("<unsupported type>".to_string()));
@@ -566,7 +583,7 @@ mod tests {
         sqlx::query("INSERT INTO bool_type_test (paid) VALUES (true), (false), (NULL)")
             .execute(&pool).await.unwrap();
 
-        let result = list_table_rows_impl(&pool, "bool_type_test", &[], &[], 200, 0).await.unwrap();
+        let result = list_table_rows_impl(&pool, &public("bool_type_test"), &[], &[], 200, 0).await.unwrap();
         assert_eq!(result.rows[0][1], Some("true".to_string()));
         assert_eq!(result.rows[1][1], Some("false".to_string()));
         assert_eq!(result.rows[2][1], None, "a NULL boolean must not become the string \"false\"");
@@ -579,7 +596,7 @@ mod tests {
         let pool = test_pool().await;
         sqlx::query("DROP TABLE IF EXISTS pk_test").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE pk_test (id serial PRIMARY KEY)").execute(&pool).await.unwrap();
-        assert_eq!(get_primary_key_column(&pool, "pk_test").await.unwrap(), "id");
+        assert_eq!(get_primary_key_column(&pool, &public("pk_test")).await.unwrap(), "id");
         sqlx::query("DROP TABLE pk_test").execute(&pool).await.unwrap();
     }
 
@@ -588,7 +605,7 @@ mod tests {
         let pool = test_pool().await;
         sqlx::query("DROP TABLE IF EXISTS composite_pk_test").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE composite_pk_test (a int, b int, PRIMARY KEY (a, b))").execute(&pool).await.unwrap();
-        let result = get_primary_key_column(&pool, "composite_pk_test").await;
+        let result = get_primary_key_column(&pool, &public("composite_pk_test")).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("composite primary key"));
         sqlx::query("DROP TABLE composite_pk_test").execute(&pool).await.unwrap();
@@ -598,7 +615,7 @@ mod tests {
     async fn a_disabled_sort_term_is_not_applied() {
         let pool = test_pool().await;
         let disabled = SortTerm { column: "id".into(), descending: true, enabled: false };
-        let result = list_table_rows_impl(&pool, "orders", &[], &[disabled], 5, 0).await;
+        let result = list_table_rows_impl(&pool, &public("orders"), &[], &[disabled], 5, 0).await;
         assert!(result.is_ok(), "a disabled term must be skipped, not rejected");
     }
 
@@ -613,10 +630,10 @@ mod tests {
                 .bind(s).execute(&pool).await.unwrap();
         }
 
-        let all = list_table_rows_impl(&pool, "filter_test", &[], &[], 200, 0).await.unwrap();
+        let all = list_table_rows_impl(&pool, &public("filter_test"), &[], &[], 200, 0).await.unwrap();
         assert_eq!(all.rows.len(), 3);
 
-        let paid = list_table_rows_impl(&pool, "filter_test", &[eq_on("status", "paid")], &[], 200, 0)
+        let paid = list_table_rows_impl(&pool, &public("filter_test"), &[eq_on("status", "paid")], &[], 200, 0)
             .await.unwrap();
         assert_eq!(paid.rows.len(), 2);
 
@@ -638,17 +655,20 @@ mod tests {
                 .bind(n).execute(&pool).await.unwrap();
         }
 
-        let eq = list_table_rows_impl(&pool, "type_filter_test", &[eq_on("n", "42")], &[], 200, 0)
+        let eq = list_table_rows_impl(&pool, &public("type_filter_test"), &[eq_on("n", "42")], &[], 200, 0)
             .await
             .expect("an eq filter on an int column must not be a SQL error");
         let n = eq.columns.iter().position(|c| c == "n").unwrap();
         assert_eq!(eq.rows.len(), 1);
         assert_eq!(eq.rows[0][n], Some("42".to_string()));
-        assert_eq!(count_table_rows_impl(&pool, "type_filter_test", &[eq_on("n", "42")]).await.unwrap(), 1);
+        assert_eq!(
+            count_table_rows_impl(&pool, &public("type_filter_test"), &[eq_on("n", "42")]).await.unwrap(),
+            1
+        );
 
         // And ordering compares as numbers, not as strings — "10" > "9" only
         // holds numerically.
-        let gt = list_table_rows_impl(&pool, "type_filter_test", &[gt_on("n", "9")], &[asc_on("n")], 200, 0)
+        let gt = list_table_rows_impl(&pool, &public("type_filter_test"), &[gt_on("n", "9")], &[asc_on("n")], 200, 0)
             .await
             .expect("a gt filter on an int column must not be a SQL error");
         let values: Vec<Option<String>> = gt.rows.iter().map(|r| r[n].clone()).collect();
@@ -670,14 +690,14 @@ mod tests {
                 .bind(s).execute(&pool).await.unwrap();
         }
 
-        assert_eq!(count_table_rows_impl(&pool, "count_test", &[]).await.unwrap(), 4);
+        assert_eq!(count_table_rows_impl(&pool, &public("count_test"), &[]).await.unwrap(), 4);
         assert_eq!(
-            count_table_rows_impl(&pool, "count_test", &[eq_on("status", "paid")]).await.unwrap(),
+            count_table_rows_impl(&pool, &public("count_test"), &[eq_on("status", "paid")]).await.unwrap(),
             3
         );
 
         // And it agrees with what an unpaged fetch actually returns.
-        let rows = list_table_rows_impl(&pool, "count_test", &[eq_on("status", "paid")], &[], 500, 0)
+        let rows = list_table_rows_impl(&pool, &public("count_test"), &[eq_on("status", "paid")], &[], 500, 0)
             .await.unwrap();
         assert_eq!(rows.rows.len() as i64, 3);
 
@@ -698,7 +718,7 @@ mod tests {
         }
 
         let page = list_table_rows_impl(
-            &pool, "filter_page_test", &[eq_on("status", "paid")], &[asc_on("n")], 2, 1,
+            &pool, &public("filter_page_test"), &[eq_on("status", "paid")], &[asc_on("n")], 2, 1,
         ).await.unwrap();
         let n = page.columns.iter().position(|c| c == "n").unwrap();
         assert_eq!(page.rows.len(), 2, "LIMIT must still apply alongside a filter");
@@ -707,10 +727,56 @@ mod tests {
         sqlx::query("DROP TABLE filter_page_test").execute(&pool).await.unwrap();
     }
 
-    #[tokio::test]
-    async fn count_rejects_a_malicious_table_name() {
-        let pool = test_pool().await;
-        let result = count_table_rows_impl(&pool, "orders; DROP TABLE users; --", &[]).await;
+    // `count_table_rows_impl` now takes a `&QualifiedTable`, so a malicious
+    // table name can no longer be passed to it at all — the guarantee moved
+    // to `QualifiedTable::new`.
+    #[test]
+    fn count_rejects_a_malicious_table_name() {
+        let result =
+            crate::commands::qualified_table::QualifiedTable::new("public", "orders; DROP TABLE users; --");
         assert!(result.is_err());
+    }
+
+    fn public(name: &str) -> crate::commands::qualified_table::QualifiedTable {
+        crate::commands::qualified_table::QualifiedTable::new("public", name).unwrap()
+    }
+
+    // The catalog lookups matched on table_name alone, so a table name present
+    // in two schemas resolved by luck. This is the defect the whole refactor
+    // exists to remove.
+    #[tokio::test]
+    async fn a_table_name_present_in_two_schemas_resolves_by_schema() {
+        let pool = test_pool().await;
+        sqlx::query("CREATE SCHEMA IF NOT EXISTS alt").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS public.dup").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS alt.dup").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE public.dup (id serial PRIMARY KEY, tag text)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE alt.dup (other_id serial PRIMARY KEY, tag text)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.dup (tag) VALUES ('p1'), ('p2')")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO alt.dup (tag) VALUES ('a1')")
+            .execute(&pool).await.unwrap();
+
+        let alt_dup = crate::commands::qualified_table::QualifiedTable::new("alt", "dup").unwrap();
+
+        // Rows come from the right physical table.
+        let p = list_table_rows_impl(&pool, &public("dup"), &[], &[], 200, 0).await.unwrap();
+        assert_eq!(p.rows.len(), 2);
+        let a = list_table_rows_impl(&pool, &alt_dup, &[], &[], 200, 0).await.unwrap();
+        assert_eq!(a.rows.len(), 1);
+
+        // Counts too.
+        assert_eq!(count_table_rows_impl(&pool, &public("dup"), &[]).await.unwrap(), 2);
+        assert_eq!(count_table_rows_impl(&pool, &alt_dup, &[]).await.unwrap(), 1);
+
+        // And the PK lookup, which previously saw two candidate rows and
+        // reported a composite primary key.
+        assert_eq!(get_primary_key_column(&pool, &public("dup")).await.unwrap(), "id");
+        assert_eq!(get_primary_key_column(&pool, &alt_dup).await.unwrap(), "other_id");
+
+        sqlx::query("DROP TABLE public.dup").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE alt.dup").execute(&pool).await.unwrap();
     }
 }

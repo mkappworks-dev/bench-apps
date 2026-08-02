@@ -119,14 +119,13 @@ pub async fn preview_cell_edit_impl(
     db: &sqlx::SqlitePool,
     secrets: &dyn SecretStore,
     connection_id: &str,
-    table: &str,
+    table: &crate::commands::qualified_table::QualifiedTable,
     pk_column: &str,
     pk_value: &str,
     column: &str,
     value: Option<&str>,
     now_ms: i64,
 ) -> Result<QueryPreview, String> {
-    validate_identifier(table)?;
     validate_identifier(pk_column)?;
     validate_identifier(column)?;
 
@@ -144,7 +143,10 @@ pub async fn preview_cell_edit_impl(
 
     let mut tx = pool.begin().await.map_err(|e| format!("failed to open a transaction: {e}"))?;
 
-    let sql = format!("UPDATE \"{table}\" SET \"{column}\" = $1 WHERE \"{pk_column}\" = $2::{pk_type}");
+    let sql = format!(
+        "UPDATE {} SET \"{column}\" = $1 WHERE \"{pk_column}\" = $2::{pk_type}",
+        table.quoted()
+    );
     let result = sqlx::query(&sql)
         .bind(value)
         .bind(pk_value)
@@ -198,7 +200,7 @@ pub async fn preview_cell_edit(
     registry: State<'_, Arc<ConnectionRegistry>>,
     previews: State<'_, Arc<PendingPreviewRegistry>>,
     connection_id: String,
-    table: String,
+    table: crate::commands::qualified_table::QualifiedTable,
     pk_column: String,
     pk_value: String,
     column: String,
@@ -227,6 +229,10 @@ mod tests {
     use super::*;
     use crate::commands::connections::{create_connection_impl, ConnectionInput};
     use crate::secrets::InMemorySecretStore;
+
+    fn public(name: &str) -> crate::commands::qualified_table::QualifiedTable {
+        crate::commands::qualified_table::QualifiedTable::new("public", name).unwrap()
+    }
 
     async fn db() -> (tempfile::TempDir, LocalDb) {
         let dir = tempfile::tempdir().unwrap();
@@ -463,18 +469,13 @@ mod tests {
         assert!(rollback_preview_impl(&previews, "not-a-real-id").await.is_err());
     }
 
-    #[tokio::test]
-    async fn preview_cell_edit_rejects_malicious_identifiers() {
-        let (_dir, sqlite) = db().await;
-        let secrets = InMemorySecretStore::default();
-        let created = create_connection_impl(&sqlite.pool, &secrets, local_dev_input()).await.unwrap();
-        let registry = ConnectionRegistry::new();
-        let previews = PendingPreviewRegistry::new();
-
-        let result = preview_cell_edit_impl(
-            &registry, &previews, &sqlite.pool, &secrets, &created.id,
-            "orders; DROP TABLE users; --", "id", "1", "status", Some("shipped"), 0,
-        ).await;
+    // `preview_cell_edit_impl` now takes a `&QualifiedTable`, so a malicious
+    // table name can no longer be passed to it at all — the guarantee moved
+    // to `QualifiedTable::new`.
+    #[test]
+    fn preview_cell_edit_rejects_malicious_identifiers() {
+        let result =
+            crate::commands::qualified_table::QualifiedTable::new("public", "orders; DROP TABLE users; --");
         assert!(result.is_err());
     }
 
@@ -493,7 +494,7 @@ mod tests {
 
         let preview = preview_cell_edit_impl(
             &registry, &previews, &sqlite.pool, &secrets, &created.id,
-            "cell_edit_test", "id", "1", "status", Some("shipped"), 0,
+            &public("cell_edit_test"), "id", "1", "status", Some("shipped"), 0,
         ).await.unwrap();
         assert_eq!(preview.rows_affected, Some(1));
 
@@ -521,7 +522,7 @@ mod tests {
 
         let preview = preview_cell_edit_impl(
             &registry, &previews, &sqlite.pool, &secrets, &created.id,
-            "cell_edit_text_pk_test", "code", "abc", "status", Some("shipped"), 0,
+            &public("cell_edit_text_pk_test"), "code", "abc", "status", Some("shipped"), 0,
         ).await.unwrap();
         assert_eq!(preview.rows_affected, Some(1));
 
@@ -548,7 +549,7 @@ mod tests {
 
         let result = preview_cell_edit_impl(
             &registry, &previews, &sqlite.pool, &secrets, &created.id,
-            "cell_edit_no_match_test", "id", "999", "status", Some("shipped"), 0,
+            &public("cell_edit_no_match_test"), "id", "999", "status", Some("shipped"), 0,
         ).await;
         assert!(result.is_err(), "a PK value matching no row must error rather than silently no-op");
 
