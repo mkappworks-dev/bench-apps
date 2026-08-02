@@ -450,9 +450,51 @@ Run: `cd apps/devbench/src-tauri && cargo test --lib commands::db`
 Expected: compile errors — `count_table_rows_impl` not found, and
 `list_table_rows_impl` called with 6 arguments but defined with 5.
 
-- [ ] **Step 3: Add the filter argument to `list_table_rows_impl`**
+- [ ] **Step 3: Add `enabled` to the Rust `SortTerm`**
 
-In `db.rs`, change the signature and body:
+The frontend's `SortTerm` (Task 3) carries `enabled`, and an unticked term must
+not reach the `ORDER BY`. Without this the payload fails to deserialise. In
+`db.rs`, replace the existing `SortTerm`:
+
+```rust
+#[derive(Debug, Clone, Deserialize)]
+pub struct SortTerm {
+    pub column: String,
+    pub descending: bool,
+    /// An unticked term is kept by the UI but must not reach the ORDER BY.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+```
+
+Update the existing test helper so it still compiles:
+
+```rust
+    fn asc_on(column: &str) -> SortTerm {
+        SortTerm { column: column.to_string(), descending: false, enabled: true }
+    }
+```
+
+and add a test for the new behaviour:
+
+```rust
+    #[tokio::test]
+    async fn a_disabled_sort_term_is_not_applied() {
+        let pool = test_pool().await;
+        let disabled = SortTerm { column: "id".into(), descending: true, enabled: false };
+        let result = list_table_rows_impl(&pool, "orders", &[], &[disabled], 5, 0).await;
+        assert!(result.is_ok(), "a disabled term must be skipped, not rejected");
+    }
+```
+
+- [ ] **Step 4: Add the filter argument to `list_table_rows_impl`**
+
+In `db.rs`, change the signature and body. Note the `.filter(|t| t.enabled)`
+before the `ORDER BY` is built:
 
 ```rust
 pub async fn list_table_rows_impl(
@@ -476,11 +518,12 @@ pub async fn list_table_rows_impl(
     let offset_index = compiled.params.len() + 2;
 
     let mut sql = format!("SELECT * FROM \"{table}\"{}", compiled.where_sql);
-    if !order_by.is_empty() {
-        let terms: Vec<String> = order_by
-            .iter()
-            .map(|t| format!("\"{}\" {}", t.column, if t.descending { "DESC" } else { "ASC" }))
-            .collect();
+    let terms: Vec<String> = order_by
+        .iter()
+        .filter(|t| t.enabled)
+        .map(|t| format!("\"{}\" {}", t.column, if t.descending { "DESC" } else { "ASC" }))
+        .collect();
+    if !terms.is_empty() {
         sql.push_str(&format!(" ORDER BY {}", terms.join(", ")));
     }
     sql.push_str(&format!(" LIMIT ${limit_index} OFFSET ${offset_index}"));
@@ -530,7 +573,7 @@ pub async fn count_table_rows_impl(
 }
 ```
 
-- [ ] **Step 4: Update the Tauri commands**
+- [ ] **Step 5: Update the Tauri commands**
 
 Replace the existing `list_table_rows` command and add the count command:
 
@@ -574,7 +617,7 @@ pub async fn count_table_rows(
 }
 ```
 
-- [ ] **Step 5: Fix the existing call sites**
+- [ ] **Step 6: Fix the existing call sites**
 
 Every existing `list_table_rows_impl(&pool, "x", &[], …)` call in the test
 module now needs the extra filter slice. The order is
@@ -588,18 +631,18 @@ grep -n 'list_table_rows_impl(&pool' src/commands/db.rs
 Update each to pass `&[]` as the third argument, e.g.
 `list_table_rows_impl(&pool, "sort_test", &[], &[asc_on("n")], 200, 0)`.
 
-- [ ] **Step 6: Register the new command**
+- [ ] **Step 7: Register the new command**
 
 In `apps/devbench/src-tauri/src/lib.rs`, find the `tauri::generate_handler![`
 list and add `commands::db::count_table_rows,` next to
 `commands::db::list_table_rows,`.
 
-- [ ] **Step 7: Run the tests to verify they pass**
+- [ ] **Step 8: Run the tests to verify they pass**
 
 Run: `cd apps/devbench/src-tauri && cargo test --lib`
 Expected: all pass, count rising from 194 to 198.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add apps/devbench/src-tauri/src
@@ -2756,8 +2799,10 @@ right".
   produces, Task 10 uses `visualColumns` for export ordering.
 - `toCsv`/`toJson(columns, rows)` — Task 6 produces, Task 10 consumes.
 
-**Correction applied:** Task 2 Step 3 must include this change to the Rust
-`SortTerm`, or the frontend will send an `enabled` field the backend rejects:
+**Correction applied inline.** The fix below is now Task 2 Steps 3–4, not a
+note at the end of the document — subagent-driven execution shows an
+implementer only their own task, so a correction living here would never be
+read. Recorded for the record:
 
 ```rust
 #[derive(Debug, Clone, Deserialize)]
