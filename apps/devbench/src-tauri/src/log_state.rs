@@ -147,17 +147,41 @@ pub struct LogBuffer {
     lines: VecDeque<LogLine>,
     capacity: usize,
     evicted_through_id: u64,
+    evicted_count: u64,
 }
 
 impl LogBuffer {
     pub fn new(capacity: usize) -> Self {
-        Self { lines: VecDeque::with_capacity(capacity.min(1024)), capacity, evicted_through_id: 0 }
+        Self { lines: VecDeque::with_capacity(capacity.min(1024)), capacity, evicted_through_id: 0, evicted_count: 0 }
     }
 
     /// The highest id that has been dropped from this buffer. A caller
     /// whose `from_id` is at or below this knows its view is incomplete.
     pub fn evicted_through_id(&self) -> u64 {
         self.evicted_through_id
+    }
+
+    /// How many lines this buffer has ever evicted, total. Eviction is FIFO
+    /// on a strictly increasing id sequence, so every evicted id is below
+    /// every id still held — that ordering is what makes `dropped_since`
+    /// below sound.
+    pub fn evicted_count(&self) -> u64 {
+        self.evicted_count
+    }
+
+    /// How many of this buffer's evictions a caller reading from `after_id`
+    /// could have missed. Exact whenever `after_id` is older than every
+    /// eviction that ever happened here (the common case: a caller reading
+    /// from scratch, or one that hasn't polled since before eviction
+    /// started) — once `after_id` lands strictly inside the evicted range,
+    /// this over-reports, because only the count and the highest evicted id
+    /// are tracked, not each evicted line's own id.
+    pub fn dropped_since(&self, after_id: u64) -> u64 {
+        if after_id >= self.evicted_through_id {
+            0
+        } else {
+            self.evicted_count
+        }
     }
 
     /// Inserts one line under an id the caller already allocated from
@@ -177,6 +201,7 @@ impl LogBuffer {
         while self.lines.len() > self.capacity {
             if let Some(dropped) = self.lines.pop_front() {
                 self.evicted_through_id = dropped.id;
+                self.evicted_count += 1;
             }
         }
     }
@@ -461,6 +486,14 @@ impl LogState {
     }
 
     pub fn add_source(&self, label: String, kind: SourceKind) -> Result<LogSourceStatus, String> {
+        self.add_source_with_id(Uuid::new_v4().to_string(), label, kind)
+    }
+
+    /// Same as `add_source`, but under a caller-supplied id instead of a
+    /// fresh one — used by restore so a source reloaded from `log_sources`
+    /// keeps the id its `log_lines` history and its DB row were already
+    /// filed under, instead of forking a new identity every restart.
+    pub fn add_source_with_id(&self, id: String, label: String, kind: SourceKind) -> Result<LogSourceStatus, String> {
         let (display_path, kind_label) = match &kind {
             SourceKind::File { path } => {
                 let metadata = std::fs::metadata(path)
@@ -481,7 +514,7 @@ impl LogState {
             }
         };
         let status = LogSourceStatus {
-            id: Uuid::new_v4().to_string(),
+            id,
             label,
             path: display_path,
             kind: kind_label.to_string(),
@@ -565,9 +598,9 @@ impl LogState {
                 .sources
                 .iter()
                 .find(|e| e.status.id == sid)
-                .map(|e| e.buffer.evicted_through_id().saturating_sub(after_id))
+                .map(|e| e.buffer.dropped_since(after_id))
                 .unwrap_or(0),
-            None => inner.sources.iter().map(|e| e.buffer.evicted_through_id().saturating_sub(after_id)).sum(),
+            None => inner.sources.iter().map(|e| e.buffer.dropped_since(after_id)).sum(),
         };
         let next_id = lines.last().map(|l| l.id).unwrap_or(after_id);
         LogPage { lines, next_id, dropped }
@@ -695,6 +728,19 @@ pub async fn spawn_command_source(
     args: Vec<String>,
     cwd: Option<PathBuf>,
 ) -> Result<LogSourceStatus, String> {
+    spawn_command_source_with_id(logs, Uuid::new_v4().to_string(), label, program, args, cwd).await
+}
+
+/// Same as `spawn_command_source`, but under a caller-supplied id — see
+/// `add_source_with_id` for why restore needs this instead of a fresh id.
+pub async fn spawn_command_source_with_id(
+    logs: Arc<LogState>,
+    id: String,
+    label: String,
+    program: String,
+    args: Vec<String>,
+    cwd: Option<PathBuf>,
+) -> Result<LogSourceStatus, String> {
     let mut cmd = tokio::process::Command::new(&program);
     cmd.args(&args);
     if let Some(dir) = &cwd {
@@ -708,7 +754,7 @@ pub async fn spawn_command_source(
     let stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take().expect("stderr is piped");
 
-    let status = logs.add_source(label, SourceKind::Command { program, args, cwd })?;
+    let status = logs.add_source_with_id(id, label, SourceKind::Command { program, args, cwd })?;
 
     let child = Arc::new(tokio::sync::Mutex::new(child));
     logs.commands
@@ -729,9 +775,10 @@ pub async fn spawn_command_source(
     tokio::spawn(async move {
         // try_wait() in a poll loop, not `wait().await` while holding the
         // guard: `wait()` would hold the lock for the process's entire
-        // remaining lifetime, starving `remove_source`'s try_lock and
-        // `kill_all_commands`'s lock().await of any chance to ever acquire
-        // it and actually kill a still-running process.
+        // remaining lifetime, and neither `remove_source` nor
+        // `kill_all_commands` (both `lock().await`) could ever get a turn to
+        // kill a still-running process. This loop drops the guard during
+        // its sleep specifically so they can.
         let code = loop {
             let mut guard = child.lock().await;
             match guard.try_wait() {
@@ -1012,6 +1059,42 @@ mod tests {
         let page = state.read_since(0, None, 100);
         assert_eq!(page.lines.len(), 2);
         assert!(page.dropped > 0, "caller must be able to see that lines were evicted");
+    }
+
+    #[test]
+    fn read_since_merged_dropped_is_the_real_eviction_count_not_a_sum_of_id_distances() {
+        let state = LogState::with_capacity(2);
+        let dir = tempfile::tempdir().unwrap();
+        let path_a = dir.path().join("a.log");
+        let path_b = dir.path().join("b.log");
+        std::fs::write(&path_a, "").unwrap();
+        std::fs::write(&path_b, "").unwrap();
+        state.add_source("a".into(), SourceKind::File { path: path_a.clone() }).unwrap();
+        state.add_source("b".into(), SourceKind::File { path: path_b.clone() }).unwrap();
+        state.poll_all(1_000);
+
+        use std::io::Write as _;
+        // A gets ids 1..=5 (capacity 2, so it evicts 3: ids 1,2,3).
+        let mut fa = std::fs::OpenOptions::new().append(true).open(&path_a).unwrap();
+        for i in 0..5 {
+            writeln!(fa, "a line {i}").unwrap();
+        }
+        fa.flush().unwrap();
+        // B gets ids 6..=9 (capacity 2, so it evicts 2: ids 6,7).
+        let mut fb = std::fs::OpenOptions::new().append(true).open(&path_b).unwrap();
+        for i in 0..4 {
+            writeln!(fb, "b line {i}").unwrap();
+        }
+        fb.flush().unwrap();
+        state.poll_all(2_000);
+
+        let merged = state.read_since(0, None, 100);
+        // Real evictions: 3 (A) + 2 (B) = 5. The old formula summed each
+        // source's evicted_through_id verbatim — (3-0) + (7-0) = 10 — because
+        // B's evicted_through_id already counts A's ids too (one shared,
+        // globally-monotonic id space), so the per-source distances overlap
+        // and the sum roughly doubles the true count.
+        assert_eq!(merged.dropped, 5);
     }
 
     #[test]
