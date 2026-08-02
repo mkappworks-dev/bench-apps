@@ -67,7 +67,11 @@ export function SplitContent({
   }
 
   return (
-    <div className="flex min-h-0 flex-1">
+    // min-w-0: this row is itself App.tsx's three-column shell's main-axis
+    // flex child, so it inherits the same shrink-refusal a DB tab's wide
+    // table hits lower down — a definite width on `main` below doesn't help
+    // if this ancestor still won't shrink below its content's preferred size.
+    <div className="flex min-h-0 min-w-0 flex-1">
       <main
         className={`flex min-h-0 min-w-0 flex-1 flex-col ${
           paneOwnsDbLayout("left") ? "overflow-hidden" : "overflow-y-auto p-6"

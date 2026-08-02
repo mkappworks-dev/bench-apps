@@ -489,7 +489,10 @@ export function DbTab({
   }
 
   return (
-    <div className="flex h-full w-full min-h-0">
+    // min-w-0 here too: this root is itself a row's main-axis flex child
+    // (SplitContent's per-tab wrapper), so without it the same shrink-refusal
+    // just recurs one level higher than the content column below.
+    <div className="flex h-full w-full min-h-0 min-w-0">
       <SchemaTree
         connectionId={activeConnectionId}
         watchedTables={watchedTables}
@@ -497,7 +500,11 @@ export function DbTab({
         onSelectTable={(t) => onPatchState({ table: t })}
         onConnectionChange={setActiveConnectionId}
       />
-      <div className="flex min-h-0 flex-1 flex-col">
+      {/* min-w-0 overrides the flex default of min-width: auto, which refuses
+          to shrink below descendant content width — without it, a wide table
+          widens this column (and everything above it, up to the app window)
+          instead of scrolling inside DataGrid's own scroll container. */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {activeConnectionId ? (
           <div className="flex items-center border-b border-border px-4 py-2">
             <span className="text-sm font-semibold text-text-muted">{table ?? "No table selected"}</span>
