@@ -57,7 +57,7 @@ export function SchemaTree({
   const connectionOptions = connections.map((c) => ({ value: c.id, label: c.name }));
 
   return (
-    <aside className="w-50 min-w-50 min-h-0 overflow-y-auto border-r border-border">
+    <aside className="w-52.5 min-w-52.5 min-h-0 overflow-y-auto border-r border-border">
       <div className="border-b border-border p-2">
         {connectionsError ? (
           <div
@@ -80,7 +80,7 @@ export function SchemaTree({
                 <ChevronIcon />
               </>
             }
-            triggerClassName="flex h-8 w-full items-center justify-between gap-2 rounded-sm border border-border bg-surface px-2.5 text-xs font-bold text-text transition-colors duration-150 hover:border-text-faint hover:bg-surface-2"
+            triggerClassName="flex h-7.5 w-full items-center justify-between gap-2 rounded-sm border border-border bg-surface pl-2.75 pr-2 text-xs font-semibold text-text transition-colors duration-150 hover:border-text-faint hover:bg-surface-2"
           />
         )}
       </div>
@@ -103,21 +103,10 @@ export function SchemaTree({
           {tables.map((t) => (
             <div
               key={`${t.schema}.${t.name}`}
-              className={`flex items-center gap-1.5 rounded-sm p-1.5 ${
+              className={`flex items-center gap-2 rounded-sm py-1.5 px-2.25 font-mono text-xs ${
                 selected === t.name ? "bg-surface-2 text-text" : "text-text-muted"
               }`}
             >
-              {/* Siblings, not nested: a <button> inside a <button> is invalid
-                  HTML and yields unpredictable focus and activation. */}
-              <button
-                type="button"
-                aria-label={`watch ${t.name}`}
-                aria-pressed={watchedTables.has(t.name)}
-                onClick={() => onToggleWatch(t.name)}
-                className={`h-2.5 w-2.5 shrink-0 rounded-full border ${
-                  watchedTables.has(t.name) ? "border-text bg-text" : "border-text-faint"
-                }`}
-              />
               <button
                 type="button"
                 aria-label={`Browse ${t.name}`}
@@ -127,10 +116,35 @@ export function SchemaTree({
               >
                 {t.name}
               </button>
+              {/* Siblings, not nested: a <button> inside a <button> is invalid
+                  HTML and yields unpredictable focus and activation. */}
+              <button
+                type="button"
+                aria-label={`watch ${t.name}`}
+                aria-pressed={watchedTables.has(t.name)}
+                onClick={() => onToggleWatch(t.name)}
+                className={`ml-auto shrink-0 ${watchedTables.has(t.name) ? "text-text" : "text-text-faint"}`}
+              >
+                <EyeIcon />
+              </button>
             </div>
           ))}
         </div>
       )}
     </aside>
+  );
+}
+
+// Deliberately monochrome rather than the mockup's success-green "watched"
+// state: DESIGN.md reserves semantic color "strictly for actual state
+// (response status, the rollup's partial-failure warning) ... never for
+// decoration or generic interactivity" — a watch toggle is closer to the
+// latter, so it follows the same text/text-faint mapping as everything else.
+function EyeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.7">
+      <path d="M2 12s3.8-6.5 10-6.5S22 12 22 12s-3.8 6.5-10 6.5S2 12 2 12z" />
+      <circle cx="12" cy="12" r="2.6" />
+    </svg>
   );
 }

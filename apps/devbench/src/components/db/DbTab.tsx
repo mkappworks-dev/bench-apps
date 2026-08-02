@@ -54,6 +54,18 @@ function CrossIcon() {
   );
 }
 
+// Unlike ui/Menu's ChevronIcon (fixed text-faint, for the dropdown chevron
+// that's always dim), this one has no color class — it inherits the toggle
+// button's own color so it darkens/lightens the same way "Query console"'s
+// text does on hover/pressed, matching the mockup.
+function ConsoleChevronIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+      <path d="M6 9l6 6 6-6" />
+    </svg>
+  );
+}
+
 export function DbTab({
   watchedTables,
   onToggleWatch,
@@ -506,16 +518,19 @@ export function DbTab({
           instead of scrolling inside DataGrid's own scroll container. */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {activeConnectionId ? (
-          <div className="flex items-center border-b border-border px-4 py-2">
-            <span className="text-sm font-semibold text-text-muted">{table ?? "No table selected"}</span>
+          <div className="flex h-11 items-center border-b border-border px-3.5">
+            <span className="text-xs font-semibold text-text-muted">{table ?? "No table selected"}</span>
             <button
               type="button"
               aria-label="Query console"
               aria-pressed={consoleOpen}
               onClick={() => setConsoleOpen((open) => !open)}
-              className="ml-auto flex h-7 shrink-0 items-center gap-1.5 rounded-sm px-2 text-xs font-medium text-text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-text aria-pressed:bg-surface-2 aria-pressed:text-text"
+              className="ml-auto flex h-7.5 shrink-0 items-center gap-1.5 rounded-sm px-2.25 text-xs font-medium text-text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-text aria-pressed:bg-surface-2 aria-pressed:text-text"
             >
-              Query console
+              <span className={`flex transition-transform duration-150 ${consoleOpen ? "rotate-180" : ""}`}>
+                <ConsoleChevronIcon />
+              </span>
+              <span>Query console</span>
             </button>
           </div>
         ) : null}
