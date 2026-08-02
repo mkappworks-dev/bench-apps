@@ -673,6 +673,41 @@ describe("DbTab", () => {
         expect(screen.queryByRole("button", { name: "Commit edit" })).not.toBeInTheDocument();
         expect(screen.getByText("pending")).toBeInTheDocument();
       });
+
+      // The sharpest case: no component left to react at all. previewEdit is
+      // a plain async function invoked from onClick — React unmounting the
+      // component does not tear down that in-flight call or its continuation.
+      // The stale-success branch has to recover using only editGenerationRef
+      // (a plain ref, unaffected by unmount) and the rollback call itself —
+      // no setState involved — since this is the one abandonment path with
+      // no live component afterward to show a Rollback button on.
+      it("unmounting while Preview is in flight rolls back the preview once it lands, with no live component to react to it", async () => {
+        vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+          columns: ["id", "status"],
+          rows: [["1", "pending"]],
+          pk_column: "id",
+        });
+        const deferredPreview: { resolve: ((v: QueryPreview) => void) | null } = { resolve: null };
+        vi.spyOn(tauriLib, "invokePreviewCellEdit").mockImplementation(
+          () => new Promise<QueryPreview>((resolve) => (deferredPreview.resolve = resolve)),
+        );
+        const rollback = vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+
+        const { unmount } = renderDb("orders");
+        await waitFor(() => screen.getByText("pending"));
+        fireEvent.click(screen.getByText("pending"));
+        fireEvent.change(await screen.findByDisplayValue("pending"), { target: { value: "shipped" } });
+        fireEvent.click(screen.getByRole("button", { name: "Preview change" }));
+
+        unmount();
+
+        await act(async () => {
+          deferredPreview.resolve?.({ preview_id: "p1", columns: [], rows: [], rows_affected: 1 });
+          await Promise.resolve();
+        });
+
+        expect(rollback).toHaveBeenCalledWith("p1");
+      });
     });
   });
 });
