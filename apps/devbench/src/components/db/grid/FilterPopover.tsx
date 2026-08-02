@@ -53,7 +53,7 @@ export function FilterPopover({
               className="size-3.5 shrink-0 appearance-none rounded border border-text-faint checked:border-accent checked:bg-accent"
             />
             <select
-              aria-label="Filter column"
+              aria-label={`Filter column, condition ${index + 1}`}
               value={condition.column}
               onChange={(e) => {
                 // The old operator may not exist for the new column's type.
@@ -67,7 +67,7 @@ export function FilterPopover({
               ))}
             </select>
             <select
-              aria-label="Filter operator"
+              aria-label={`Filter operator, condition ${index + 1}`}
               value={condition.op}
               onChange={(e) => update(index, { op: e.target.value as FilterOp })}
               className="h-6.5 min-w-0 flex-1 rounded-sm border border-border bg-bg px-1.5 text-xs text-text"

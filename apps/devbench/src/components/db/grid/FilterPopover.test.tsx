@@ -17,7 +17,7 @@ describe("FilterPopover", () => {
   it("adds a condition row without applying anything", () => {
     const { onApply } = renderPopover();
     fireEvent.click(screen.getByRole("button", { name: /add filter/i }));
-    expect(screen.getByRole("combobox", { name: "Filter column" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /^Filter column/ })).toBeInTheDocument();
     expect(onApply).not.toHaveBeenCalled();
   });
 
@@ -25,7 +25,7 @@ describe("FilterPopover", () => {
   it("does not apply while editing, only on Apply", () => {
     const { onApply } = renderPopover();
     fireEvent.click(screen.getByRole("button", { name: /add filter/i }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Filter column" }), { target: { value: "status" } });
+    fireEvent.change(screen.getByRole("combobox", { name: /^Filter column/ }), { target: { value: "status" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Filter value" }), { target: { value: "paid" } });
     expect(onApply).not.toHaveBeenCalled();
 
@@ -65,19 +65,37 @@ describe("FilterPopover", () => {
   // The operator list must describe the column's type, not a fixed menu.
   it("offers boolean operators for a boolean column", () => {
     renderPopover([{ column: "paid", op: "is_true", value: null, enabled: true }]);
-    const operators = [...screen.getByRole("combobox", { name: "Filter operator" }).querySelectorAll("option")];
+    const operators = [...screen.getByRole("combobox", { name: /^Filter operator/ }).querySelectorAll("option")];
     expect(operators.map((o) => o.textContent)).toEqual(["is true", "is false", "is null", "is not null"]);
   });
 
   // Changing column can invalidate the operator, so it resets.
   it("resets the operator when the column changes", () => {
     renderPopover([{ column: "status", op: "contains", value: "x", enabled: true }]);
-    fireEvent.change(screen.getByRole("combobox", { name: "Filter column" }), { target: { value: "paid" } });
-    expect(screen.getByRole("combobox", { name: "Filter operator" })).toHaveValue("is_true");
+    fireEvent.change(screen.getByRole("combobox", { name: /^Filter column/ }), { target: { value: "paid" } });
+    expect(screen.getByRole("combobox", { name: /^Filter operator/ })).toHaveValue("is_true");
   });
 
   it("hides the value field for an operator that takes none", () => {
     renderPopover([{ column: "status", op: "is_null", value: null, enabled: true }]);
     expect(screen.queryByRole("textbox", { name: "Filter value" })).not.toBeInTheDocument();
+  });
+
+  // Each row's column and operator pickers need their own accessible names, or
+  // assistive tech can't tell rows apart once there are 2+ conditions.
+  it("gives each row's column and operator selects a distinct accessible name", () => {
+    const applied: FilterCondition[] = [
+      { column: "id", op: "eq", value: "1", enabled: true },
+      { column: "status", op: "eq", value: "paid", enabled: true },
+    ];
+    renderPopover(applied);
+
+    const columnSelects = screen.getAllByRole("combobox", { name: /^Filter column/ });
+    expect(columnSelects).toHaveLength(2);
+    expect(new Set(columnSelects.map((el) => el.getAttribute("aria-label"))).size).toBe(2);
+
+    const operatorSelects = screen.getAllByRole("combobox", { name: /^Filter operator/ });
+    expect(operatorSelects).toHaveLength(2);
+    expect(new Set(operatorSelects.map((el) => el.getAttribute("aria-label"))).size).toBe(2);
   });
 });
