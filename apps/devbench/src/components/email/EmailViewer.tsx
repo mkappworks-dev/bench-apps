@@ -73,11 +73,13 @@ export function EmailViewer({
             // `invoke` on `window`. An empty `sandbox` attribute grants NO
             // capabilities — no scripts, no forms, no same-origin — which is
             // the only safe way to render it. Never dangerouslySetInnerHTML.
+            // White in both themes on purpose: mail ships no background of its
+            // own and assumes the light canvas its recipient will see.
             <iframe
               title="Email HTML body"
               sandbox=""
               srcDoc={email.html_body}
-              className="h-full w-full border-0 bg-surface"
+              className="h-full w-full border-0 bg-white"
             />
           ) : (
             <div className="p-4 text-sm text-text-faint">This message has no HTML part.</div>

@@ -42,6 +42,16 @@ describe("EmailViewer", () => {
     expect(document.querySelector("h2")).toBeNull();
   });
 
+  // jsdom computes no styles, so the class is the only reachable signal. The
+  // invariant is worth pinning: on a themed surface the mail's own black text
+  // becomes unreadable in dark mode.
+  it("renders the HTML body on a light canvas in both themes", () => {
+    render(<EmailViewer email={email} />);
+    const frame = screen.getByTitle("Email HTML body");
+    expect(frame.className).toContain("bg-white");
+    expect(frame.className).not.toContain("bg-surface");
+  });
+
   it("switches to the plain-text view", () => {
     render(<EmailViewer email={email} />);
     fireEvent.click(screen.getByRole("tab", { name: "Plain" }));
