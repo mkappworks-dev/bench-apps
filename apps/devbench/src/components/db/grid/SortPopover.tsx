@@ -59,7 +59,7 @@ export function SortPopover({
               {term.enabled ? rank : "—"}
             </span>
             <select
-              aria-label="Sort column"
+              aria-label={`Sort column, priority row ${index + 1}`}
               value={term.column}
               onChange={(e) => update(index, { column: e.target.value })}
               className="h-6.5 min-w-0 flex-1 rounded-sm border border-border bg-bg px-1.5 text-xs text-text"

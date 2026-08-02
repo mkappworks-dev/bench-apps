@@ -72,4 +72,18 @@ describe("SortPopover", () => {
     expect(screen.getByTestId("rank-status")).toHaveTextContent("1");
     expect(screen.getByTestId("rank-created_at")).toHaveTextContent("2");
   });
+
+  // Each row's column picker needs its own accessible name, or assistive tech
+  // can't tell rows apart once there are 2+ (the common case, since row order
+  // is the whole point of this popover).
+  it("gives each row's column select a distinct accessible name", () => {
+    const applied: SortTerm[] = [
+      { column: "id", descending: false, enabled: true },
+      { column: "status", descending: false, enabled: true },
+    ];
+    renderPopover(applied);
+    const selects = screen.getAllByRole("combobox", { name: /sort column/i });
+    expect(selects).toHaveLength(2);
+    expect(new Set(selects.map((el) => el.getAttribute("aria-label"))).size).toBe(2);
+  });
 });
