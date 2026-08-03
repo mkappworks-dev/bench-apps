@@ -5,6 +5,7 @@ import { QueryConsole } from "./QueryConsole";
 import { GridToolbar } from "./grid/GridToolbar";
 import { inferFamily, type ColumnFamily } from "./grid/types";
 import { readLayout, writeLayout, type GridLayout } from "./grid/gridLayout";
+import { normalizeTable } from "../../lib/tableIdentity";
 import {
   invokeListTableRows,
   invokeCountTableRows,
@@ -71,14 +72,6 @@ function ConsoleChevronIcon() {
   );
 }
 
-/** Tab state persisted before schemas existed holds a bare name. Treat it as
- *  public rather than dropping the selection — the same assumption migration
- *  0007 makes for watched tables, for the same reason. */
-function normalizeTable(table: QualifiedTable | string | null): QualifiedTable | null {
-  if (table === null) return null;
-  return typeof table === "string" ? { schema: "public", name: table } : table;
-}
-
 export function DbTab({
   watchedTables,
   onToggleWatch,
@@ -86,7 +79,7 @@ export function DbTab({
   onPatchState,
 }: {
   watchedTables: Set<string>;
-  onToggleWatch: (table: string) => void;
+  onToggleWatch: (table: QualifiedTable) => void;
   table: QualifiedTable | string | null;
   onPatchState: (patch: { table: QualifiedTable }) => void;
 }) {
@@ -607,7 +600,7 @@ export function DbTab({
   useEffect(() => {
     if (!activeConnectionId) return;
     invokeListWatchedTables(activeConnectionId)
-      .then((tables) => setWatchedTables(tables.map((t) => `${t.schema}.${t.name}`)))
+      .then(setWatchedTables)
       .catch(() => setWatchedTables([]));
   }, [activeConnectionId, setWatchedTables]);
 
@@ -615,13 +608,13 @@ export function DbTab({
     if (!activeConnectionId) return;
     const key = `${table.schema}.${table.name}`;
     const nextWatched = !watchedTables.has(key);
-    onToggleWatch(key);
+    onToggleWatch(table);
     try {
       await invokeSetWatchedTable(activeConnectionId, table, nextWatched);
     } catch {
       // Roll the optimistic toggle back rather than leaving the UI claiming a
       // table is watched when the correlation engine will not see it.
-      onToggleWatch(key);
+      onToggleWatch(table);
     }
   }
 

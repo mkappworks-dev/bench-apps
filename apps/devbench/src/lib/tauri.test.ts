@@ -77,7 +77,7 @@ describe("invokeRunCorrelatedRequest", () => {
     await invokeRunCorrelatedRequest({
       request: { method: "GET", url: "/api/orders" },
       connectionId: "c1",
-      watchedTables: ["orders"],
+      watchedTables: [{ schema: "public", name: "orders" }],
       sessionId: "sess-1",
     });
 
@@ -86,7 +86,7 @@ describe("invokeRunCorrelatedRequest", () => {
     expect(payload).toStrictEqual({
       request: { method: "GET", url: "/api/orders" },
       connectionId: "c1",
-      watchedTables: ["orders"],
+      watchedTables: [{ schema: "public", name: "orders" }],
       sessionId: "sess-1",
     });
     expect(Object.keys(payload).sort()).toEqual([

@@ -57,7 +57,7 @@ describe("ApiTab", () => {
     // chip and clicks it — if ApiTab regressed to calling a nonexistent
     // store action instead of forwarding to the onOpenDb prop, either the
     // store call would throw (no such action) or onOpenDb would never fire.
-    useAppStore.getState().setWatchedTables(["orders"]);
+    useAppStore.getState().setWatchedTables([{ schema: "public", name: "orders" }]);
     vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
       correlation_id: "corr-1",
@@ -89,6 +89,42 @@ describe("ApiTab", () => {
     fireEvent.click(dbChip);
 
     expect(onOpenDb).toHaveBeenCalledWith("orders");
+  });
+
+  // Regression guard: the store's watched-table Set is keyed `"schema.name"`
+  // for display/membership, but the wire payload needs the real identities —
+  // a Postgres identifier can legally contain a dot, so splitting the key
+  // back apart would be ambiguous. This renders the real ApiTab against the
+  // real store (not RequestBuilder in isolation) so a regression that goes
+  // back to reading the derived key Set, rather than the object list, would
+  // actually be caught here.
+  it("sends the watched tables to the correlated request as real identities, not derived keys", async () => {
+    useAppStore.getState().setWatchedTables([
+      { schema: "public", name: "orders" },
+      { schema: "alt", name: "orders" },
+    ]);
+    vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([]);
+    const invoked = vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue(sendResult("{}"));
+    // Left pending, same as the deep-link test above: this test only cares
+    // about the Phase 1 send payload, not the window that follows it.
+    vi.spyOn(tauriLib, "invokeCollectCorrelationWindow").mockReturnValue(
+      deferred<tauriLib.CorrelationWindowResult>().promise,
+    );
+
+    render(<ApiTab tab={tab()} onPatchState={() => {}} onOpenDb={() => {}} onOpenLog={() => {}} onOpenEmail={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText("/api/orders"), { target: { value: "/api/orders" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() =>
+      expect(invoked).toHaveBeenCalledWith(
+        expect.objectContaining({
+          watchedTables: [
+            { schema: "public", name: "orders" },
+            { schema: "alt", name: "orders" },
+          ],
+        }),
+      ),
+    );
   });
 
   // Leaving the rollup up after a switch attributes one investigation's

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { invokeRunCorrelatedRequest, type CorrelationResult } from "../../lib/tauri";
+import { invokeRunCorrelatedRequest, type CorrelationResult, type QualifiedTable } from "../../lib/tauri";
 import { Menu, ChevronIcon } from "../ui/Menu";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"].map((m) => ({ value: m, label: m }));
@@ -19,7 +19,9 @@ export function RequestBuilder({
 }: {
   /** `null` when no connection is selected yet — Send stays a no-op until one is. */
   connectionId: string | null;
-  watchedTables: Set<string>;
+  /** Real identities, not `"schema.name"` keys — this goes straight onto the
+   *  wire, and a Postgres identifier can legally contain a dot. */
+  watchedTables: QualifiedTable[];
   /** Attributes the fired request's history entry to this session. `null` = unattributed. */
   sessionId?: string | null;
   method: string;
@@ -39,7 +41,7 @@ export function RequestBuilder({
       const result = await invokeRunCorrelatedRequest({
         request: { method, url, body: undefined },
         connectionId,
-        watchedTables: Array.from(watchedTables),
+        watchedTables,
         sessionId,
       });
       onResult(result);

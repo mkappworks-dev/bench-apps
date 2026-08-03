@@ -5,7 +5,7 @@ import type { Tab } from "../../store/useAppStore";
 
 const TWO_LEFT_TABS: Tab[] = [
   { id: "t-api", kind: "api", pane: "left", ordinal: 0, state: {} },
-  { id: "t-db", kind: "db", pane: "left", ordinal: 1, state: { table: "orders" } },
+  { id: "t-db", kind: "db", pane: "left", ordinal: 1, state: { table: { schema: "public", name: "orders" } } },
 ];
 
 const BASE = {
@@ -48,6 +48,17 @@ describe("AppStrip", () => {
   it("labels a DB tab with its table as a subtitle", () => {
     render(<AppStrip {...BASE} />);
     expect(screen.getByRole("tab", { name: /DB/ })).toHaveTextContent("orders");
+  });
+
+  // Regression: a tab persisted before schemas existed stores `table` as a
+  // bare string, not `{schema, name}` — both the subtitle and the close
+  // button's accessible name must resolve it the same way as the qualified
+  // shape above, not go blank for it.
+  it("labels a DB tab from a legacy bare-string table the same as a qualified one", () => {
+    const tabs: Tab[] = [{ id: "t-db", kind: "db", pane: "left", ordinal: 0, state: { table: "orders" } }];
+    render(<AppStrip {...BASE} tabs={tabs} activeTabId={{ left: "t-db", right: null }} />);
+    expect(screen.getByRole("tab", { name: /DB/ })).toHaveTextContent("orders");
+    expect(screen.getByRole("button", { name: /close db orders/i })).toBeInTheDocument();
   });
 
   it("selects a tab on click", () => {

@@ -140,7 +140,7 @@ export function SchemaTree({
                     HTML and yields unpredictable focus and activation. */}
                 <button
                   type="button"
-                  aria-label={`watch ${t.name}`}
+                  aria-label={`watch ${key}`}
                   aria-pressed={watchedTables.has(key)}
                   onClick={() => onToggleWatch({ schema: t.schema, name: t.name })}
                   className={`ml-auto shrink-0 ${watchedTables.has(key) ? "text-text" : "text-text-faint"}`}

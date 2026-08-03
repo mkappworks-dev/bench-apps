@@ -4,6 +4,7 @@ import { Menu } from "../ui/Menu";
 import { BrandLockup } from "./Logo";
 import { TABS, TOOL_MENU_OPTIONS } from "./tools";
 import { isSplitOpen, type Pane, type Tab, type ToolKind } from "../../store/useAppStore";
+import { normalizeTable } from "../../lib/tableIdentity";
 
 export function AppStrip({
   tabs,
@@ -124,7 +125,9 @@ const ACTION_CLASS =
 function tabLabel(tab: Tab): React.ReactNode {
   const meta = TABS.find((t) => t.id === tab.kind);
   const base = meta?.label ?? tab.kind;
-  const subtitle = tab.kind === "db" && typeof tab.state.table === "string" ? tab.state.table : null;
+  // Visible subtitle stays the bare name, not schema-qualified — same
+  // no-visible-change-in-`public` rule SchemaTree's own label follows.
+  const subtitle = tab.kind === "db" ? (normalizeTable(tab.state.table)?.name ?? null) : null;
   return (
     <span className="flex items-center gap-1.5">
       {meta ? (
@@ -142,7 +145,8 @@ function tabLabel(tab: Tab): React.ReactNode {
 
 function tabCloseName(tab: Tab): string {
   const base = TABS.find((t) => t.id === tab.kind)?.label ?? tab.kind;
-  return typeof tab.state.table === "string" ? `${base} ${tab.state.table}` : base;
+  const table = normalizeTable(tab.state.table);
+  return table ? `${base} ${table.name}` : base;
 }
 
 function TabGroup({

@@ -35,6 +35,7 @@ export function ApiTab({
   focusHistoryId?: string | null;
 }) {
   const watchedTables = useAppStore((s) => s.watchedTables);
+  const watchedTableList = useAppStore((s) => s.watchedTableList);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const activeConnectionId = useAppStore((s) => s.activeConnectionId);
   const [result, setResult] = useState<DisplayResult | null>(null);
@@ -167,7 +168,7 @@ export function ApiTab({
       <div className="mx-auto flex max-w-180 flex-1 flex-col gap-4 overflow-y-auto p-6">
         <RequestBuilder
           connectionId={activeConnectionId}
-          watchedTables={watchedTables}
+          watchedTables={watchedTableList}
           sessionId={activeSessionId}
           method={typeof tab.state.method === "string" ? tab.state.method : "GET"}
           url={typeof tab.state.url === "string" ? tab.state.url : ""}

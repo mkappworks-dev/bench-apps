@@ -20,7 +20,7 @@ beforeAll(() => {
 const ORDERS = { schema: "public", name: "orders" };
 const PAYMENTS = { schema: "public", name: "payments" };
 
-function renderDb(table: tauriLib.QualifiedTable | null, onPatchState = vi.fn()) {
+function renderDb(table: tauriLib.QualifiedTable | string | null, onPatchState = vi.fn()) {
   return { onPatchState, ...render(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table={table} onPatchState={onPatchState} />) };
 }
 
@@ -89,7 +89,7 @@ describe("DbTab", () => {
       columns: ["id"], rows: [["1"]], pk_column: "id",
     });
 
-    renderDb("orders" as unknown as tauriLib.QualifiedTable);
+    renderDb("orders");
 
     await waitFor(() =>
       expect(listRows).toHaveBeenCalledWith(

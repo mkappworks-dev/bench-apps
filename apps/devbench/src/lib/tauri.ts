@@ -66,7 +66,7 @@ export interface CorrelationResult {
 export function invokeRunCorrelatedRequest(args: {
   request: FireRequestInput;
   connectionId: string;
-  watchedTables: string[];
+  watchedTables: QualifiedTable[];
   sessionId?: string | null;
 }): Promise<CorrelationResult> {
   return invoke("run_correlated_request", {

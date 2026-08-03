@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { QualifiedTable } from "../lib/tauri";
 
 export type ToolKind = "api" | "db" | "log" | "email";
 export type Pane = "left" | "right";
@@ -44,9 +45,14 @@ interface AppState {
   theme: ThemePref;
   setTheme: (theme: ThemePref) => void;
   watchedTables: Set<string>;
-  toggleWatchedTable: (table: string) => void;
+  /** The same watch set as `watchedTables`, kept as real `QualifiedTable`
+   *  objects rather than derived `"schema.name"` keys — for wire payloads
+   *  (e.g. `run_correlated_request`) that need the actual identity, not a
+   *  string a Postgres identifier could legally contain a dot inside. */
+  watchedTableList: QualifiedTable[];
+  toggleWatchedTable: (table: QualifiedTable) => void;
   /** Replaces watch state wholesale, e.g. after loading it from SQLite. */
-  setWatchedTables: (tables: string[]) => void;
+  setWatchedTables: (tables: QualifiedTable[]) => void;
   chatOpen: boolean;
   setChatOpen: (open: boolean) => void;
   route: AppRoute;
@@ -121,14 +127,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   theme: "dark",
   setTheme: (theme) => set({ theme }),
   watchedTables: new Set(),
+  watchedTableList: [],
   toggleWatchedTable: (table) =>
     set((state) => {
-      const next = new Set(state.watchedTables);
-      if (next.has(table)) next.delete(table);
-      else next.add(table);
-      return { watchedTables: next };
+      const key = `${table.schema}.${table.name}`;
+      const watching = !state.watchedTables.has(key);
+      const nextSet = new Set(state.watchedTables);
+      if (watching) nextSet.add(key);
+      else nextSet.delete(key);
+      const nextList = watching
+        ? [...state.watchedTableList, table]
+        : state.watchedTableList.filter((t) => `${t.schema}.${t.name}` !== key);
+      return { watchedTables: nextSet, watchedTableList: nextList };
     }),
-  setWatchedTables: (tables) => set({ watchedTables: new Set(tables) }),
+  setWatchedTables: (tables) =>
+    set({
+      watchedTables: new Set(tables.map((t) => `${t.schema}.${t.name}`)),
+      watchedTableList: tables,
+    }),
   chatOpen: true,
   setChatOpen: (open) => set({ chatOpen: open }),
   route: "workspace",

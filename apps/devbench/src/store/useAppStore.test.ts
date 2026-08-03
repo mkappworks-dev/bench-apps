@@ -17,11 +17,22 @@ describe("useAppStore", () => {
     expect(state.activeTabId).toEqual({ left: null, right: null });
   });
 
-  it("toggleWatchedTable adds and removes a table", () => {
-    useAppStore.getState().toggleWatchedTable("orders");
-    expect(useAppStore.getState().watchedTables.has("orders")).toBe(true);
-    useAppStore.getState().toggleWatchedTable("orders");
-    expect(useAppStore.getState().watchedTables.has("orders")).toBe(false);
+  it("toggleWatchedTable adds and removes a table, keeping the key set and the object list in sync", () => {
+    const orders = { schema: "public", name: "orders" };
+    useAppStore.getState().toggleWatchedTable(orders);
+    expect(useAppStore.getState().watchedTables.has("public.orders")).toBe(true);
+    expect(useAppStore.getState().watchedTableList).toEqual([orders]);
+    useAppStore.getState().toggleWatchedTable(orders);
+    expect(useAppStore.getState().watchedTables.has("public.orders")).toBe(false);
+    expect(useAppStore.getState().watchedTableList).toEqual([]);
+  });
+
+  it("setWatchedTables replaces both the key set and the object list wholesale", () => {
+    const orders = { schema: "public", name: "orders" };
+    const users = { schema: "alt", name: "users" };
+    useAppStore.getState().setWatchedTables([orders, users]);
+    expect(useAppStore.getState().watchedTables).toEqual(new Set(["public.orders", "alt.users"]));
+    expect(useAppStore.getState().watchedTableList).toEqual([orders, users]);
   });
 
   it("opens the chat dock by default and can close it", () => {

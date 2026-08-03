@@ -1,5 +1,5 @@
 import type { Tab } from "../../store/useAppStore";
-import type { QualifiedTable } from "../../lib/tauri";
+import { normalizeTable } from "../../lib/tableIdentity";
 import { ApiTab } from "../api/ApiTab";
 import { DbTab } from "../db/DbTab";
 import { LogTab } from "../log/LogTab";
@@ -55,11 +55,13 @@ export function ToolPane({
         <DbTab
           watchedTables={watchedTables}
           onToggleWatch={toggleWatchedTable}
-          // `tab.state` is an untyped bag (Record<string, unknown>) — DbTab
-          // itself normalizes both the legacy bare-string shape and the
-          // current { schema, name } shape, so this only needs to fill in
-          // `undefined` (a tab that has never had a table selected).
-          table={(tab.state.table ?? null) as QualifiedTable | string | null}
+          // `tab.state` is an untyped bag (Record<string, unknown>) — normalizeTable
+          // guards the shape here rather than casting it, since a cast would let
+          // anything else the bag might hold through unchecked. DbTab normalizes
+          // again internally, so this is defense in depth, not redundant: it's
+          // what keeps a malformed value from ever reaching DbTab as if it were
+          // a validated QualifiedTable.
+          table={normalizeTable(tab.state.table)}
           onPatchState={onPatchState}
         />
       );

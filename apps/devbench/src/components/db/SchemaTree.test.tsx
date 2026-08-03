@@ -49,7 +49,7 @@ describe("SchemaTree", () => {
     );
 
     await waitFor(() => expect(screen.getByText("orders")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /watch orders/i }));
+    fireEvent.click(screen.getByRole("button", { name: /watch public\.orders/i }));
     expect(onToggleWatch).toHaveBeenCalledWith({ schema: "public", name: "orders" });
   });
 
@@ -219,6 +219,36 @@ describe("SchemaTree", () => {
     expect(onSelectTable).toHaveBeenCalledWith({ schema: "public", name: "orders" });
   });
 
+  // Regression: every other test in this file renders with `selected={null}`,
+  // so nothing exercised the highlight/aria-current branch at all — including
+  // whether it compares full identity rather than just `name`, which is the
+  // entire reason `selected` carries a schema now.
+  it("marks only the table matching the full selected identity as current", async () => {
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([
+      { schema: "public", name: "orders" },
+      { schema: "alt", name: "orders" },
+    ]);
+
+    render(
+      <SchemaTree
+        connectionId="c1"
+        selected={{ schema: "public", name: "orders" }}
+        watchedTables={new Set()}
+        onToggleWatch={() => {}}
+        onSelectTable={() => {}}
+        onConnectionChange={() => {}}
+      />,
+    );
+
+    const current = await screen.findByRole("button", { name: "Browse public.orders" });
+    const other = screen.getByRole("button", { name: "Browse alt.orders" });
+    expect(current).toHaveAttribute("aria-current", "true");
+    expect(current.closest("div")).toHaveClass("bg-surface-2");
+    expect(other).toHaveAttribute("aria-current", "false");
+    expect(other.closest("div")).not.toHaveClass("bg-surface-2");
+  });
+
   // Nesting a <button> inside a <button> is invalid HTML and breaks focus.
   it("keeps the watch toggle a sibling of the select button, never nested", async () => {
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
@@ -236,7 +266,7 @@ describe("SchemaTree", () => {
       />,
     );
     await waitFor(() => screen.getByText("orders"));
-    const watch = screen.getByRole("button", { name: "watch orders" });
+    const watch = screen.getByRole("button", { name: "watch public.orders" });
     expect(watch.querySelector("button")).toBeNull();
     expect(watch.closest("button")).toBe(watch);
   });

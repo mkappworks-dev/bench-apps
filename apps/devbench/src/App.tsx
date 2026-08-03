@@ -88,7 +88,7 @@ export default function App() {
   useEffect(() => {
     if (!activeConnectionId) return;
     invokeListWatchedTables(activeConnectionId)
-      .then((tables) => setWatchedTables(tables.map((t) => `${t.schema}.${t.name}`)))
+      .then(setWatchedTables)
       .catch(() => setWatchedTables([]));
   }, [activeConnectionId, setWatchedTables]);
 

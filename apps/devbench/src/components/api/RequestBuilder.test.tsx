@@ -23,7 +23,7 @@ describe("RequestBuilder", () => {
     render(
       <RequestBuilder
         connectionId="c1"
-        watchedTables={new Set(["orders"])}
+        watchedTables={[{ schema: "public", name: "orders" }]}
         onResult={onResult}
         method="GET"
         url="/api/orders"
@@ -44,7 +44,7 @@ describe("RequestBuilder", () => {
     expect(tauriLib.invokeRunCorrelatedRequest).toHaveBeenCalledWith({
       request: { method: "GET", url: "/api/orders", body: undefined },
       connectionId: "c1",
-      watchedTables: ["orders"],
+      watchedTables: [{ schema: "public", name: "orders" }],
       sessionId: null,
     });
   });
@@ -61,7 +61,7 @@ describe("RequestBuilder", () => {
     render(
       <RequestBuilder
         connectionId="c1"
-        watchedTables={new Set()}
+        watchedTables={[]}
         onResult={() => {}}
         sessionId="sess-1"
         method="GET"
@@ -89,7 +89,7 @@ describe("RequestBuilder", () => {
     render(
       <RequestBuilder
         connectionId="c1"
-        watchedTables={new Set(["orders"])}
+        watchedTables={[{ schema: "public", name: "orders" }]}
         onResult={onResult}
         onSendStart={onSendStart}
         method="GET"
@@ -116,7 +116,7 @@ describe("RequestBuilder", () => {
     const { container } = render(
       <RequestBuilder
         connectionId="c1"
-        watchedTables={new Set()}
+        watchedTables={[]}
         onResult={() => {}}
         method="GET"
         url=""
@@ -136,7 +136,7 @@ describe("RequestBuilder", () => {
       return (
         <RequestBuilder
           connectionId="c1"
-          watchedTables={new Set()}
+          watchedTables={[]}
           onResult={() => {}}
           method={method}
           url=""
@@ -156,7 +156,7 @@ describe("RequestBuilder", () => {
     render(
       <RequestBuilder
         connectionId="c1"
-        watchedTables={new Set()}
+        watchedTables={[]}
         onResult={() => {}}
         method="POST"
         url="/api/orders"
@@ -170,7 +170,7 @@ describe("RequestBuilder", () => {
   it("patches state on every keystroke and every method change, rather than holding local state", () => {
     const onPatchState = vi.fn();
     render(
-      <RequestBuilder connectionId="c1" watchedTables={new Set()} onResult={() => {}} method="GET" url="" onPatchState={onPatchState} />,
+      <RequestBuilder connectionId="c1" watchedTables={[]} onResult={() => {}} method="GET" url="" onPatchState={onPatchState} />,
     );
 
     fireEvent.change(screen.getByPlaceholderText("/api/orders"), { target: { value: "/api/users" } });
@@ -190,7 +190,7 @@ describe("RequestBuilder", () => {
     render(
       <RequestBuilder
         connectionId={null}
-        watchedTables={new Set()}
+        watchedTables={[]}
         onResult={onResult}
         method="GET"
         url="/api/orders"
