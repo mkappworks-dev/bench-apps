@@ -118,9 +118,9 @@ describe("SplitContent", () => {
     // renders its own name in a "cells are read-only" note below the grid,
     // and a cell value identical to the table name would ambiguously match
     // both `getByText` queries below.
-    const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation(async (_conn, table: string) => ({
+    const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation(async (_conn, table) => ({
       columns: ["table"],
-      rows: [[`row-${table}`]],
+      rows: [[`row-${table.name}`]],
       pk_column: null,
     }));
     useAppStore.setState({
@@ -134,8 +134,8 @@ describe("SplitContent", () => {
 
     await waitFor(() => expect(screen.getByText("row-orders")).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText("row-payments")).toBeInTheDocument());
-    expect(listRows).toHaveBeenCalledWith(expect.anything(), "orders", expect.anything());
-    expect(listRows).toHaveBeenCalledWith(expect.anything(), "payments", expect.anything());
+    expect(listRows).toHaveBeenCalledWith(expect.anything(), { schema: "public", name: "orders" }, expect.anything());
+    expect(listRows).toHaveBeenCalledWith(expect.anything(), { schema: "public", name: "payments" }, expect.anything());
 
     // Switching which tab is active only flips the CSS class — DbTab's fetch
     // effect keys on its `table` prop, which does not change on an active-tab

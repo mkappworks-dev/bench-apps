@@ -3,6 +3,7 @@ import {
   invokeDbConnectAndListTables,
   invokeListConnections,
   type ConnectionSummary,
+  type QualifiedTable,
   type TableInfo,
 } from "../../lib/tauri";
 import { Menu, ChevronIcon } from "../ui/Menu";
@@ -10,15 +11,18 @@ import { useAppStore } from "../../store/useAppStore";
 
 export function SchemaTree({
   connectionId,
+  selected,
   watchedTables,
   onToggleWatch,
   onSelectTable,
   onConnectionChange,
 }: {
   connectionId: string | null;
+  selected: QualifiedTable | null;
+  /** Keyed `"schema.name"` — a bare name can't distinguish two schemas. */
   watchedTables: Set<string>;
-  onToggleWatch: (table: string) => void;
-  onSelectTable: (table: string) => void;
+  onToggleWatch: (table: QualifiedTable) => void;
+  onSelectTable: (table: QualifiedTable) => void;
   onConnectionChange: (connectionId: string) => void;
 }) {
   const [connections, setConnections] = useState<ConnectionSummary[]>([]);
@@ -26,7 +30,6 @@ export function SchemaTree({
   // "you have no connections configured" — those call for different actions.
   const [connectionsError, setConnectionsError] = useState<string | null>(null);
   const [tables, setTables] = useState<TableInfo[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const setRoute = useAppStore((s) => s.setRoute);
   const setSettingsPane = useAppStore((s) => s.setSettingsPane);
@@ -50,11 +53,6 @@ export function SchemaTree({
       .then(setTables)
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, [connectionId]);
-
-  function select(name: string) {
-    setSelected(name);
-    onSelectTable(name);
-  }
 
   const current = connections.find((c) => c.id === connectionId);
   // The host line is what tells two same-named connections apart — and, more
@@ -119,35 +117,39 @@ export function SchemaTree({
         </div>
       ) : (
         <div className="flex flex-col gap-0.5 p-1.5">
-          {tables.map((t) => (
-            <div
-              key={`${t.schema}.${t.name}`}
-              className={`flex items-center gap-2 rounded-sm py-1.5 px-2.25 font-mono text-xs ${
-                selected === t.name ? "bg-surface-2 text-text" : "text-text-muted"
-              }`}
-            >
-              <button
-                type="button"
-                aria-label={`Browse ${t.name}`}
-                aria-current={selected === t.name}
-                onClick={() => select(t.name)}
-                className="flex-1 truncate text-left"
+          {tables.map((t) => {
+            const key = `${t.schema}.${t.name}`;
+            const isSelected = selected?.schema === t.schema && selected?.name === t.name;
+            return (
+              <div
+                key={key}
+                className={`flex items-center gap-2 rounded-sm py-1.5 px-2.25 font-mono text-xs ${
+                  isSelected ? "bg-surface-2 text-text" : "text-text-muted"
+                }`}
               >
-                {t.name}
-              </button>
-              {/* Siblings, not nested: a <button> inside a <button> is invalid
-                  HTML and yields unpredictable focus and activation. */}
-              <button
-                type="button"
-                aria-label={`watch ${t.name}`}
-                aria-pressed={watchedTables.has(t.name)}
-                onClick={() => onToggleWatch(t.name)}
-                className={`ml-auto shrink-0 ${watchedTables.has(t.name) ? "text-text" : "text-text-faint"}`}
-              >
-                <EyeIcon />
-              </button>
-            </div>
-          ))}
+                <button
+                  type="button"
+                  aria-label={`Browse ${key}`}
+                  aria-current={isSelected}
+                  onClick={() => onSelectTable({ schema: t.schema, name: t.name })}
+                  className="flex-1 truncate text-left"
+                >
+                  {t.name}
+                </button>
+                {/* Siblings, not nested: a <button> inside a <button> is invalid
+                    HTML and yields unpredictable focus and activation. */}
+                <button
+                  type="button"
+                  aria-label={`watch ${t.name}`}
+                  aria-pressed={watchedTables.has(key)}
+                  onClick={() => onToggleWatch({ schema: t.schema, name: t.name })}
+                  className={`ml-auto shrink-0 ${watchedTables.has(key) ? "text-text" : "text-text-faint"}`}
+                >
+                  <EyeIcon />
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
     </aside>

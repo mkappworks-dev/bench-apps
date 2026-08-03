@@ -63,14 +63,17 @@ describe("App shell", () => {
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([
       { id: "c1", name: "Local Dev", engine: "postgres", host: "localhost", port: 5432, database: "devbench_test", username: "postgres", sslmode: "disable", has_password: true },
     ]);
-    const listWatched = vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue(["orders", "users"]);
+    const listWatched = vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue([
+      { schema: "public", name: "orders" },
+      { schema: "public", name: "users" },
+    ]);
 
     render(<App />);
 
     await waitFor(() => {
       const watched = useAppStore.getState().watchedTables;
-      expect(watched.has("orders")).toBe(true);
-      expect(watched.has("users")).toBe(true);
+      expect(watched.has("public.orders")).toBe(true);
+      expect(watched.has("public.users")).toBe(true);
     });
     expect(listWatched).toHaveBeenCalledWith("c1");
 

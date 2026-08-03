@@ -14,6 +14,7 @@ import {
   invokeCommitPreview,
   invokeRollbackPreview,
   type FilterCondition,
+  type QualifiedTable,
   type SortTerm,
   type TableRows,
 } from "../../lib/tauri";
@@ -70,17 +71,26 @@ function ConsoleChevronIcon() {
   );
 }
 
+/** Tab state persisted before schemas existed holds a bare name. Treat it as
+ *  public rather than dropping the selection — the same assumption migration
+ *  0007 makes for watched tables, for the same reason. */
+function normalizeTable(table: QualifiedTable | string | null): QualifiedTable | null {
+  if (table === null) return null;
+  return typeof table === "string" ? { schema: "public", name: table } : table;
+}
+
 export function DbTab({
   watchedTables,
   onToggleWatch,
-  table,
+  table: tableProp,
   onPatchState,
 }: {
   watchedTables: Set<string>;
   onToggleWatch: (table: string) => void;
-  table: string | null;
-  onPatchState: (patch: { table: string }) => void;
+  table: QualifiedTable | string | null;
+  onPatchState: (patch: { table: QualifiedTable }) => void;
 }) {
+  const table = normalizeTable(tableProp);
   const activeConnectionId = useAppStore((s) => s.activeConnectionId);
   const setActiveConnectionId = useAppStore((s) => s.setActiveConnectionId);
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
@@ -123,7 +133,7 @@ export function DbTab({
   // Columns popover needs to read and write the same state the grid renders
   // from. Same render-time key-swap as DataGrid had: an effect would let one
   // render paint the previous table's layout before catching up.
-  const layoutKey = `${activeConnectionId}:${table}`;
+  const layoutKey = `${activeConnectionId}:${table ? `${table.schema}.${table.name}` : "null"}`;
   const [storedLayout, setStoredLayout] = useState(() => ({ key: layoutKey, layout: readLayout(layoutKey) }));
   if (storedLayout.key !== layoutKey) {
     setStoredLayout({ key: layoutKey, layout: readLayout(layoutKey) });
@@ -177,7 +187,7 @@ export function DbTab({
   }
 
   async function fetchRows(
-    t: string,
+    t: QualifiedTable,
     connId: string,
     activeFilter: FilterCondition[],
     orderBy: SortTerm[],
@@ -250,8 +260,12 @@ export function DbTab({
       requestIdRef.current++;
       setLoading(false);
     }
+    // Keyed on the identity string, not `table` itself: a legacy string prop
+    // is re-wrapped into a fresh object by normalizeTable on every render, so
+    // depending on the object would re-run this effect (and re-fetch) every
+    // render instead of only on an actual table change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [table, activeConnectionId]);
+  }, [table ? `${table.schema}.${table.name}` : null, activeConnectionId]);
 
   // Rolls back any preview left open when the tab itself goes away (closed,
   // or its pane repurposed) — the table/connection-switch effect above only
@@ -593,20 +607,21 @@ export function DbTab({
   useEffect(() => {
     if (!activeConnectionId) return;
     invokeListWatchedTables(activeConnectionId)
-      .then(setWatchedTables)
+      .then((tables) => setWatchedTables(tables.map((t) => `${t.schema}.${t.name}`)))
       .catch(() => setWatchedTables([]));
   }, [activeConnectionId, setWatchedTables]);
 
-  async function handleToggleWatch(table: string) {
+  async function handleToggleWatch(table: QualifiedTable) {
     if (!activeConnectionId) return;
-    const nextWatched = !watchedTables.has(table);
-    onToggleWatch(table);
+    const key = `${table.schema}.${table.name}`;
+    const nextWatched = !watchedTables.has(key);
+    onToggleWatch(key);
     try {
       await invokeSetWatchedTable(activeConnectionId, table, nextWatched);
     } catch {
       // Roll the optimistic toggle back rather than leaving the UI claiming a
       // table is watched when the correlation engine will not see it.
-      onToggleWatch(table);
+      onToggleWatch(key);
     }
   }
 
@@ -617,6 +632,7 @@ export function DbTab({
     <div className="flex h-full w-full min-h-0 min-w-0">
       <SchemaTree
         connectionId={activeConnectionId}
+        selected={table}
         watchedTables={watchedTables}
         onToggleWatch={handleToggleWatch}
         onSelectTable={(t) => onPatchState({ table: t })}
@@ -629,7 +645,7 @@ export function DbTab({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {activeConnectionId ? (
           <div className="flex h-11 items-center border-b border-border px-3.5">
-            <span className="text-xs font-semibold text-text-muted">{table ?? "No table selected"}</span>
+            <span className="text-xs font-semibold text-text-muted">{table ? table.name : "No table selected"}</span>
             <button
               type="button"
               aria-label="Query console"
@@ -718,7 +734,7 @@ export function DbTab({
                   />
                   {!tableRows.pk_column ? (
                     <div className="mt-2.5 text-xs text-text-faint">
-                      No single-column primary key on <span className="font-semibold text-text-muted">{table}</span> — cells
+                      No single-column primary key on <span className="font-semibold text-text-muted">{table!.name}</span> — cells
                       are read-only.
                     </div>
                   ) : null}

@@ -19,6 +19,7 @@ describe("SchemaTree", () => {
     render(
       <SchemaTree
         connectionId="c1"
+        selected={null}
         watchedTables={new Set()}
         onToggleWatch={() => {}}
         onSelectTable={() => {}}
@@ -39,6 +40,7 @@ describe("SchemaTree", () => {
     render(
       <SchemaTree
         connectionId="c1"
+        selected={null}
         watchedTables={new Set()}
         onToggleWatch={onToggleWatch}
         onSelectTable={() => {}}
@@ -48,7 +50,7 @@ describe("SchemaTree", () => {
 
     await waitFor(() => expect(screen.getByText("orders")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /watch orders/i }));
-    expect(onToggleWatch).toHaveBeenCalledWith("orders");
+    expect(onToggleWatch).toHaveBeenCalledWith({ schema: "public", name: "orders" });
   });
 
   // Base UI's Menu is the styled picker used everywhere else (Method,
@@ -64,6 +66,7 @@ describe("SchemaTree", () => {
     const { container } = render(
       <SchemaTree
         connectionId="c1"
+        selected={null}
         watchedTables={new Set()}
         onToggleWatch={() => {}}
         onSelectTable={() => {}}
@@ -94,6 +97,7 @@ describe("SchemaTree", () => {
     render(
       <SchemaTree
         connectionId="c1"
+        selected={null}
         watchedTables={new Set()}
         onToggleWatch={() => {}}
         onSelectTable={() => {}}
@@ -117,6 +121,7 @@ describe("SchemaTree", () => {
     render(
       <SchemaTree
         connectionId={null}
+        selected={null}
         watchedTables={new Set()}
         onToggleWatch={() => {}}
         onSelectTable={() => {}}
@@ -135,6 +140,7 @@ describe("SchemaTree", () => {
     render(
       <SchemaTree
         connectionId="c1"
+        selected={null}
         watchedTables={new Set()}
         onToggleWatch={() => {}}
         onSelectTable={() => {}}
@@ -156,6 +162,7 @@ describe("SchemaTree", () => {
     render(
       <SchemaTree
         connectionId={null}
+        selected={null}
         watchedTables={new Set()}
         onToggleWatch={() => {}}
         onSelectTable={() => {}}
@@ -174,6 +181,7 @@ describe("SchemaTree", () => {
     render(
       <SchemaTree
         connectionId={null}
+        selected={null}
         watchedTables={new Set()}
         onToggleWatch={() => {}}
         onSelectTable={() => {}}
@@ -195,6 +203,7 @@ describe("SchemaTree", () => {
     render(
       <SchemaTree
         connectionId="c1"
+        selected={null}
         watchedTables={new Set()}
         onToggleWatch={() => {}}
         onSelectTable={onSelectTable}
@@ -203,11 +212,11 @@ describe("SchemaTree", () => {
     );
 
     await waitFor(() => screen.getByText("orders"));
-    const select = screen.getByRole("button", { name: "Browse orders" });
+    const select = screen.getByRole("button", { name: "Browse public.orders" });
     select.focus();
     expect(select).toHaveFocus();
     fireEvent.click(select);
-    expect(onSelectTable).toHaveBeenCalledWith("orders");
+    expect(onSelectTable).toHaveBeenCalledWith({ schema: "public", name: "orders" });
   });
 
   // Nesting a <button> inside a <button> is invalid HTML and breaks focus.
@@ -219,6 +228,7 @@ describe("SchemaTree", () => {
     render(
       <SchemaTree
         connectionId="c1"
+        selected={null}
         watchedTables={new Set()}
         onToggleWatch={() => {}}
         onSelectTable={() => {}}

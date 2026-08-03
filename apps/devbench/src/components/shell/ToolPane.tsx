@@ -1,4 +1,5 @@
 import type { Tab } from "../../store/useAppStore";
+import type { QualifiedTable } from "../../lib/tauri";
 import { ApiTab } from "../api/ApiTab";
 import { DbTab } from "../db/DbTab";
 import { LogTab } from "../log/LogTab";
@@ -54,7 +55,11 @@ export function ToolPane({
         <DbTab
           watchedTables={watchedTables}
           onToggleWatch={toggleWatchedTable}
-          table={typeof tab.state.table === "string" ? tab.state.table : null}
+          // `tab.state` is an untyped bag (Record<string, unknown>) — DbTab
+          // itself normalizes both the legacy bare-string shape and the
+          // current { schema, name } shape, so this only needs to fill in
+          // `undefined` (a tab that has never had a table selected).
+          table={(tab.state.table ?? null) as QualifiedTable | string | null}
           onPatchState={onPatchState}
         />
       );

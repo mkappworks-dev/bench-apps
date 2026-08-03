@@ -17,7 +17,10 @@ beforeAll(() => {
   };
 });
 
-function renderDb(table: string | null, onPatchState = vi.fn()) {
+const ORDERS = { schema: "public", name: "orders" };
+const PAYMENTS = { schema: "public", name: "payments" };
+
+function renderDb(table: tauriLib.QualifiedTable | null, onPatchState = vi.fn()) {
   return { onPatchState, ...render(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table={table} onPatchState={onPatchState} />) };
 }
 
@@ -25,7 +28,7 @@ function renderDb(table: string | null, onPatchState = vi.fn()) {
 // state, changed only by calling `onPatchState`. This harness plays the
 // parent's role so tests can drive a real table switch the way ToolPane
 // does, instead of asserting on onPatchState in isolation.
-function DbTabHarness({ initialTable }: { initialTable: string | null }) {
+function DbTabHarness({ initialTable }: { initialTable: tauriLib.QualifiedTable | null }) {
   const [table, setTable] = useState(initialTable);
   return (
     <DbTab
@@ -47,11 +50,11 @@ describe("DbTab", () => {
 
   it("fetches rows for the table it is given, without needing a click first", async () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: ["id"], rows: [["1"]], pk_column: null });
-    renderDb("orders");
+    renderDb(ORDERS);
     await waitFor(() =>
       expect(listRows).toHaveBeenCalledWith(
         "c1",
-        "orders",
+        ORDERS,
         expect.objectContaining({ orderBy: [], offset: 0 }),
       ),
     );
@@ -63,18 +66,52 @@ describe("DbTab", () => {
     expect(listRows).not.toHaveBeenCalled();
   });
 
+  it("fetches the selected table with its schema", async () => {
+    const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id"], rows: [["1"]], pk_column: "id",
+    });
+
+    renderDb({ schema: "alt", name: "orders" });
+
+    await waitFor(() =>
+      expect(listRows).toHaveBeenCalledWith(
+        "c1",
+        { schema: "alt", name: "orders" },
+        expect.anything(),
+      ),
+    );
+  });
+
+  // A tab persisted before schemas existed stores a bare string. Resolving it
+  // to public keeps the tab open across the upgrade instead of blanking it.
+  it("reads a legacy bare table name as public", async () => {
+    const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id"], rows: [["1"]], pk_column: "id",
+    });
+
+    renderDb("orders" as unknown as tauriLib.QualifiedTable);
+
+    await waitFor(() =>
+      expect(listRows).toHaveBeenCalledWith(
+        "c1",
+        { schema: "public", name: "orders" },
+        expect.anything(),
+      ),
+    );
+  });
+
   // The core independence bug this migration fixes: two DbTab instances,
   // given different `table` props, must never share fetched rows.
   it("re-fetches when its table prop changes to a different table", async () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: ["id"], rows: [], pk_column: null });
-    const { rerender, onPatchState } = renderDb("orders");
+    const { rerender, onPatchState } = renderDb(ORDERS);
     await waitFor(() =>
-      expect(listRows).toHaveBeenCalledWith("c1", "orders", expect.objectContaining({ offset: 0 })),
+      expect(listRows).toHaveBeenCalledWith("c1", ORDERS, expect.objectContaining({ offset: 0 })),
     );
 
-    rerender(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table="payments" onPatchState={onPatchState} />);
+    rerender(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table={PAYMENTS} onPatchState={onPatchState} />);
     await waitFor(() =>
-      expect(listRows).toHaveBeenCalledWith("c1", "payments", expect.objectContaining({ offset: 0 })),
+      expect(listRows).toHaveBeenCalledWith("c1", PAYMENTS, expect.objectContaining({ offset: 0 })),
     );
   });
 
@@ -93,7 +130,7 @@ describe("DbTab", () => {
   it("shows a distinct empty state and fetches nothing when there is no active connection", () => {
     useAppStore.getState().setActiveConnectionId(null);
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: [], rows: [], pk_column: null });
-    renderDb("orders");
+    renderDb(ORDERS);
     expect(screen.getByText("Select a connection to browse its data.")).toBeInTheDocument();
     expect(listRows).not.toHaveBeenCalled();
   });
@@ -105,7 +142,7 @@ describe("DbTab", () => {
       pk_column: "id",
     });
 
-    renderDb("orders");
+    renderDb(ORDERS);
     await waitFor(() => expect(listRows).toHaveBeenCalled());
 
     fireEvent.click(await screen.findByRole("button", { name: "Sort by status" }));
@@ -113,7 +150,7 @@ describe("DbTab", () => {
     await waitFor(() =>
       expect(listRows).toHaveBeenLastCalledWith(
         "c1",
-        "orders",
+        ORDERS,
         expect.objectContaining({ orderBy: [{ column: "status", descending: false, enabled: true }], offset: 0 }),
       ),
     );
@@ -126,14 +163,14 @@ describe("DbTab", () => {
       pk_column: "id",
     });
 
-    renderDb("orders");
+    renderDb(ORDERS);
     await waitFor(() => expect(listRows).toHaveBeenCalled());
 
     const sortButton = await screen.findByRole("button", { name: "Sort by status" });
     fireEvent.click(sortButton);
-    await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ orderBy: [{ column: "status", descending: false, enabled: true }] })));
+    await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", ORDERS, expect.objectContaining({ orderBy: [{ column: "status", descending: false, enabled: true }] })));
     fireEvent.click(sortButton);
-    await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ orderBy: [{ column: "status", descending: true, enabled: true }] })));
+    await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", ORDERS, expect.objectContaining({ orderBy: [{ column: "status", descending: true, enabled: true }] })));
   });
 
   // Page count now comes from a separate invokeCountTableRows call, fired
@@ -146,13 +183,13 @@ describe("DbTab", () => {
     });
     vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(150);
 
-    renderDb("orders");
+    renderDb(ORDERS);
     await waitFor(() => expect(listRows).toHaveBeenCalled());
 
     fireEvent.click(await screen.findByRole("button", { name: "Next page" }));
 
     await waitFor(() =>
-      expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ offset: 100 })),
+      expect(listRows).toHaveBeenLastCalledWith("c1", ORDERS, expect.objectContaining({ offset: 100 })),
     );
   });
 
@@ -165,7 +202,7 @@ describe("DbTab", () => {
     });
     vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(100);
 
-    renderDb("orders");
+    renderDb(ORDERS);
     expect(await screen.findByRole("button", { name: "Next page" })).toBeDisabled();
   });
 
@@ -181,13 +218,13 @@ describe("DbTab", () => {
     });
     vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(500);
 
-    renderDb("orders");
+    renderDb(ORDERS);
     await waitFor(() => expect(listRows).toHaveBeenCalled());
 
     fireEvent.change(screen.getByRole("combobox", { name: "Rows per page" }), { target: { value: "250" } });
 
     await waitFor(() =>
-      expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ limit: 250, offset: 0 })),
+      expect(listRows).toHaveBeenLastCalledWith("c1", ORDERS, expect.objectContaining({ limit: 250, offset: 0 })),
     );
   });
 
@@ -197,7 +234,7 @@ describe("DbTab", () => {
     });
     const count = vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(1);
 
-    renderDb("orders");
+    renderDb(ORDERS);
     await waitFor(() => expect(listRows).toHaveBeenCalled());
 
     fireEvent.click(await screen.findByRole("button", { name: "Filter" }));
@@ -210,9 +247,9 @@ describe("DbTab", () => {
 
     const expected = [{ column: "status", op: "eq", value: "paid", enabled: true }];
     await waitFor(() =>
-      expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ filter: expected, offset: 0 })),
+      expect(listRows).toHaveBeenLastCalledWith("c1", ORDERS, expect.objectContaining({ filter: expected, offset: 0 })),
     );
-    expect(count).toHaveBeenLastCalledWith("c1", "orders", expected);
+    expect(count).toHaveBeenLastCalledWith("c1", ORDERS, expected);
   });
 
   // A failing query is usually a filter the user just applied. Replacing the
@@ -222,7 +259,7 @@ describe("DbTab", () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "status"], rows: [["1", "paid"]], pk_column: "id",
     });
-    renderDb("orders");
+    renderDb(ORDERS);
     await waitFor(() => expect(listRows).toHaveBeenCalled());
 
     listRows.mockRejectedValueOnce(new Error("operator does not exist"));
@@ -238,7 +275,7 @@ describe("DbTab", () => {
     fireEvent.click(screen.getByRole("button", { name: /remove condition/i }));
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() =>
-      expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ filter: [] })),
+      expect(listRows).toHaveBeenLastCalledWith("c1", ORDERS, expect.objectContaining({ filter: [] })),
     );
   });
 
@@ -248,7 +285,7 @@ describe("DbTab", () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "status"], rows: [["1", "paid"]], pk_column: "id",
     });
-    renderDb("orders");
+    renderDb(ORDERS);
     await waitFor(() => expect(listRows).toHaveBeenCalled());
 
     listRows.mockResolvedValue({ columns: [], rows: [], pk_column: "id" });
@@ -273,7 +310,7 @@ describe("DbTab", () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "paid"], rows: [["1", null], ["2", "true"]], pk_column: "id",
     });
-    renderDb("orders");
+    renderDb(ORDERS);
     await waitFor(() => expect(listRows).toHaveBeenCalled());
 
     fireEvent.click(await screen.findByRole("button", { name: "Filter" }));
@@ -292,7 +329,7 @@ describe("DbTab", () => {
     });
     vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(250);
 
-    renderDb("orders");
+    renderDb(ORDERS);
     // 250 rows at 100 per page is 3 pages.
     expect(await screen.findByText("of 3")).toBeInTheDocument();
   });
@@ -306,11 +343,11 @@ describe("DbTab", () => {
       pk_column: "id",
     });
 
-    renderDb("orders");
+    renderDb(ORDERS);
     await waitFor(() => expect(listRows).toHaveBeenCalled());
     fireEvent.click(await screen.findByRole("button", { name: "Sort by status" }));
     await waitFor(() =>
-      expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ orderBy: [{ column: "status", descending: false, enabled: true }] })),
+      expect(listRows).toHaveBeenLastCalledWith("c1", ORDERS, expect.objectContaining({ orderBy: [{ column: "status", descending: false, enabled: true }] })),
     );
 
     await act(async () => {
@@ -320,7 +357,7 @@ describe("DbTab", () => {
     await waitFor(() =>
       expect(listRows).toHaveBeenLastCalledWith(
         "c2",
-        "orders",
+        ORDERS,
         expect.objectContaining({ orderBy: [], offset: 0 }),
       ),
     );
@@ -333,22 +370,19 @@ describe("DbTab", () => {
       pk_column: "id",
     });
     vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(150);
-    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([
-      { schema: "public", name: "orders" },
-      { schema: "public", name: "payments" },
-    ]);
+    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([ORDERS, PAYMENTS]);
 
-    render(<DbTabHarness initialTable="orders" />);
+    render(<DbTabHarness initialTable={ORDERS} />);
     await waitFor(() => expect(listRows).toHaveBeenCalled());
     fireEvent.click(await screen.findByRole("button", { name: "Next page" }));
-    await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", "orders", expect.objectContaining({ offset: 100 })));
+    await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", ORDERS, expect.objectContaining({ offset: 100 })));
 
-    fireEvent.click(await screen.findByRole("button", { name: "Browse payments" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Browse public.payments" }));
 
     await waitFor(() =>
       expect(listRows).toHaveBeenLastCalledWith(
         "c1",
-        "payments",
+        PAYMENTS,
         expect.objectContaining({ orderBy: [], offset: 0 }),
       ),
     );
@@ -364,7 +398,7 @@ describe("DbTab", () => {
   it("makes the grid's Next control unavailable while switching to a table that hasn't loaded yet", async () => {
     const deferredPaymentsFetch: { resolve: ((value: TableRows) => void) | null } = { resolve: null };
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation((_conn, t) => {
-      if (t === "orders") {
+      if (t.name === "orders") {
         return Promise.resolve({ columns: ["id"], rows: [["1"]], pk_column: "id" });
       }
       return new Promise<TableRows>((resolve) => {
@@ -374,30 +408,27 @@ describe("DbTab", () => {
     // orders spans multiple pages (Next enabled); payments' single row is
     // one page (Next ends up disabled once it loads).
     vi.spyOn(tauriLib, "invokeCountTableRows").mockImplementation((_conn, t) =>
-      Promise.resolve(t === "orders" ? 150 : 1),
+      Promise.resolve(t.name === "orders" ? 150 : 1),
     );
-    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([
-      { schema: "public", name: "orders" },
-      { schema: "public", name: "payments" },
-    ]);
+    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([ORDERS, PAYMENTS]);
 
-    render(<DbTabHarness initialTable="orders" />);
-    await waitFor(() => expect(listRows).toHaveBeenCalledWith("c1", "orders", expect.anything()));
+    render(<DbTabHarness initialTable={ORDERS} />);
+    await waitFor(() => expect(listRows).toHaveBeenCalledWith("c1", ORDERS, expect.anything()));
     expect(await screen.findByRole("button", { name: "Next page" })).not.toBeDisabled();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Browse payments" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Browse public.payments" }));
 
     // Still inside payments' loading window: orders' toolbar — and its Next
     // control, which described orders' pages, not payments' — must be gone,
     // not merely disabled-but-present-and-stale.
     expect(screen.queryByRole("button", { name: "Next page" })).not.toBeInTheDocument();
     expect(screen.getByText("Loading…")).toBeInTheDocument();
-    expect(listRows).not.toHaveBeenCalledWith("c1", "payments", expect.objectContaining({ offset: 100 }));
+    expect(listRows).not.toHaveBeenCalledWith("c1", PAYMENTS, expect.objectContaining({ offset: 100 }));
 
     expect(deferredPaymentsFetch.resolve).not.toBeNull();
     deferredPaymentsFetch.resolve?.({ columns: ["id"], rows: [["1"]], pk_column: "id" });
     await waitFor(() => expect(screen.getByRole("button", { name: "Next page" })).toBeDisabled());
-    expect(listRows).toHaveBeenLastCalledWith("c1", "payments", expect.objectContaining({ orderBy: [], offset: 0 }));
+    expect(listRows).toHaveBeenLastCalledWith("c1", PAYMENTS, expect.objectContaining({ orderBy: [], offset: 0 }));
   });
 
   // Regression guard for the race a naive implementation hits: firing a sort
@@ -420,7 +451,7 @@ describe("DbTab", () => {
       return Promise.resolve({ columns: ["id", "status"], rows: [["1", "unsorted"]], pk_column: "id" });
     });
 
-    renderDb("orders");
+    renderDb(ORDERS);
     await waitFor(() => expect(screen.getByText("unsorted")).toBeInTheDocument());
 
     fireEvent.click(await screen.findByRole("button", { name: "Sort by status" }));
@@ -439,7 +470,7 @@ describe("DbTab", () => {
     it("opens and closes the query console via the toggle button, without hiding Browse", async () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: ["id"], rows: [["1"]], pk_column: "id" });
 
-      renderDb("orders");
+      renderDb(ORDERS);
       await waitFor(() => screen.getByText("1"));
 
       expect(screen.queryByPlaceholderText("SELECT * FROM orders LIMIT 10;")).not.toBeInTheDocument();
@@ -473,7 +504,7 @@ describe("DbTab", () => {
       });
       const rollback = vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
 
-      renderDb("orders");
+      renderDb(ORDERS);
       await waitFor(() => screen.getByText("1"));
       fireEvent.click(screen.getByRole("button", { name: "Query console" }));
       const textarea = await screen.findByPlaceholderText("SELECT * FROM orders LIMIT 10;");
@@ -502,7 +533,7 @@ describe("DbTab", () => {
       });
       const commit = vi.spyOn(tauriLib, "invokeCommitPreview").mockResolvedValue(undefined);
 
-      renderDb("orders");
+      renderDb(ORDERS);
       await waitFor(() => screen.getByText("pending"));
 
       fireEvent.click(screen.getByText("pending"));
@@ -510,7 +541,7 @@ describe("DbTab", () => {
       fireEvent.change(input, { target: { value: "shipped" } });
       fireEvent.click(screen.getByRole("button", { name: "Preview change" }));
 
-      await waitFor(() => expect(preview).toHaveBeenCalledWith("c1", "orders", "id", "1", "status", "shipped"));
+      await waitFor(() => expect(preview).toHaveBeenCalledWith("c1", ORDERS, "id", "1", "status", "shipped"));
       expect(await screen.findByText("shipped")).toBeInTheDocument();
       expect(screen.getByText("pending")).toBeInTheDocument();
 
@@ -534,7 +565,7 @@ describe("DbTab", () => {
       });
       const rollback = vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
 
-      renderDb("orders");
+      renderDb(ORDERS);
       await waitFor(() => screen.getByText("pending"));
 
       fireEvent.click(screen.getByText("pending"));
@@ -555,7 +586,7 @@ describe("DbTab", () => {
         pk_column: null,
       });
 
-      renderDb("payments");
+      renderDb(PAYMENTS);
       await waitFor(() => screen.getByText("t1"));
 
       fireEvent.click(screen.getByText("t1"));
@@ -573,7 +604,7 @@ describe("DbTab", () => {
         pk_column: "id",
       });
 
-      renderDb("orders");
+      renderDb(ORDERS);
       await waitFor(() => screen.getByText("<unsupported type>"));
 
       // Prove editing works at all in this row first — an ordinary cell in
@@ -604,7 +635,7 @@ describe("DbTab", () => {
         rows_affected: 1,
       });
 
-      renderDb("orders");
+      renderDb(ORDERS);
       await waitFor(() => screen.getByText("NULL"));
 
       fireEvent.click(screen.getByText("NULL"));
@@ -614,7 +645,7 @@ describe("DbTab", () => {
       expect(screen.queryByRole("checkbox", { name: "NULL" })).not.toBeInTheDocument();
 
       fireEvent.click(screen.getByRole("button", { name: "Preview change" }));
-      await waitFor(() => expect(preview).toHaveBeenCalledWith("c1", "orders", "id", "1", "status", null));
+      await waitFor(() => expect(preview).toHaveBeenCalledWith("c1", ORDERS, "id", "1", "status", null));
     });
 
     // This is the design point the task brief calls out explicitly: an open
@@ -635,14 +666,14 @@ describe("DbTab", () => {
       });
       const rollback = vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
 
-      const { rerender, onPatchState } = renderDb("orders");
+      const { rerender, onPatchState } = renderDb(ORDERS);
       await waitFor(() => screen.getByText("pending"));
       fireEvent.click(screen.getByText("pending"));
       fireEvent.change(await screen.findByDisplayValue("pending"), { target: { value: "shipped" } });
       fireEvent.click(screen.getByRole("button", { name: "Preview change" }));
       await screen.findByRole("button", { name: "Rollback edit" });
 
-      rerender(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table="payments" onPatchState={onPatchState} />);
+      rerender(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table={PAYMENTS} onPatchState={onPatchState} />);
 
       await waitFor(() => expect(rollback).toHaveBeenCalledWith("p1"));
     });
@@ -660,7 +691,7 @@ describe("DbTab", () => {
         new Error("expected to match exactly 1 row by id = 1, matched 0"),
       );
 
-      renderDb("orders");
+      renderDb(ORDERS);
       await waitFor(() => screen.getByText("pending"));
       fireEvent.click(screen.getByText("pending"));
       fireEvent.change(await screen.findByDisplayValue("pending"), { target: { value: "shipped" } });
@@ -688,7 +719,7 @@ describe("DbTab", () => {
       });
       vi.spyOn(tauriLib, "invokeCommitPreview").mockRejectedValue(new Error("no open preview with id p1"));
 
-      renderDb("orders");
+      renderDb(ORDERS);
       await waitFor(() => screen.getByText("pending"));
       fireEvent.click(screen.getByText("pending"));
       fireEvent.change(await screen.findByDisplayValue("pending"), { target: { value: "shipped" } });
@@ -729,7 +760,7 @@ describe("DbTab", () => {
           .spyOn(tauriLib, "invokeCommitPreview")
           .mockImplementation(() => new Promise<void>((resolve) => (deferredCommit.resolve = resolve)));
 
-        renderDb("orders");
+        renderDb(ORDERS);
         await waitFor(() => screen.getByText("pending"));
         fireEvent.click(screen.getByText("pending"));
         fireEvent.change(await screen.findByDisplayValue("pending"), { target: { value: "shipped" } });
@@ -757,7 +788,7 @@ describe("DbTab", () => {
       it("switching tables while Preview is in flight rolls back the preview once it lands, without resurrecting it on the new table", async () => {
         vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation(async (_conn, t) => ({
           columns: ["id", "status"],
-          rows: [["1", t === "orders" ? "pending" : "waiting"]],
+          rows: [["1", t.name === "orders" ? "pending" : "waiting"]],
           pk_column: "id",
         }));
         const deferredPreview: { resolve: ((v: QueryPreview) => void) | null } = { resolve: null };
@@ -766,7 +797,7 @@ describe("DbTab", () => {
         );
         const rollback = vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
 
-        const { rerender, onPatchState } = renderDb("orders");
+        const { rerender, onPatchState } = renderDb(ORDERS);
         await waitFor(() => screen.getByText("pending"));
         fireEvent.click(screen.getByText("pending"));
         fireEvent.change(await screen.findByDisplayValue("pending"), { target: { value: "shipped" } });
@@ -774,7 +805,7 @@ describe("DbTab", () => {
         // Still in flight — no preview UI exists yet to abandon.
         expect(screen.queryByRole("button", { name: "Commit edit" })).not.toBeInTheDocument();
 
-        rerender(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table="payments" onPatchState={onPatchState} />);
+        rerender(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table={PAYMENTS} onPatchState={onPatchState} />);
         await waitFor(() => expect(screen.getByText("waiting")).toBeInTheDocument());
 
         // The request lands late, against a table the user has since left.
@@ -791,7 +822,7 @@ describe("DbTab", () => {
       it("switching tables while Commit is in flight does not replace the new table's grid with the old table's rows", async () => {
         vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation(async (_conn, t) => ({
           columns: ["id", "status"],
-          rows: [["1", t === "orders" ? "pending" : "waiting"]],
+          rows: [["1", t.name === "orders" ? "pending" : "waiting"]],
           pk_column: "id",
         }));
         vi.spyOn(tauriLib, "invokePreviewCellEdit").mockResolvedValue({
@@ -805,14 +836,14 @@ describe("DbTab", () => {
           () => new Promise<void>((resolve) => (deferredCommit.resolve = resolve)),
         );
 
-        const { rerender, onPatchState } = renderDb("orders");
+        const { rerender, onPatchState } = renderDb(ORDERS);
         await waitFor(() => screen.getByText("pending"));
         fireEvent.click(screen.getByText("pending"));
         fireEvent.change(await screen.findByDisplayValue("pending"), { target: { value: "shipped" } });
         fireEvent.click(screen.getByRole("button", { name: "Preview change" }));
         fireEvent.click(await screen.findByRole("button", { name: "Commit edit" }));
 
-        rerender(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table="payments" onPatchState={onPatchState} />);
+        rerender(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table={PAYMENTS} onPatchState={onPatchState} />);
         await waitFor(() => expect(screen.getByText("waiting")).toBeInTheDocument());
 
         // The commit lands after the switch — it did write "shipped" for
@@ -838,7 +869,7 @@ describe("DbTab", () => {
         );
         const rollback = vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
 
-        renderDb("orders");
+        renderDb(ORDERS);
         await waitFor(() => screen.getByText("pending"));
         fireEvent.click(screen.getByText("pending"));
         fireEvent.change(await screen.findByDisplayValue("pending"), { target: { value: "shipped" } });
@@ -876,7 +907,7 @@ describe("DbTab", () => {
         );
         const rollback = vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
 
-        const { unmount } = renderDb("orders");
+        const { unmount } = renderDb(ORDERS);
         await waitFor(() => screen.getByText("pending"));
         fireEvent.click(screen.getByText("pending"));
         fireEvent.change(await screen.findByDisplayValue("pending"), { target: { value: "shipped" } });
