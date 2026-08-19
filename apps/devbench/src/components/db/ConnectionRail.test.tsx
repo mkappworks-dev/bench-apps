@@ -7,7 +7,7 @@ import { useAppStore } from "../../store/useAppStore";
 describe("ConnectionRail", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    useAppStore.setState({ route: "workspace", settingsPane: "general" });
+    useAppStore.setState({ route: "workspace", settingsPane: "general", savedQueries: [] });
   });
 
   it("lists tables for the given connection", async () => {
@@ -269,5 +269,118 @@ describe("ConnectionRail", () => {
     const watch = screen.getByRole("button", { name: "watch public.orders" });
     expect(watch.querySelector("button")).toBeNull();
     expect(watch.closest("button")).toBe(watch);
+  });
+
+  // Parameters<typeof …>[0] rather than React.ComponentProps: this file does
+  // not import React, and the new JSX transform does not put it in scope.
+  function renderRail(overrides: Partial<Parameters<typeof ConnectionRail>[0]> = {}) {
+    return render(
+      <ConnectionRail
+        connectionId="c1"
+        selected={null}
+        watchedTables={new Set()}
+        onToggleWatch={() => {}}
+        onSelectTable={() => {}}
+        onConnectionChange={() => {}}
+        initialSegment="tables"
+        activeQueryId={null}
+        onOpenQuery={() => {}}
+        {...overrides}
+      />,
+    );
+  }
+
+  it("shows the tables list on the Tables segment and the queries list on Queries", async () => {
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([
+      { schema: "public", name: "orders" },
+    ]);
+    vi.spyOn(tauriLib, "invokeListSavedQueries").mockResolvedValue([
+      { id: "q1", connection_id: "c1", name: "failed orders today", sql: "SELECT 1;", created_at: 1 },
+    ]);
+
+    renderRail();
+    await waitFor(() => expect(screen.getByText("orders")).toBeInTheDocument());
+    expect(screen.queryByText("failed orders today")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Queries" }));
+
+    await waitFor(() => expect(screen.getByText("failed orders today")).toBeInTheDocument());
+    expect(screen.queryByText("orders")).not.toBeInTheDocument();
+  });
+
+  // §3a: tables are not created from here, so the footer belongs to one
+  // segment only.
+  it("shows the New query footer on Queries only", async () => {
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeListSavedQueries").mockResolvedValue([]);
+
+    renderRail();
+    expect(screen.queryByRole("button", { name: "New query" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Queries" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "New query" })).toBeInTheDocument());
+  });
+
+  it("opens on the Queries segment when its host tab is a query tab", async () => {
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeListSavedQueries").mockResolvedValue([
+      { id: "q1", connection_id: "c1", name: "already open", sql: "", created_at: 1 },
+    ]);
+
+    renderRail({ initialSegment: "queries", activeQueryId: "q1" });
+    await waitFor(() => expect(screen.getByText("already open")).toBeInTheDocument());
+  });
+
+  it("asks its host to open the query that was clicked", async () => {
+    const onOpenQuery = vi.fn();
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeListSavedQueries").mockResolvedValue([
+      { id: "q1", connection_id: "c1", name: "failed orders", sql: "", created_at: 1 },
+    ]);
+
+    renderRail({ initialSegment: "queries", onOpenQuery });
+    await waitFor(() => expect(screen.getByText("failed orders")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Open query failed orders" }));
+
+    expect(onOpenQuery).toHaveBeenCalledWith("q1");
+  });
+
+  it("creates a query, stores it and opens it", async () => {
+    const onOpenQuery = vi.fn();
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeListSavedQueries").mockResolvedValue([]);
+    const create = vi.spyOn(tauriLib, "invokeCreateSavedQuery").mockResolvedValue({
+      id: "new1", connection_id: "c1", name: "untitled query", sql: "", created_at: 9,
+    });
+
+    renderRail({ initialSegment: "queries", onOpenQuery });
+    fireEvent.click(await screen.findByRole("button", { name: "New query" }));
+
+    await waitFor(() => expect(onOpenQuery).toHaveBeenCalledWith("new1"));
+    expect(create).toHaveBeenCalledWith("c1", "untitled query", "");
+    expect(useAppStore.getState().savedQueries.map((q) => q.id)).toContain("new1");
+  });
+
+  // "+ New query" with no delete is a list that can only grow, and the
+  // default name guarantees it fills with "untitled query".
+  it("deletes a query from the store and the database", async () => {
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeListSavedQueries").mockResolvedValue([
+      { id: "q1", connection_id: "c1", name: "doomed", sql: "", created_at: 1 },
+    ]);
+    const del = vi.spyOn(tauriLib, "invokeDeleteSavedQuery").mockResolvedValue(undefined);
+
+    renderRail({ initialSegment: "queries" });
+    await waitFor(() => expect(screen.getByText("doomed")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Delete query doomed" }));
+
+    await waitFor(() => expect(del).toHaveBeenCalledWith("q1"));
+    expect(useAppStore.getState().savedQueries.find((q) => q.id === "q1")).toBeUndefined();
   });
 });

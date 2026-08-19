@@ -1,14 +1,19 @@
 import { useEffect, useState } from "react";
 import {
+  invokeCreateSavedQuery,
   invokeDbConnectAndListTables,
+  invokeDeleteSavedQuery,
   invokeListConnections,
+  invokeListSavedQueries,
   type ConnectionSummary,
   type QualifiedTable,
   type TableInfo,
 } from "../../lib/tauri";
 import { Menu, ChevronIcon } from "../ui/Menu";
+import { SecondaryButton } from "../ui/SecondaryButton";
 import { useAppStore } from "../../store/useAppStore";
 import { tableKey } from "../../lib/tableIdentity";
+import { queriesForConnection } from "../../lib/savedQueries";
 
 export function ConnectionRail({
   connectionId,
@@ -46,8 +51,13 @@ export function ConnectionRail({
   const [connectionsError, setConnectionsError] = useState<string | null>(null);
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [segment, setSegment] = useState<"tables" | "queries">(initialSegment);
   const setRoute = useAppStore((s) => s.setRoute);
   const setSettingsPane = useAppStore((s) => s.setSettingsPane);
+  const savedQueries = useAppStore((s) => s.savedQueries);
+  const mergeSavedQueriesIntoStore = useAppStore((s) => s.mergeSavedQueriesIntoStore);
+  const removeSavedQuery = useAppStore((s) => s.removeSavedQuery);
+  const queries = queriesForConnection(savedQueries, connectionId);
 
   useEffect(() => {
     invokeListConnections()
@@ -69,6 +79,26 @@ export function ConnectionRail({
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, [connectionId]);
 
+  // Loads whenever the connection changes, not when the segment does: a query
+  // tab's label reads out of this list, so the entries have to be there
+  // whether or not anyone has looked at the Queries segment yet.
+  useEffect(() => {
+    if (!connectionId) return;
+    invokeListSavedQueries(connectionId).then(mergeSavedQueriesIntoStore).catch(() => {});
+  }, [connectionId, mergeSavedQueriesIntoStore]);
+
+  async function createQuery() {
+    if (!connectionId) return;
+    const made = await invokeCreateSavedQuery(connectionId, "untitled query", "");
+    mergeSavedQueriesIntoStore([made]);
+    onOpenQuery(made.id);
+  }
+
+  async function deleteQuery(id: string) {
+    removeSavedQuery(id);
+    await invokeDeleteSavedQuery(id).catch(() => {});
+  }
+
   const current = connections.find((c) => c.id === connectionId);
   // The host line is what tells two same-named connections apart — and, more
   // to the point, what stops someone browsing prod thinking it's local.
@@ -80,7 +110,7 @@ export function ConnectionRail({
   }));
 
   return (
-    <aside className="w-52.5 min-w-52.5 min-h-0 overflow-y-auto border-r border-border">
+    <aside className="flex w-52.5 min-w-52.5 min-h-0 flex-col overflow-y-auto border-r border-border">
       {/* h-11, matching the pane strip and the sessions header: this head used
           to be padding-sized (46px), which put its rule 2px below every other
           top divider in the shell — visible as a kink across the full width. */}
@@ -116,6 +146,24 @@ export function ConnectionRail({
           />
         )}
       </div>
+      {connectionId ? (
+        <div className="border-b border-border px-2 py-1.5">
+          <div role="tablist" aria-label="Rail segment" className="flex gap-0.5 rounded-sm bg-surface-2 p-0.5">
+            {(["tables", "queries"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                role="tab"
+                aria-selected={segment === value}
+                onClick={() => setSegment(value)}
+                className="h-5.5 flex-1 rounded-[4px] text-[10.5px] font-bold uppercase tracking-[0.04em] text-text-faint transition-colors duration-150 hover:text-text-muted aria-selected:bg-surface aria-selected:text-text"
+              >
+                {value === "tables" ? "Tables" : "Queries"}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
       {connectionsError ? (
         <div className="rounded-lg m-1.5 border border-border bg-danger-bg p-2.5 text-xs text-danger">
           Couldn't load connections: {connectionsError}
@@ -130,7 +178,7 @@ export function ConnectionRail({
         <div className="rounded-lg m-1.5 border border-border bg-danger-bg p-2.5 text-xs text-danger">
           {error}
         </div>
-      ) : (
+      ) : segment === "tables" ? (
         <div className="flex flex-col gap-0.5 p-1.5">
           {tables.map((t) => {
             const key = tableKey(t);
@@ -166,7 +214,46 @@ export function ConnectionRail({
             );
           })}
         </div>
+      ) : (
+        <div className="flex flex-col gap-0.5 p-1.5">
+          {queries.map((q) => (
+            <div
+              key={q.id}
+              className={`flex items-center gap-2 rounded-sm px-2.25 py-1.5 font-mono text-xs ${
+                q.id === activeQueryId ? "bg-surface-2 text-text" : "text-text-muted"
+              }`}
+            >
+              <button
+                type="button"
+                aria-label={`Open query ${q.name}`}
+                aria-current={q.id === activeQueryId}
+                onClick={() => onOpenQuery(q.id)}
+                className="flex-1 truncate text-left"
+              >
+                {q.name}
+              </button>
+              <button
+                type="button"
+                aria-label={`Delete query ${q.name}`}
+                onClick={() => void deleteQuery(q.id)}
+                className="ml-auto shrink-0 text-text-faint hover:text-danger"
+              >
+                <TrashIcon />
+              </button>
+            </div>
+          ))}
+          {queries.length === 0 ? (
+            <div className="px-2.25 py-1.5 text-xs text-text-faint">No saved queries yet.</div>
+          ) : null}
+        </div>
       )}
+      {connectionId && segment === "queries" ? (
+        <div className="mt-auto border-t border-border p-1.5">
+          <SecondaryButton className="h-7 w-full" onClick={() => void createQuery()}>
+            New query
+          </SecondaryButton>
+        </div>
+      ) : null}
     </aside>
   );
 }
@@ -199,6 +286,14 @@ function EyeIcon() {
     <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.7">
       <path d="M2 12s3.8-6.5 10-6.5S22 12 22 12s-3.8 6.5-10 6.5S2 12 2 12z" />
       <circle cx="12" cy="12" r="2.6" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 7h16M10 7V5h4v2M6 7l1 13h10l1-13" />
     </svg>
   );
 }
