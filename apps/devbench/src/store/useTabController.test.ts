@@ -67,6 +67,32 @@ describe("useTabController", () => {
     expect(useAppStore.getState().tabs.map((t) => t.id)).toEqual(["good"]);
   });
 
+  // A query tab is opened from the rail, never from the + menu, so its kind is
+  // absent from `TABS` — validating against that list would have discarded it
+  // here and lost the tab on every restart.
+  it("hydrates a persisted query tab, whose kind the + menu cannot create", async () => {
+    vi.spyOn(tauriLib, "invokeListTabs").mockResolvedValue([
+      {
+        id: "q-tab",
+        session_id: null,
+        kind: "query",
+        pane: "left",
+        ordinal: 0,
+        state: '{"queryId":"q1","connectionId":"c1"}',
+      },
+    ]);
+    renderHook(() => useTabController());
+
+    await waitFor(() => expect(useAppStore.getState().tabs).toHaveLength(1));
+    expect(useAppStore.getState().tabs[0]).toEqual({
+      id: "q-tab",
+      kind: "query",
+      pane: "left",
+      ordinal: 0,
+      state: { queryId: "q1", connectionId: "c1" },
+    });
+  });
+
   it("reloads when the active session changes", async () => {
     const listTabs = vi
       .spyOn(tauriLib, "invokeListTabs")

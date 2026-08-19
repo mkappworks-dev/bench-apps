@@ -8,7 +8,6 @@ import {
   invokeSetTabState,
   type TabRow,
 } from "../lib/tauri";
-import { TABS } from "../components/shell/tools";
 
 const DEBOUNCE_MS = 300;
 
@@ -26,12 +25,17 @@ function isValidPane(pane: string): pane is Pane {
   return pane === "left" || pane === "right";
 }
 
+/** Every kind ToolPane can render — deliberately NOT `TABS`, which is the +
+ *  menu's offer list. A query tab is opened from the rail rather than created
+ *  from the menu, but it still has to survive a restart like every other tab. */
+const RENDERABLE_KINDS: ToolKind[] = ["api", "db", "log", "email", "query"];
+
 // A row with an unrecognized kind/pane can't be trusted to render — ToolPane's
 // switch has no default case for a bad kind (React throws), and a bad pane
 // value silently drops the tab from both AppStrip and SplitContent. Rather
 // than trust the cast, reject the row before it enters the store.
 function hydrateTab(row: TabRow): Tab | null {
-  if (!TABS.some((t) => t.id === row.kind)) return null;
+  if (!RENDERABLE_KINDS.includes(row.kind as ToolKind)) return null;
   if (!isValidPane(row.pane)) return null;
   return { id: row.id, kind: row.kind as ToolKind, pane: row.pane, ordinal: row.ordinal, state: parseState(row.state) };
 }

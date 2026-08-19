@@ -210,10 +210,14 @@ function TabRow({
       <Tabs.Tab
         value={tab.id}
         data-selected={tab.id === activeId ? "" : undefined}
-        className={`shrink-0 rounded-sm px-2.5 py-1.5 text-xs font-medium text-text-muted transition-colors duration-150 hover:bg-surface-2 data-selected:bg-surface-2 data-selected:font-semibold data-selected:text-text ${
+        // The two `data-selected:` backgrounds are branches of one ternary,
+        // never both in the string: they are equal-specificity rules on the
+        // same element, so whichever Tailwind happens to emit last would win
+        // regardless of the order written here.
+        className={`shrink-0 rounded-sm px-2.5 py-1.5 text-xs font-medium text-text-muted transition-colors duration-150 hover:bg-surface-2 data-selected:font-semibold data-selected:text-text ${
           tab.kind === "query"
             ? "data-selected:bg-query-tint data-selected:shadow-[inset_0_-2px_0_var(--query-edge)]"
-            : ""
+            : "data-selected:bg-surface-2"
         }`}
       >
         <TabLabel tab={tab} queryName={queryName} />
