@@ -3,7 +3,7 @@ import { ColumnsPopover } from "./ColumnsPopover";
 import { FilterPopover } from "./FilterPopover";
 import { SortPopover } from "./SortPopover";
 import { downloadText, toCsv, toJson } from "./exportRows";
-import { exportColumnOrder, type GridLayout } from "./gridLayout";
+import { EMPTY_LAYOUT, exportColumnOrder, type GridLayout } from "./gridLayout";
 import { activeConditions, activeSortTerms, type ColumnFamily, type FilterCondition, type SortTerm } from "./types";
 
 const LIMITS = [25, 50, 100, 250, 500, 1000];
@@ -257,7 +257,12 @@ export function GridToolbar({
             <SortPopover columns={columns} applied={sort} onApply={onSortChange} onClose={close} />
           ) : null}
           {open === "columns" ? (
-            <ColumnsPopover columns={columns} layout={layout} onChange={onLayoutChange} />
+            <ColumnsPopover
+              columns={columns}
+              layout={layout}
+              onChange={onLayoutChange}
+              onReset={() => onLayoutChange(EMPTY_LAYOUT)}
+            />
           ) : null}
           {open === "export" ? (
             <div className="min-w-82.5 p-2.5">

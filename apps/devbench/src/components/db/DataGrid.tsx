@@ -311,11 +311,6 @@ export function DataGrid({
     }
   }
 
-  const layoutIsCustomised =
-    effectiveLayout.order.length > 0 ||
-    effectiveLayout.pinned.length > 0 ||
-    Object.keys(effectiveLayout.widths).length > 0;
-
   return (
     // No overflow-hidden here: GridToolbar's popovers are `position: absolute`
     // against this ancestor's stacking context, and an overflow-hidden
@@ -324,17 +319,6 @@ export function DataGrid({
     // scrolling grid's corners) lives on the narrower wrapper below instead.
     <div className="rounded-lg border border-border" role="table" aria-rowcount={rows.length}>
       {toolbar}
-      {layoutIsCustomised ? (
-        <div className="flex items-center justify-end border-b border-border bg-surface px-3 py-1.5">
-          <button
-            type="button"
-            onClick={() => updateLayout(EMPTY_LAYOUT)}
-            className="shrink-0 rounded-sm px-2 py-0.5 text-xs text-text-faint hover:bg-surface-2 hover:text-text"
-          >
-            Reset layout
-          </button>
-        </div>
-      ) : null}
       <div className="overflow-hidden rounded-b-lg">
         {/* Header and body share this one scrollable box (both axes) so a
             horizontal scroll moves them together — a table/tbody or a

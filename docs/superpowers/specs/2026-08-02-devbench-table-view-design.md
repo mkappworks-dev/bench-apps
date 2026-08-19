@@ -245,6 +245,17 @@ drag handle for order. This extends the persisted `GridLayout` with
 A hidden column is hidden from the grid only. It is still fetched, still
 filterable and sortable, and still exported — hiding is a view concern.
 
+The dropdown's footer carries two resets, and their scopes differ. **Show all**
+un-hides every column and leaves widths, order and pins as they are. **Reset
+layout** clears all four back to the default. Both are secondary buttons at the
+footer's own 26px.
+
+Reset layout previously sat in a full-width strip of its own below the toolbar,
+left over from the filter bar this design replaces. A control that only ever
+appears once you have customised something, in a strip that exists only to hold
+it, is worse than the same control living permanently beside the narrower reset
+it belongs with.
+
 ## 6. Export
 
 A dropdown offering **CSV** and **JSON** of the current page, in the current

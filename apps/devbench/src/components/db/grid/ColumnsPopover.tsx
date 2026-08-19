@@ -5,10 +5,14 @@ export function ColumnsPopover({
   columns,
   layout,
   onChange,
+  onReset,
 }: {
   columns: string[];
   layout: GridLayout;
   onChange: (layout: GridLayout) => void;
+  /** Clears widths, order, pins and hidden together — the wider sibling of
+   *  "Show all", which only un-hides. */
+  onReset: () => void;
 }) {
   const toggleHidden = (column: string) =>
     onChange({
@@ -58,7 +62,9 @@ export function ColumnsPopover({
         <SecondaryButton className="h-6.5" onClick={() => onChange({ ...layout, hidden: [] })}>
           Show all
         </SecondaryButton>
-        <span />
+        <SecondaryButton className="h-6.5" onClick={onReset}>
+          Reset layout
+        </SecondaryButton>
       </div>
     </div>
   );
