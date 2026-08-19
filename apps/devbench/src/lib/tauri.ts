@@ -246,6 +246,16 @@ export function invokeDescribeColumns(
   return invoke("describe_columns", { connectionId, table });
 }
 
+export type { PendingChange, ApplyOutcome, ConflictReport } from "./pendingChanges";
+import type { ApplyOutcome, PendingChange } from "./pendingChanges";
+
+export function invokeApplyChanges(
+  connectionId: string,
+  changes: PendingChange[],
+): Promise<ApplyOutcome> {
+  return invoke("apply_changes", { connectionId, changes });
+}
+
 /** `null` means the key points at no row — spec §8's "No matching row in …",
  *  which is a fact to report, not a failure. */
 export function invokeGetReferencedRow(

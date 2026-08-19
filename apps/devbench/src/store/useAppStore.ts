@@ -1,12 +1,23 @@
 import { create } from "zustand";
 import type { QualifiedTable } from "../lib/tauri";
 import { tableKey } from "../lib/tableIdentity";
+import {
+  discardAt,
+  stageUpdate,
+  toggleDelete,
+  type PendingChange,
+  type UpdateChange,
+} from "../lib/pendingChanges";
 
 export type ToolKind = "api" | "db" | "log" | "email";
 export type Pane = "left" | "right";
 export type ThemePref = "dark" | "light" | "system";
 export type AppRoute = "workspace" | "settings";
 export type SettingsPane = "general" | "appearance" | "provider" | "connections" | "mcp" | "archive";
+/** Spec §1: the right dock holds one of three occupants at a time. Closing a
+ *  panel returns to chat; `chatOpen` still governs whether the dock is open at
+ *  all, so AppStrip's existing toggle keeps working unchanged. */
+export type DockPanel = "chat" | "pending" | "insert";
 
 export interface Tab {
   id: string;
@@ -56,6 +67,16 @@ interface AppState {
   setWatchedTables: (tables: QualifiedTable[]) => void;
   chatOpen: boolean;
   setChatOpen: (open: boolean) => void;
+  dockPanel: DockPanel;
+  setDockPanel: (panel: DockPanel) => void;
+  /** Spec §10: global, not per-tab. It can hold changes to several tables from
+   *  several tabs, and Apply commits them together. */
+  pending: PendingChange[];
+  stagePendingUpdate: (entry: UpdateChange) => void;
+  togglePendingDelete: (table: QualifiedTable, pkColumn: string, pkValue: string) => void;
+  addPendingInsert: (table: QualifiedTable, values: Record<string, string | null>) => void;
+  discardPendingAt: (index: number) => void;
+  discardAllPending: () => void;
   route: AppRoute;
   setRoute: (route: AppRoute) => void;
   /** Which section Settings opens on. Lives here rather than inside
@@ -148,6 +169,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
   chatOpen: true,
   setChatOpen: (open) => set({ chatOpen: open }),
+  dockPanel: "chat",
+  setDockPanel: (dockPanel) => set({ dockPanel }),
+  pending: [],
+  stagePendingUpdate: (entry) => set((s) => ({ pending: stageUpdate(s.pending, entry) })),
+  togglePendingDelete: (table, pkColumn, pkValue) =>
+    set((s) => ({ pending: toggleDelete(s.pending, table, pkColumn, pkValue) })),
+  // Inserts are always appended: two inserts into one table are two rows, so
+  // there is nothing here to upsert against.
+  addPendingInsert: (table, values) =>
+    set((s) => ({ pending: [...s.pending, { kind: "insert", table, values }] })),
+  discardPendingAt: (index) => set((s) => ({ pending: discardAt(s.pending, index) })),
+  discardAllPending: () => set({ pending: [] }),
   route: "workspace",
   setRoute: (route) => set({ route }),
   settingsPane: "general",

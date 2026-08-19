@@ -197,4 +197,28 @@ describe("useAppStore", () => {
       expect(useAppStore.getState().activeTabId).toEqual({ left: null, right: null });
     });
   });
+
+  it("starts on chat and switches the dock's occupant", () => {
+    expect(useAppStore.getState().dockPanel).toBe("chat");
+    useAppStore.getState().setDockPanel("pending");
+    expect(useAppStore.getState().dockPanel).toBe("pending");
+    useAppStore.getState().setDockPanel("chat");
+  });
+
+  it("holds one global pending set across tables and clears it wholesale", () => {
+    useAppStore.getState().discardAllPending();
+    useAppStore.getState().stagePendingUpdate({
+      kind: "update",
+      table: { schema: "public", name: "orders" },
+      pk_column: "id",
+      pk_value: "1",
+      column: "status",
+      old_value: "pending",
+      new_value: "shipped",
+    });
+    useAppStore.getState().togglePendingDelete({ schema: "public", name: "users" }, "id", "9");
+    expect(useAppStore.getState().pending).toHaveLength(2);
+    useAppStore.getState().discardAllPending();
+    expect(useAppStore.getState().pending).toEqual([]);
+  });
 });
