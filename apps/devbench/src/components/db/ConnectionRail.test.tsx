@@ -24,6 +24,7 @@ describe("ConnectionRail", () => {
         onToggleWatch={() => {}}
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
+        onOpenQuery={() => {}}
       />,
     );
 
@@ -45,6 +46,7 @@ describe("ConnectionRail", () => {
         onToggleWatch={onToggleWatch}
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
+        onOpenQuery={() => {}}
       />,
     );
 
@@ -71,6 +73,7 @@ describe("ConnectionRail", () => {
         onToggleWatch={() => {}}
         onSelectTable={() => {}}
         onConnectionChange={onConnectionChange}
+        onOpenQuery={() => {}}
       />,
     );
 
@@ -102,6 +105,7 @@ describe("ConnectionRail", () => {
         onToggleWatch={() => {}}
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
+        onOpenQuery={() => {}}
       />,
     );
 
@@ -126,6 +130,7 @@ describe("ConnectionRail", () => {
         onToggleWatch={() => {}}
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
+        onOpenQuery={() => {}}
       />,
     );
 
@@ -145,6 +150,7 @@ describe("ConnectionRail", () => {
         onToggleWatch={() => {}}
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
+        onOpenQuery={() => {}}
       />,
     );
 
@@ -167,6 +173,7 @@ describe("ConnectionRail", () => {
         onToggleWatch={() => {}}
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
+        onOpenQuery={() => {}}
       />,
     );
 
@@ -186,6 +193,7 @@ describe("ConnectionRail", () => {
         onToggleWatch={() => {}}
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
+        onOpenQuery={() => {}}
       />,
     );
 
@@ -208,6 +216,7 @@ describe("ConnectionRail", () => {
         onToggleWatch={() => {}}
         onSelectTable={onSelectTable}
         onConnectionChange={() => {}}
+        onOpenQuery={() => {}}
       />,
     );
 
@@ -238,6 +247,7 @@ describe("ConnectionRail", () => {
         onToggleWatch={() => {}}
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
+        onOpenQuery={() => {}}
       />,
     );
 
@@ -263,6 +273,7 @@ describe("ConnectionRail", () => {
         onToggleWatch={() => {}}
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
+        onOpenQuery={() => {}}
       />,
     );
     await waitFor(() => screen.getByText("orders"));

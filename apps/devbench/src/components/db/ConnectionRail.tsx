@@ -22,12 +22,13 @@ export function ConnectionRail({
   onToggleWatch,
   onSelectTable,
   onConnectionChange,
-  // Optional, defaulted to today's behaviour: the 11 pre-existing call sites
-  // (this file's own tests) predate the queries segment and don't pass
-  // these, and must keep compiling and behaving exactly as before.
+  // Optional, defaulted to today's behaviour: "tables" with nothing selected
+  // is a meaningful no-opinion default, so the 11 pre-existing call sites
+  // (this file's own tests) that predate the queries segment keep compiling
+  // and behaving exactly as before without passing either.
   initialSegment = "tables",
   activeQueryId = null,
-  onOpenQuery = () => {},
+  onOpenQuery,
 }: {
   connectionId: string | null;
   selected: QualifiedTable | null;
@@ -42,8 +43,11 @@ export function ConnectionRail({
   /** The query this rail's host tab is showing, if it is a query tab. */
   activeQueryId?: string | null;
   /** Open (or focus) a query tab. The rail owns creating and deleting a saved
-   *  query; it does not own tabs, so opening one is the host's job. */
-  onOpenQuery?: (queryId: string) => void;
+   *  query; it does not own tabs, so opening one is the host's job. Required,
+   *  unlike the segment/active-id props above: there is no meaningful no-op
+   *  default for "open a query" — a silent no-op would let a host tab ship
+   *  half-wired with the compiler none the wiser. */
+  onOpenQuery: (queryId: string) => void;
 }) {
   const [connections, setConnections] = useState<ConnectionSummary[]>([]);
   // Distinct from `connections.length === 0`: a failed fetch must not read as
