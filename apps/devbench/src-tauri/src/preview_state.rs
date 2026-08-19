@@ -1,4 +1,4 @@
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Transaction};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -59,6 +59,9 @@ impl PendingPreviewRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the tests call Row::get; the module itself never does, and importing
+    // it at the top makes `cargo build` (which never compiles this module) warn.
+    use sqlx::Row;
 
     async fn test_pool() -> sqlx::PgPool {
         let host = std::env::var("PGHOST").unwrap_or_else(|_| "localhost".into());

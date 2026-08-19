@@ -63,6 +63,17 @@ async fn describe_result_columns(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 /// rows. `describe_result_columns` is what tells the two apart — it
 /// reflects the statement's shape regardless of how many rows it ends up
 /// matching.
+///
+/// `raw_sql` rather than `query`: the Either stream is the only way to get
+/// rows AND the completion tag from one execution, and `query(...).fetch_many`
+/// is deprecated. `raw_sql` uses Postgres's simple protocol instead of the
+/// prepared one, which returns values in text format — `raw_sql_decodes_the_same_as_a_prepared_statement`
+/// pins that this changes nothing about how cells decode, since a divergence
+/// there would silently turn working columns into `<unsupported type>`.
+/// One consequence, not a feature: the simple protocol accepts several
+/// statements separated by `;`, where the prepared one rejected them. Such
+/// input runs, but `rows_affected` then reports only the last statement's tag,
+/// so the effect shown understates what ran.
 async fn execute_with_honest_result(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     sql: &str,
@@ -72,7 +83,7 @@ async fn execute_with_honest_result(
     let mut rows: Vec<sqlx::postgres::PgRow> = Vec::new();
     let mut rows_affected: u64 = 0;
     {
-        let mut stream = sqlx::query(sql).fetch_many(&mut **tx);
+        let mut stream = sqlx::raw_sql(sql).fetch_many(&mut **tx);
         while let Some(item) = stream.try_next().await.map_err(|e| format!("query failed: {e}"))? {
             match item {
                 Either::Left(result) => rows_affected = result.rows_affected(),
@@ -265,6 +276,58 @@ mod tests {
             .connect(&connection_string)
             .await
             .expect("requires a real local Postgres — see CONTRIBUTING for setup")
+    }
+
+    // The switch from `query(...)` to `raw_sql(...)` in
+    // execute_with_honest_result moved this path onto Postgres's simple
+    // protocol, which sends values as text rather than binary. If sqlx ever
+    // decodes the two differently, cells that work today would start rendering
+    // as `<unsupported type>` with nothing else failing. numeric is already
+    // undecoded on both paths — that is pre-existing and equally so.
+    // Calls the deprecated prepared path on purpose: the whole point is to
+    // compare against it. The deprecation is what execute_with_honest_result
+    // moved away from.
+    #[allow(deprecated)]
+    #[tokio::test]
+    async fn raw_sql_decodes_the_same_as_a_prepared_statement() {
+        let pool = raw_pool().await;
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query(
+            "CREATE TEMP TABLE decode_parity (a int4, b int8, c float8, d bool, \
+             e uuid, f timestamptz, g text)",
+        )
+        .execute(&mut *tx).await.unwrap();
+        sqlx::query(
+            "INSERT INTO decode_parity VALUES (1, 2, 3.5, true, \
+             '11111111-1111-1111-1111-111111111111', now(), 'hi')",
+        )
+        .execute(&mut *tx).await.unwrap();
+
+        let sql = "SELECT * FROM decode_parity";
+        let width = 7;
+
+        let mut prepared = Vec::new();
+        {
+            let mut stream = sqlx::query(sql).fetch_many(&mut *tx);
+            while let Some(item) = stream.try_next().await.unwrap() {
+                if let Either::Right(row) = item {
+                    prepared = (0..width).map(|i| cell_to_string(&row, i)).collect();
+                }
+            }
+        }
+
+        let mut raw = Vec::new();
+        {
+            let mut stream = sqlx::raw_sql(sql).fetch_many(&mut *tx);
+            while let Some(item) = stream.try_next().await.unwrap() {
+                if let Either::Right(row) = item {
+                    raw = (0..width).map(|i| cell_to_string(&row, i)).collect();
+                }
+            }
+        }
+
+        assert!(!prepared.is_empty(), "the prepared path returned no row to compare");
+        assert_eq!(prepared, raw, "raw_sql must decode every cell exactly as the prepared path did");
     }
 
     #[tokio::test]
