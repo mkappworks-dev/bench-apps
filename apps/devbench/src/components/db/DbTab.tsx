@@ -535,6 +535,35 @@ export function DbTab({
     }
 
     const { className, kind } = cellDisplay(shown);
+
+    // Spec §7: a boolean is the one type whose whole value space fits in a
+    // control, so the checkbox IS the editor — no text field, no confirm or
+    // cancel. NULL is not handled here: it falls through to the italic NULL
+    // text below, which is what keeps the three states distinct.
+    if (kind === "bool-true" || kind === "bool-false") {
+      const checked = kind === "bool-true";
+      return (
+        <>
+          {staged.staged ? (
+            <span
+              aria-hidden
+              data-staged="true"
+              className="pointer-events-none absolute inset-y-0 left-0 w-0.5 bg-warning"
+            />
+          ) : null}
+          <input
+            type="checkbox"
+            checked={checked}
+            disabled={!editable}
+            aria-label={column}
+            title={editable ? "Toggle — staged until you Apply" : "Read-only"}
+            onChange={() => stageCell(rowIndex, columnIndex, checked ? "false" : "true")}
+            className="mx-auto block size-3.5 appearance-none rounded border border-text-faint checked:border-accent checked:bg-accent disabled:opacity-50"
+          />
+        </>
+      );
+    }
+
     const alignClass = kind === "number" && column === tableRows?.pk_column ? "" : className;
 
     const target = fkTargetOf(columnMeta, column);

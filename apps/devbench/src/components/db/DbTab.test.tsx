@@ -1094,6 +1094,71 @@ describe("DbTab", () => {
       expect(await screen.findByText("waiting")).toBeInTheDocument();
       expect(screen.queryByLabelText("Edit status")).toBeNull();
     });
+
+    // Spec §7: toggling IS the edit — no text editor, no confirm/cancel.
+    it("toggles a boolean in place and stages it, with no editor in between", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["id", "paid"], rows: [["1", "false"]], pk_column: "id",
+      });
+      useAppStore.getState().discardAllPending();
+
+      renderDb(ORDERS);
+      const box = (await screen.findByRole("checkbox", { name: "paid" })) as HTMLInputElement;
+      expect(box.checked).toBe(false);
+      expect(box.disabled).toBe(false);
+
+      fireEvent.click(box);
+
+      expect(useAppStore.getState().pending).toEqual([
+        {
+          kind: "update", table: ORDERS, pk_column: "id", pk_value: "1",
+          column: "paid", old_value: "false", new_value: "true",
+        },
+      ]);
+      expect(screen.queryByLabelText("Edit paid")).toBeNull();
+      // The staged value is drawn, or the click would look like a no-op.
+      expect((screen.getByRole("checkbox", { name: "paid" }) as HTMLInputElement).checked).toBe(true);
+    });
+
+    // Spec §16, the boolean half of "staging a cell twice back to its stored
+    // value leaves no pending change".
+    it("toggling a boolean twice leaves no pending change", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["id", "paid"], rows: [["1", "false"]], pk_column: "id",
+      });
+      useAppStore.getState().discardAllPending();
+
+      renderDb(ORDERS);
+      const box = await screen.findByRole("checkbox", { name: "paid" });
+      fireEvent.click(box);
+      expect(useAppStore.getState().pending).toHaveLength(1);
+      fireEvent.click(screen.getByRole("checkbox", { name: "paid" }));
+
+      expect(useAppStore.getState().pending).toEqual([]);
+    });
+
+    it("renders a boolean read-only when the table has no single-column primary key", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["id", "paid"], rows: [["1", "true"]], pk_column: null,
+      });
+
+      renderDb(ORDERS);
+      const box = (await screen.findByRole("checkbox", { name: "paid" })) as HTMLInputElement;
+      expect(box.disabled).toBe(true);
+    });
+
+    // Spec §7 calls this a hard constraint: the three states must stay
+    // distinct, so NULL keeps its italic text rather than becoming a third
+    // checkbox appearance nobody can name.
+    it("keeps NULL visually distinct from false in a boolean column", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["id", "paid"], rows: [["1", null], ["2", "false"]], pk_column: "id",
+      });
+
+      renderDb(ORDERS);
+      expect(await screen.findByText("NULL")).toBeTruthy();
+      expect(screen.getAllByRole("checkbox", { name: "paid" })).toHaveLength(1);
+    });
   });
 
   it("opens the insert panel on the table whose toolbar was used", async () => {
