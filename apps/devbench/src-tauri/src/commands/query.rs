@@ -259,6 +259,9 @@ mod tests {
             &input.host, input.port, &input.database, &input.username, input.password.as_deref(), &input.sslmode,
         );
         sqlx::postgres::PgPoolOptions::new()
+            // Capped so the suite's parallel tests can't collectively exhaust
+            // Postgres's max_connections; each test needs only a handful.
+            .max_connections(4)
             .connect(&connection_string)
             .await
             .expect("requires a real local Postgres — see CONTRIBUTING for setup")
