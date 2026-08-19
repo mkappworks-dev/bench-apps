@@ -1,5 +1,24 @@
 import type { LogSourceStatus } from "../../lib/tauri";
 
+const STATUS_CLASS: Record<string, string> = {
+  live: "bg-success",
+  exited: "bg-text-faint",
+  error: "bg-danger",
+};
+
+/** An exited command is not an error — it ran and finished. */
+function statusClass(state: string): string {
+  return STATUS_CLASS[state] ?? "bg-danger";
+}
+
+function detail(source: LogSourceStatus): string | null {
+  if (source.state === "exited") {
+    const code = source.exit_code === null ? "unknown" : String(source.exit_code);
+    return `exited (code ${code}) — not auto-restarted`;
+  }
+  return source.error;
+}
+
 export function LogSourcesSidebar({
   sources,
   activeSourceId,
@@ -32,37 +51,48 @@ export function LogSourcesSidebar({
         >
           All sources
         </button>
-        {sources.map((source) => (
-          <div key={source.id} className="flex flex-col gap-0.5">
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => onSelect(source.id)}
-                aria-current={activeSourceId === source.id}
-                className={`flex flex-1 items-center gap-1.5 rounded-sm p-2 text-left text-xs ${
-                  activeSourceId === source.id ? "bg-surface-2 text-text" : "text-text-muted hover:bg-surface-2"
-                }`}
-              >
-                <span
-                  aria-hidden="true"
-                  className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                    source.state === "live" ? "bg-success" : "bg-danger"
+        {sources.map((source) => {
+          const selected = activeSourceId === source.id;
+          const note = selected ? detail(source) : null;
+          return (
+            <div key={source.id} className="flex flex-col gap-0.5">
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => onSelect(source.id)}
+                  aria-current={selected}
+                  className={`flex flex-1 items-center gap-1.5 rounded-sm p-2 text-left text-xs ${
+                    selected ? "bg-surface-2 text-text" : "text-text-muted hover:bg-surface-2"
                   }`}
-                />
-                <span className="truncate">{source.label}</span>
-              </button>
-              <button
-                aria-label={`Remove ${source.label}`}
-                onClick={() => onRemove(source.id)}
-                className="rounded-sm px-1.5 text-text-faint hover:bg-surface-2 hover:text-text"
-              >
-                ✕
-              </button>
+                >
+                  <span
+                    data-testid={`status-${source.id}`}
+                    data-state={source.state}
+                    aria-hidden="true"
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusClass(source.state)}`}
+                  />
+                  <span
+                    data-testid={`kind-${source.id}`}
+                    aria-hidden="true"
+                    className="shrink-0 font-mono text-text-faint"
+                  >
+                    {source.kind === "command" ? "$" : "≡"}
+                  </span>
+                  <span className="truncate">{source.label}</span>
+                </button>
+                <button
+                  aria-label={`Remove ${source.label}`}
+                  onClick={() => onRemove(source.id)}
+                  className="rounded-sm px-1.5 text-text-faint hover:bg-surface-2 hover:text-text"
+                >
+                  ✕
+                </button>
+              </div>
+              {note ? (
+                <div className="mx-2 rounded-sm bg-danger-bg px-2 py-1 text-[11px] text-danger">{note}</div>
+              ) : null}
             </div>
-            {source.error ? (
-              <div className="mx-2 rounded-sm bg-danger-bg px-2 py-1 text-[11px] text-danger">{source.error}</div>
-            ) : null}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </aside>
   );
