@@ -211,6 +211,7 @@ fn main() {
             commands::logs::remove_log_source,
             commands::logs::list_log_sources,
             commands::logs::read_log_lines,
+            commands::logs::search_log_lines,
             commands::email::list_emails,
             commands::email::get_email,
             commands::email::clear_emails,

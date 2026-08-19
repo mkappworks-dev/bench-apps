@@ -11,6 +11,25 @@ use crate::log_state::{LogPage, LogSourceStatus, LogState};
 /// single IPC payload bounded even if the frontend asks for everything.
 const MAX_READ_LIMIT: usize = 2_000;
 
+/// Upper bound on how many rows one `search_log_lines` call returns.
+const MAX_SEARCH_LIMIT: usize = 1_000;
+
+/// Severity order, least to most severe. Search's level filter is a minimum
+/// threshold ("WARN" means WARN and worse), unlike Live mode's exact
+/// multi-select — searching history is a "show me trouble at or above this"
+/// question.
+const LEVEL_LADDER: [&str; 5] = ["DEBUG", "INFO", "WARN", "ERROR", "FATAL"];
+
+/// The given level and everything more severe. An unrecognized level yields an
+/// empty set rather than the whole ladder, so a typo can never silently turn a
+/// narrow filter into "match everything".
+fn levels_at_or_above(level: &str) -> Vec<&'static str> {
+    match LEVEL_LADDER.iter().position(|l| l.eq_ignore_ascii_case(level)) {
+        Some(index) => LEVEL_LADDER[index..].to_vec(),
+        None => Vec::new(),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AddLogSourceInput {
     pub label: String,
@@ -217,6 +236,96 @@ pub struct ReadLogLinesInput {
     pub limit: usize,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SearchLogLinesInput {
+    /// Substring match against `message`, case-insensitive. `None` or empty
+    /// means no text constraint.
+    pub query: Option<String>,
+    /// Minimum severity — see `levels_at_or_above`.
+    pub level: Option<String>,
+    pub source_id: Option<String>,
+    pub after_ms: Option<i64>,
+    pub before_ms: Option<i64>,
+    pub limit: usize,
+}
+
+/// Queries persisted history. Deliberately separate from `read_log_lines`,
+/// which reads the in-memory rings only — a live tail and a historical search
+/// have different latency and freshness semantics and shouldn't share a path.
+pub async fn search_log_lines_impl(
+    pool: &SqlitePool,
+    input: SearchLogLinesInput,
+) -> Result<Vec<crate::log_state::LogLine>, String> {
+    let mut sql = String::from(
+        "SELECT id, source_id, captured_at_ms, timestamp, level, message, raw FROM log_lines WHERE 1 = 1",
+    );
+
+    let query = input.query.as_deref().map(str::trim).filter(|q| !q.is_empty());
+    if query.is_some() {
+        sql.push_str(" AND lower(message) LIKE ?");
+    }
+    let levels = match input.level.as_deref() {
+        Some(level) => levels_at_or_above(level),
+        None => Vec::new(),
+    };
+    if !levels.is_empty() {
+        sql.push_str(" AND level IN (");
+        sql.push_str(&vec!["?"; levels.len()].join(", "));
+        sql.push(')');
+    }
+    if input.source_id.is_some() {
+        sql.push_str(" AND source_id = ?");
+    }
+    if input.after_ms.is_some() {
+        sql.push_str(" AND captured_at_ms >= ?");
+    }
+    if input.before_ms.is_some() {
+        sql.push_str(" AND captured_at_ms <= ?");
+    }
+    sql.push_str(" ORDER BY id DESC LIMIT ?");
+
+    let mut q = sqlx::query(&sql);
+    if let Some(needle) = query {
+        // `escape` is not used: LIKE wildcards a user types are a reasonable
+        // convenience here, and there is no injection surface — the value is
+        // always bound, never interpolated.
+        q = q.bind(format!("%{}%", needle.to_lowercase()));
+    }
+    for level in &levels {
+        q = q.bind(*level);
+    }
+    if let Some(source_id) = &input.source_id {
+        q = q.bind(source_id);
+    }
+    if let Some(after_ms) = input.after_ms {
+        q = q.bind(after_ms);
+    }
+    if let Some(before_ms) = input.before_ms {
+        q = q.bind(before_ms);
+    }
+    q = q.bind(input.limit.clamp(1, MAX_SEARCH_LIMIT) as i64);
+
+    let rows = q
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("failed to search log lines: {e}"))?;
+
+    let mut lines = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id: i64 = row.get("id");
+        lines.push(crate::log_state::LogLine {
+            id: id as u64,
+            source_id: row.get("source_id"),
+            captured_at_ms: row.get("captured_at_ms"),
+            timestamp: row.get("timestamp"),
+            level: row.get("level"),
+            message: row.get("message"),
+            raw: row.get("raw"),
+        });
+    }
+    Ok(lines)
+}
+
 pub async fn add_log_source_impl(
     state: &Arc<LogState>,
     pool: &SqlitePool,
@@ -352,6 +461,14 @@ pub async fn read_log_lines(
     input: ReadLogLinesInput,
 ) -> Result<LogPage, String> {
     Ok(read_log_lines_impl(&logs, input))
+}
+
+#[tauri::command]
+pub async fn search_log_lines(
+    db: State<'_, LocalDb>,
+    input: SearchLogLinesInput,
+) -> Result<Vec<crate::log_state::LogLine>, String> {
+    search_log_lines_impl(&db.pool, input).await
 }
 
 #[cfg(test)]
@@ -976,5 +1093,168 @@ mod tests {
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM log_lines").fetch_one(&db.pool).await.unwrap();
         assert_eq!(count, 2, "the previous session's row and the new one must both survive");
+    }
+
+    async fn seed_line(
+        pool: &sqlx::SqlitePool,
+        id: i64,
+        source_id: &str,
+        captured_at_ms: i64,
+        level: Option<&str>,
+        message: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO log_lines (id, source_id, captured_at_ms, timestamp, level, message, raw) \
+             VALUES (?, ?, ?, NULL, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(source_id)
+        .bind(captured_at_ms)
+        .bind(level)
+        .bind(message)
+        .bind(message)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    fn search_input() -> SearchLogLinesInput {
+        SearchLogLinesInput {
+            query: None,
+            level: None,
+            source_id: None,
+            after_ms: None,
+            before_ms: None,
+            limit: 100,
+        }
+    }
+
+    #[tokio::test]
+    async fn search_matches_a_substring_of_the_message_case_insensitively() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        seed_line(&db.pool, 1, "src1", 1_000, Some("INFO"), "Connection refused").await;
+        seed_line(&db.pool, 2, "src1", 1_001, Some("INFO"), "all good").await;
+
+        let found = search_log_lines_impl(
+            &db.pool,
+            SearchLogLinesInput { query: Some("connection".into()), ..search_input() },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].message, "Connection refused");
+    }
+
+    #[tokio::test]
+    async fn search_treats_level_as_a_minimum_severity_threshold_not_an_exact_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        seed_line(&db.pool, 1, "src1", 1_000, Some("DEBUG"), "debug line").await;
+        seed_line(&db.pool, 2, "src1", 1_001, Some("INFO"), "info line").await;
+        seed_line(&db.pool, 3, "src1", 1_002, Some("WARN"), "warn line").await;
+        seed_line(&db.pool, 4, "src1", 1_003, Some("ERROR"), "error line").await;
+        seed_line(&db.pool, 5, "src1", 1_004, Some("FATAL"), "fatal line").await;
+
+        let found = search_log_lines_impl(
+            &db.pool,
+            SearchLogLinesInput { level: Some("WARN".into()), ..search_input() },
+        )
+        .await
+        .unwrap();
+
+        let messages: Vec<&str> = found.iter().map(|l| l.message.as_str()).collect();
+        assert_eq!(messages, vec!["fatal line", "error line", "warn line"]);
+    }
+
+    #[tokio::test]
+    async fn search_filters_by_source_and_time_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        seed_line(&db.pool, 1, "src1", 1_000, None, "too early").await;
+        seed_line(&db.pool, 2, "src1", 2_000, None, "in range").await;
+        seed_line(&db.pool, 3, "src1", 3_000, None, "too late").await;
+        seed_line(&db.pool, 4, "src2", 2_000, None, "other source").await;
+
+        let found = search_log_lines_impl(
+            &db.pool,
+            SearchLogLinesInput {
+                source_id: Some("src1".into()),
+                after_ms: Some(1_500),
+                before_ms: Some(2_500),
+                ..search_input()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].message, "in range");
+    }
+
+    #[tokio::test]
+    async fn search_returns_the_newest_rows_first_and_clamps_an_absurd_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        for i in 1..=5i64 {
+            seed_line(&db.pool, i, "src1", 1_000 + i, None, &format!("line {i}")).await;
+        }
+
+        let found = search_log_lines_impl(
+            &db.pool,
+            SearchLogLinesInput { limit: usize::MAX, ..search_input() },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(found.len(), 5, "an absurd limit must clamp, not overflow or error");
+        assert_eq!(found[0].message, "line 5", "newest first");
+        assert_eq!(found[4].message, "line 1");
+    }
+
+    #[tokio::test]
+    async fn search_with_no_filters_returns_everything_up_to_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        for i in 1..=3i64 {
+            seed_line(&db.pool, i, "src1", 1_000 + i, None, &format!("line {i}")).await;
+        }
+
+        let found = search_log_lines_impl(&db.pool, search_input()).await.unwrap();
+        assert_eq!(found.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn search_finds_history_from_a_source_that_no_longer_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+        // No matching log_sources row is ever inserted: removing a source stops
+        // capture but must not erase its history from Search.
+        seed_line(&db.pool, 1, "removed-src", 1_000, Some("ERROR"), "last words").await;
+
+        let found = search_log_lines_impl(
+            &db.pool,
+            SearchLogLinesInput { source_id: Some("removed-src".into()), ..search_input() },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].message, "last words");
+    }
+
+    #[test]
+    fn levels_at_or_above_returns_the_threshold_and_everything_more_severe() {
+        assert_eq!(levels_at_or_above("ERROR"), vec!["ERROR", "FATAL"]);
+        assert_eq!(levels_at_or_above("WARN"), vec!["WARN", "ERROR", "FATAL"]);
+        assert_eq!(
+            levels_at_or_above("DEBUG"),
+            vec!["DEBUG", "INFO", "WARN", "ERROR", "FATAL"]
+        );
+        assert!(
+            levels_at_or_above("NOPE").is_empty(),
+            "an unknown level must not silently widen the filter to everything"
+        );
     }
 }
