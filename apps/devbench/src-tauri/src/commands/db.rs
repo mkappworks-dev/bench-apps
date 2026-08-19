@@ -70,15 +70,11 @@ pub(crate) fn cell_to_string(row: &sqlx::postgres::PgRow, index: usize) -> Optio
     Some("<unsupported type>".to_string())
 }
 
-/// Validates that a table or column identifier is a legitimate Postgres
-/// identifier. Allows only ASCII alphanumeric characters and underscores.
-pub(crate) fn validate_identifier(identifier: &str) -> Result<(), String> {
-    validate_identifier_labeled("table name", identifier)
-}
-
-/// Same rules, but the caller names what it is validating. A rejected schema
-/// reporting "table name contains invalid characters" sends the reader to the
-/// wrong half of the input.
+/// Validates that an identifier (table, schema, or column) is a legitimate
+/// Postgres identifier. Allows only ASCII alphanumeric characters and
+/// underscores. `kind` names what's being validated — a rejected schema
+/// reporting "table name contains invalid characters" would send the reader
+/// to the wrong half of the input.
 pub(crate) fn validate_identifier_labeled(kind: &str, identifier: &str) -> Result<(), String> {
     if identifier.is_empty() {
         return Err(format!("{kind} cannot be empty"));
@@ -185,7 +181,7 @@ pub async fn list_table_rows_impl(
     // term is validated before any is interpolated, because identifiers
     // (unlike values) can't be bound as parameters.
     for term in order_by {
-        validate_identifier(&term.column)?;
+        validate_identifier_labeled("ORDER BY column", &term.column)?;
     }
 
     // No single-column PK is a normal, common case (junction tables,
@@ -352,7 +348,7 @@ mod tests {
     #[test]
     fn rejects_sql_injection_with_drop_table() {
         let malicious = "orders; DROP TABLE users; --";
-        let result = validate_identifier(malicious);
+        let result = validate_identifier_labeled("identifier", malicious);
         assert!(result.is_err(), "should reject SQL injection attempt");
         assert!(result.unwrap_err().contains("invalid characters"));
     }
@@ -360,14 +356,14 @@ mod tests {
     #[test]
     fn rejects_sql_injection_with_quote_escape() {
         let malicious = "orders\" WHERE 1=1; --";
-        let result = validate_identifier(malicious);
+        let result = validate_identifier_labeled("identifier", malicious);
         assert!(result.is_err(), "should reject quote-escape injection attempt");
         assert!(result.unwrap_err().contains("invalid characters"));
     }
 
     #[test]
     fn rejects_empty_table_name() {
-        let result = validate_identifier("");
+        let result = validate_identifier_labeled("identifier", "");
         assert!(result.is_err(), "should reject empty table name");
         assert!(result.unwrap_err().contains("empty"));
     }
@@ -375,29 +371,29 @@ mod tests {
     #[test]
     fn rejects_table_name_exceeding_max_length() {
         let long_name = "a".repeat(64);
-        let result = validate_identifier(&long_name);
+        let result = validate_identifier_labeled("identifier", &long_name);
         assert!(result.is_err(), "should reject table name exceeding 63 characters");
         assert!(result.unwrap_err().contains("exceeds maximum"));
     }
 
     #[test]
     fn accepts_valid_lowercase_table_name() {
-        assert!(validate_identifier("orders").is_ok());
+        assert!(validate_identifier_labeled("identifier", "orders").is_ok());
     }
 
     #[test]
     fn accepts_valid_table_name_with_underscore() {
-        assert!(validate_identifier("orders_for_test").is_ok());
+        assert!(validate_identifier_labeled("identifier", "orders_for_test").is_ok());
     }
 
     #[test]
     fn accepts_valid_table_name_with_numbers() {
-        assert!(validate_identifier("table123").is_ok());
+        assert!(validate_identifier_labeled("identifier", "table123").is_ok());
     }
 
     #[test]
     fn accepts_valid_mixed_case_table_name() {
-        assert!(validate_identifier("OrdersTable").is_ok());
+        assert!(validate_identifier_labeled("identifier", "OrdersTable").is_ok());
     }
 
     #[test]
@@ -409,7 +405,7 @@ mod tests {
             ("users(test)", "parentheses"),
         ];
         for (input, desc) in test_cases {
-            assert!(validate_identifier(input).is_err(), "should reject {} in table name", desc);
+            assert!(validate_identifier_labeled("identifier", input).is_err(), "should reject {} in table name", desc);
         }
     }
 

@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::commands::db::validate_identifier;
+use crate::commands::db::validate_identifier_labeled;
 
 /// Operators the grid offers. Serialised from the frontend in snake_case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -72,7 +72,7 @@ pub fn compile_filter(
         if condition.op.takes_value() && condition.value.as_deref().unwrap_or("").is_empty() {
             continue;
         }
-        validate_identifier(&condition.column)?;
+        validate_identifier_labeled("filter column", &condition.column)?;
         let column = format!("\"{}\"", condition.column);
 
         let clause = match condition.op {

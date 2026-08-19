@@ -4,7 +4,7 @@ use sqlx::{Column, Either, Row};
 use std::sync::Arc;
 use tauri::State;
 
-use crate::commands::db::{cell_to_string, get_column_type, validate_identifier};
+use crate::commands::db::{cell_to_string, get_column_type, validate_identifier_labeled};
 use crate::connection_registry::ConnectionRegistry;
 use crate::local_db::LocalDb;
 use crate::preview_state::{PendingPreviewRegistry, PREVIEW_TIMEOUT_MS};
@@ -126,8 +126,8 @@ pub async fn preview_cell_edit_impl(
     value: Option<&str>,
     now_ms: i64,
 ) -> Result<QueryPreview, String> {
-    validate_identifier(pk_column)?;
-    validate_identifier(column)?;
+    validate_identifier_labeled("pk column", pk_column)?;
+    validate_identifier_labeled("column", column)?;
 
     let pool = registry.pool_for(connection_id, db, secrets).await?;
 
@@ -139,7 +139,7 @@ pub async fn preview_cell_edit_impl(
     // comes from the catalog, not user input, but it's still validated below
     // before interpolation, matching this file's identifier discipline.
     let pk_type = get_column_type(&pool, table, pk_column).await?;
-    validate_identifier(&pk_type)?;
+    validate_identifier_labeled("pk type", &pk_type)?;
 
     let mut tx = pool.begin().await.map_err(|e| format!("failed to open a transaction: {e}"))?;
 
