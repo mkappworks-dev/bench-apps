@@ -295,6 +295,7 @@ pub async fn count_table_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::qualified_table::QualifiedTable;
 
     fn public(name: &str) -> crate::commands::qualified_table::QualifiedTable {
         crate::commands::qualified_table::QualifiedTable::new("public", name).unwrap()
@@ -806,5 +807,93 @@ mod tests {
 
         sqlx::query("DROP TABLE public.dup").execute(&pool).await.unwrap();
         sqlx::query("DROP TABLE alt.dup").execute(&pool).await.unwrap();
+    }
+
+    // The test above starts from `QualifiedTable::new`, which is not how a
+    // table identity actually enters the process: over IPC it arrives as JSON
+    // and is reconstituted by serde. Starting from the JSON is what makes this
+    // a command-layer test — it would catch a wire shape that deserializes
+    // into a different table than the caller named, which a test built from
+    // the constructor cannot see.
+    //
+    // Fixtures are named apart from the test above because cargo runs these
+    // concurrently against one database; sharing `alt.dup` would race.
+    #[tokio::test]
+    async fn a_table_identity_arriving_as_ipc_json_resolves_to_its_own_schema() {
+        let pool = test_pool().await;
+        sqlx::query("CREATE SCHEMA IF NOT EXISTS alt_ipc").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS public.dup_ipc").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS alt_ipc.dup_ipc").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE public.dup_ipc (id serial PRIMARY KEY, tag text)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE alt_ipc.dup_ipc (other_id serial PRIMARY KEY, tag text)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.dup_ipc (tag) VALUES ('p1'), ('p2')")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO alt_ipc.dup_ipc (tag) VALUES ('a1')")
+            .execute(&pool).await.unwrap();
+
+        let public_dup: QualifiedTable =
+            serde_json::from_value(serde_json::json!({"schema": "public", "name": "dup_ipc"}))
+                .expect("the wire shape the frontend sends must deserialize");
+        let alt_dup: QualifiedTable =
+            serde_json::from_value(serde_json::json!({"schema": "alt_ipc", "name": "dup_ipc"}))
+                .expect("the wire shape the frontend sends must deserialize");
+
+        let p = list_table_rows_impl(&pool, &public_dup, &[], &[], 200, 0).await.unwrap();
+        assert_eq!(p.rows.len(), 2, "public.dup_ipc holds two rows");
+        let a = list_table_rows_impl(&pool, &alt_dup, &[], &[], 200, 0).await.unwrap();
+        assert_eq!(a.rows.len(), 1, "alt_ipc.dup_ipc holds one row");
+
+        assert_eq!(count_table_rows_impl(&pool, &public_dup, &[]).await.unwrap(), 2);
+        assert_eq!(count_table_rows_impl(&pool, &alt_dup, &[]).await.unwrap(), 1);
+
+        // The pager and the grid have to agree, or the last page is unreachable.
+        assert_eq!(count_table_rows_impl(&pool, &public_dup, &[]).await.unwrap() as usize, p.rows.len());
+        assert_eq!(count_table_rows_impl(&pool, &alt_dup, &[]).await.unwrap() as usize, a.rows.len());
+
+        // Distinct PK names are what prove the catalog lookup read the right
+        // relation rather than merging both candidates.
+        assert_eq!(get_primary_key_column(&pool, &public_dup).await.unwrap(), "id");
+        assert_eq!(get_primary_key_column(&pool, &alt_dup).await.unwrap(), "other_id");
+        assert_eq!(p.pk_column.as_deref(), Some("id"));
+        assert_eq!(a.pk_column.as_deref(), Some("other_id"));
+
+        sqlx::query("DROP TABLE public.dup_ipc").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE alt_ipc.dup_ipc").execute(&pool).await.unwrap();
+        sqlx::query("DROP SCHEMA alt_ipc").execute(&pool).await.unwrap();
+    }
+
+    // A payload that never becomes a `QualifiedTable` never reaches SQL: the
+    // command's argument cannot be built, so the command body does not run.
+    #[tokio::test]
+    async fn a_malformed_ipc_table_payload_is_rejected_before_it_reaches_sql() {
+        // The pre-plan wire shape. Silently accepting it would resurrect the
+        // bare-name lookup this plan removed.
+        let bare: Result<QualifiedTable, _> = serde_json::from_value(serde_json::json!("dup_ipc"));
+        assert!(bare.is_err(), "a bare table name is no longer a valid table identity");
+
+        let injected: Result<QualifiedTable, _> = serde_json::from_value(
+            serde_json::json!({"schema": "public\"; DROP TABLE users; --", "name": "dup_ipc"}),
+        );
+        let err = injected.expect_err("an injection payload in the schema must fail deserialization");
+        assert!(
+            err.to_string().contains("schema"),
+            "the error must name the offending half, got: {err}"
+        );
+
+        // Proof it stopped at the boundary rather than downstream: the table
+        // the payload would have dropped is untouched.
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS injection_sentinel").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE injection_sentinel (id serial PRIMARY KEY)")
+            .execute(&pool).await.unwrap();
+        let still_there: Result<QualifiedTable, _> = serde_json::from_value(
+            serde_json::json!({"schema": "public", "name": "injection_sentinel\"; DROP TABLE injection_sentinel; --"}),
+        );
+        assert!(still_there.is_err());
+        let sentinel = QualifiedTable::new("public", "injection_sentinel").unwrap();
+        assert_eq!(count_table_rows_impl(&pool, &sentinel, &[]).await.unwrap(), 0);
+        sqlx::query("DROP TABLE injection_sentinel").execute(&pool).await.unwrap();
     }
 }

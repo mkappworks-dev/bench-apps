@@ -1,4 +1,5 @@
 use devbench::commands::correlation::run_correlated_request_impl;
+use devbench::commands::qualified_table::QualifiedTable;
 use devbench::commands::request::FireRequestInput;
 use devbench::connection_registry::postgres_connection_string;
 use devbench::email_state::EmailState;
@@ -96,7 +97,7 @@ async fn firing_a_request_against_a_seeded_postgres_produces_the_expected_rollup
             body: None,
         },
         Some(pool.clone()),
-        vec!["smoke_orders".to_string()],
+        vec![QualifiedTable::new("public", "smoke_orders").unwrap()],
         &LogState::new(),
     )
     .await
@@ -183,7 +184,7 @@ async fn firing_a_request_correlates_both_db_writes_and_log_lines() {
             body: None,
         },
         Some(pool.clone()),
-        vec!["smoke_log_orders".to_string()],
+        vec![QualifiedTable::new("public", "smoke_log_orders").unwrap()],
         &logs,
         &emails,
         &edb.pool,
@@ -346,7 +347,7 @@ async fn firing_a_request_correlates_db_writes_log_lines_and_sent_mail() {
             body: None,
         },
         Some(pool.clone()),
-        vec!["smoke_full_orders".to_string()],
+        vec![QualifiedTable::new("public", "smoke_full_orders").unwrap()],
         &logs,
         &emails,
         &edb.pool,

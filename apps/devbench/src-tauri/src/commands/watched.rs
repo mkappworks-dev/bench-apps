@@ -161,6 +161,38 @@ mod tests {
         assert!(list_watched_tables_impl(&db.pool, "staging").await.unwrap().is_empty());
     }
 
+    // The store's own test above builds its tables with `QualifiedTable::new`.
+    // `set_watched_table` receives them from serde instead, and
+    // `list_watched_tables` hands them back the same way, so the round trip
+    // that actually happens in production is JSON in and JSON out.
+    #[tokio::test]
+    async fn watch_state_round_trips_through_the_ipc_wire_shape() {
+        let (_dir, db) = db().await;
+        let public_dup: QualifiedTable =
+            serde_json::from_value(serde_json::json!({"schema": "public", "name": "dup"})).unwrap();
+        let alt_dup: QualifiedTable =
+            serde_json::from_value(serde_json::json!({"schema": "alt", "name": "dup"})).unwrap();
+
+        set_watched_table_impl(&db.pool, "default", &public_dup, true).await.unwrap();
+        set_watched_table_impl(&db.pool, "default", &alt_dup, true).await.unwrap();
+
+        let watched = list_watched_tables_impl(&db.pool, "default").await.unwrap();
+        assert_eq!(watched.len(), 2, "one name in two schemas is two watches, not one");
+        // Serialized back out, the frontend keys these apart; a bare name would
+        // collapse both entries onto one row.
+        assert_eq!(
+            serde_json::to_value(&watched).unwrap(),
+            serde_json::json!([
+                {"schema": "alt", "name": "dup"},
+                {"schema": "public", "name": "dup"},
+            ]),
+        );
+
+        set_watched_table_impl(&db.pool, "default", &alt_dup, false).await.unwrap();
+        let watched = list_watched_tables_impl(&db.pool, "default").await.unwrap();
+        assert_eq!(watched, vec![public_dup], "unwatching one schema must leave the other");
+    }
+
     // `set_watched_table_impl` now takes a `&QualifiedTable`, so a malicious
     // table name can no longer be passed to it at all — the guarantee moved
     // from a runtime check inside the store to `QualifiedTable::new`.
