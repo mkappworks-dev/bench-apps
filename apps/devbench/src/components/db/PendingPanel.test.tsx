@@ -25,15 +25,13 @@ function seed(pending: PendingChange[]) {
   useAppStore.setState({ pending });
 }
 
-function renderPanel(onApplied = vi.fn(), connectionId: string | null = "c1", onConflictIndex = vi.fn()) {
+function renderPanel(connectionId: string | null = "c1", onConflictIndex = vi.fn()) {
   return {
-    onApplied,
     onConflictIndex,
     ...render(
       <PendingPanel
         connectionId={connectionId}
         onClose={() => {}}
-        onApplied={onApplied}
         onConflictIndex={onConflictIndex}
       />,
     ),
@@ -92,13 +90,12 @@ describe("PendingPanel", () => {
   it("sends the whole ordered set in one call and clears it on success", async () => {
     seed([UPDATE, DELETE]);
     const apply = vi.spyOn(tauriLib, "invokeApplyChanges").mockResolvedValue({ applied: 2, conflict: null });
-    const { onApplied } = renderPanel();
+    renderPanel();
 
     fireEvent.click(screen.getByRole("button", { name: "Apply 2" }));
 
     await waitFor(() => expect(apply).toHaveBeenCalledWith("c1", [UPDATE, DELETE]));
     await waitFor(() => expect(useAppStore.getState().pending).toEqual([]));
-    expect(onApplied).toHaveBeenCalled();
   });
 
   // Spec §10: a conflict rolls the transaction back whole. The set must
@@ -112,14 +109,42 @@ describe("PendingPanel", () => {
         expected: "pending", found: "cancelled", row_missing: false,
       },
     });
-    const { onApplied } = renderPanel();
+    renderPanel();
 
     fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
 
     await screen.findByRole("alert");
     expect(screen.getByRole("alert").textContent).toContain("cancelled");
     expect(useAppStore.getState().pending).toEqual([UPDATE]);
-    expect(onApplied).not.toHaveBeenCalled();
+  });
+
+  it("signals an apply only when the commit actually wrote", async () => {
+    seed([UPDATE]);
+    vi.spyOn(tauriLib, "invokeApplyChanges").mockResolvedValue({ applied: 1, conflict: null });
+    const before = useAppStore.getState().applyGeneration;
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
+
+    await waitFor(() => expect(useAppStore.getState().applyGeneration).toBe(before + 1));
+  });
+
+  it("does not signal an apply when the transaction rolled back", async () => {
+    seed([UPDATE]);
+    vi.spyOn(tauriLib, "invokeApplyChanges").mockResolvedValue({
+      applied: 0,
+      conflict: {
+        index: 0, table: "public.orders", description: "id = 1", column: "status",
+        expected: "pending", found: "cancelled", row_missing: false,
+      },
+    });
+    const before = useAppStore.getState().applyGeneration;
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
+
+    await screen.findByRole("alert");
+    expect(useAppStore.getState().applyGeneration).toBe(before);
   });
 
   // The backend enumerates the array it was SENT, which is only this

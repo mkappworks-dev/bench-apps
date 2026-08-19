@@ -1040,17 +1040,14 @@ describe("DbTab", () => {
       fireEvent.click(screen.getByRole("button", { name: "Stage change" }));
 
       expect(useAppStore.getState().pending).toEqual([]);
-      // The 1 -> 0 transition fires DbTab's post-Apply refetch (Task 5). Await
-      // it so the update lands inside the test rather than after it.
-      await waitFor(() => expect(useAppStore.getState().pending).toEqual([]));
     });
 
-    // The dock renders beside a MOUNTED DbTab, so Apply (or Discard all) can
-    // land with a cell editor open. The refetch replaces tableRows underneath
-    // it while editing.rowIndex stays put — accepting then would carry another
+    // The dock renders beside a MOUNTED DbTab, so an Apply can land with a
+    // cell editor open. The refetch replaces tableRows underneath it while
+    // editing.rowIndex stays put — accepting then would carry another
     // row's pk_value and old_value, a wrong UPDATE the backend's
     // IS NOT DISTINCT FROM guard would accept as correct.
-    it("closes an open editor when Apply empties the pending set and refetches", async () => {
+    it("closes an open editor when an Apply lands and refetches", async () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
       });
@@ -1059,26 +1056,21 @@ describe("DbTab", () => {
       fireEvent.click(await screen.findByText("pending"));
       await screen.findByLabelText("Edit status");
 
-      // Something else stages, then the set empties — the shape of an Apply
-      // landing while this tab sits with an editor open.
+      // What PendingPanel's apply() does on success: drop what it sent, then
+      // signal the commit.
       act(() => {
-        useAppStore.getState().stagePendingUpdate({
-          kind: "update", connection_id: "c1", table: ORDERS, pk_column: "id", pk_value: "9",
-          column: "status", old_value: "a", new_value: "b",
-        });
-      });
-      act(() => {
-        useAppStore.getState().discardAllPending();
+        useAppStore.getState().removePendingEntries(useAppStore.getState().pending);
+        useAppStore.getState().bumpApplyGeneration();
       });
 
       await waitFor(() => expect(screen.queryByLabelText("Edit status")).toBeNull());
     });
 
-    // Apply now removes only the entries it sent — its own connection's, minus
+    // Apply removes only the entries it sent — its own connection's, minus
     // anything staged during the round trip — so a successful commit routinely
     // leaves the set non-empty. Waiting for empty would leave the applied cells
     // painted with their pre-Apply values and no way back.
-    it("refetches when the pending set shrinks without emptying", async () => {
+    it("refetches when an Apply lands, leaving the pending set non-empty", async () => {
       const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
       });
@@ -1102,10 +1094,58 @@ describe("DbTab", () => {
       // What a successful Apply on c1 leaves behind: c2's entry still staged.
       act(() => {
         useAppStore.getState().removePendingEntries([useAppStore.getState().pending[0]]);
+        useAppStore.getState().bumpApplyGeneration();
       });
 
       await waitFor(() => expect(listRows.mock.calls.length).toBeGreaterThan(before));
       expect(useAppStore.getState().pending).toHaveLength(1);
+    });
+
+    // A discard changes nothing in the database — the staged overlay clearing
+    // is a re-render, not a reload. Refetching cost the user an open draft.
+    it("does not refetch or disturb an open editor when a staged entry is discarded", async () => {
+      const list = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
+      });
+
+      renderDb(ORDERS);
+      await screen.findByText("pending");
+
+      act(() => {
+        useAppStore.getState().stagePendingUpdate({
+          kind: "update", connection_id: "c1", table: ORDERS, pk_column: "id", pk_value: "9",
+          column: "status", old_value: "a", new_value: "b",
+        });
+      });
+
+      fireEvent.click(await screen.findByText("pending"));
+      fireEvent.change(await screen.findByLabelText("Edit status"), { target: { value: "typed" } });
+      const callsBefore = list.mock.calls.length;
+
+      act(() => {
+        useAppStore.getState().discardAllPending();
+      });
+
+      expect(list.mock.calls.length).toBe(callsBefore);
+      expect((screen.getByLabelText("Edit status") as HTMLInputElement).value).toBe("typed");
+    });
+
+    // The count is not the signal: Apply removes what it sent while a cell
+    // staged mid-flight remains, so a real commit can leave the size unchanged.
+    it("refetches when an Apply lands, even with the pending count unchanged", async () => {
+      const list = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
+      });
+
+      renderDb(ORDERS);
+      await screen.findByText("pending");
+      const callsBefore = list.mock.calls.length;
+
+      act(() => {
+        useAppStore.getState().bumpApplyGeneration();
+      });
+
+      await waitFor(() => expect(list.mock.calls.length).toBe(callsBefore + 1));
     });
 
     it("closes an open editor when the table changes underneath it", async () => {

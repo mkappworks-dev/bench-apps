@@ -122,6 +122,7 @@ export function DbTab({
   const setInsertTarget = useAppStore((s) => s.setInsertTarget);
   const setChatOpen = useAppStore((s) => s.setChatOpen);
   const pending = useAppStore((s) => s.pending);
+  const applyGeneration = useAppStore((s) => s.applyGeneration);
   const stagePendingUpdate = useAppStore((s) => s.stagePendingUpdate);
   const togglePendingDelete = useAppStore((s) => s.togglePendingDelete);
 
@@ -318,31 +319,25 @@ export function DbTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [table ? tableKey(table) : null, activeConnectionId]);
 
-  // Apply commits in the dock, which cannot reach this grid. Whenever the set
-  // SHRINKS, the rows on screen are stale AND some staged overlay has just
-  // been cleared — so an applied cell would visibly snap back to its pre-Apply
-  // value. Refetching is what makes the grid agree with the database again.
-  //
-  // Shrinking, not emptying: Apply removes only the entries it sent (its own
-  // connection's, minus anything staged during the round trip), so a
-  // successful commit routinely leaves the set non-empty. Discard, single or
-  // all, shrinks it too and needs the same repaint — a refetch of unchanged
-  // rows is cheap and always correct.
-  const pendingCountRef = useRef(pending.length);
+  // Apply commits in the dock, which cannot reach this grid, so a written
+  // commit arrives as a store signal instead. Keyed on that signal rather than
+  // on the pending set's size: a discard shrinks the set without changing the
+  // database (the staged overlay clearing is a re-render, and refetching it
+  // cost an open editor its draft), while an Apply that lands as a cell is
+  // staged mid-flight leaves the size unchanged and still needs the reload.
+  const seenApplyRef = useRef(applyGeneration);
   useEffect(() => {
-    const before = pendingCountRef.current;
-    pendingCountRef.current = pending.length;
-    if (pending.length >= before) return;
+    if (seenApplyRef.current === applyGeneration) return;
+    seenApplyRef.current = applyGeneration;
     if (!table || !activeConnectionId) return;
-    // An open editor cannot survive this refetch: the rows underneath it are
-    // about to be replaced while editing.rowIndex stays put, so accepting
-    // would stage the draft against whatever row lands at that index — with
-    // that row's own old_value, which the backend's guard would happily
-    // accept. Every other query-shape change abandons the editor first.
+    // The rows underneath an open editor are about to be replaced while
+    // editing.rowIndex stays put, so accepting would stage the draft against
+    // whatever row lands at that index — with that row's own old_value, which
+    // the backend's guard would accept. Every query-shape change does this.
     abandonEditForQueryChange();
     void fetchRows(table, activeConnectionId, filter, sort, page, limitRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pending.length]);
+  }, [applyGeneration]);
 
   // A query-shape change (sort, filter, page, limit, refresh) or a table switch
   // drops an open editor: its rowIndex and columnIndex are about to describe

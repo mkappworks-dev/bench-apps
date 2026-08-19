@@ -171,9 +171,6 @@ export default function App() {
             <PendingPanel
               connectionId={activeConnectionId}
               onClose={() => setDockPanel("chat")}
-              // DbTab watches the pending set and refetches when it empties
-              // after an Apply, so nothing more is needed here.
-              onApplied={() => {}}
             />
           ) : (
             <ChatDock onClose={() => setChatOpen(false)} />

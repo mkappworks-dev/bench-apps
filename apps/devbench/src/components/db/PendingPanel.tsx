@@ -194,16 +194,10 @@ function conflictMessage(conflict: ConflictReport): string {
 export function PendingPanel({
   connectionId,
   onClose,
-  onApplied,
   onConflictIndex,
 }: {
   connectionId: string | null;
   onClose: () => void;
-  /** Called only after a commit that actually wrote. The grid lives in a
-   *  DbTab, out of this panel's reach, and its rows are stale the moment Apply
-   *  succeeds — without a refetch every applied cell would visibly snap back
-   *  to its pre-Apply value as the staged overlay clears. */
-  onApplied: () => void;
   /** The offending entry's position in the WHOLE pending set, raised when a
    *  conflict comes back. The backend indexes the array it was sent — this
    *  connection's subset — so the index it returns is translated here before
@@ -215,6 +209,7 @@ export function PendingPanel({
   const discardAllPending = useAppStore((s) => s.discardAllPending);
   const removePendingEntries = useAppStore((s) => s.removePendingEntries);
   const setApplyInFlight = useAppStore((s) => s.setApplyInFlight);
+  const bumpApplyGeneration = useAppStore((s) => s.bumpApplyGeneration);
   const [applying, setApplying] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -254,7 +249,7 @@ export function PendingPanel({
       // toggled while this call was in flight is not covered by the commit
       // that just landed, and clearing it would destroy it silently.
       removePendingEntries(sent);
-      onApplied();
+      bumpApplyGeneration();
     } catch (err) {
       setProblem(err instanceof Error ? err.message : String(err));
     } finally {

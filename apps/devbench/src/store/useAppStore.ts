@@ -91,6 +91,13 @@ interface AppState {
    *  this is set, so a conflict always has a panel to land in. */
   applyInFlight: boolean;
   setApplyInFlight: (inFlight: boolean) => void;
+  /** Bumped once per Apply that actually committed. The grid lives in a tab
+   *  and Apply happens in the dock, so this is how a written commit reaches
+   *  every mounted DbTab — including a split pane's, whose rows are equally
+   *  stale. A counter rather than a boolean: two applies in a row are two
+   *  distinct events, and a flag would need resetting. */
+  applyGeneration: number;
+  bumpApplyGeneration: () => void;
   /** Spec §10: global, not per-tab. It can hold changes to several tables from
    *  several tabs, and Apply commits them together. */
   pending: PendingChange[];
@@ -216,6 +223,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setInsertTarget: (insertTarget) => set({ insertTarget }),
   applyInFlight: false,
   setApplyInFlight: (applyInFlight) => set({ applyInFlight }),
+  applyGeneration: 0,
+  bumpApplyGeneration: () => set((s) => ({ applyGeneration: s.applyGeneration + 1 })),
   pending: [],
   stagePendingUpdate: (entry) => set((s) => ({ pending: stageUpdate(s.pending, entry) })),
   togglePendingDelete: (connectionId, table, pkColumn, pkValue) =>
