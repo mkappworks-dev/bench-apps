@@ -45,7 +45,57 @@ describe("DbTab", () => {
     vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(0);
+    vi.spyOn(tauriLib, "invokeDescribeColumns").mockResolvedValue([]);
     useAppStore.getState().setActiveConnectionId("c1");
+  });
+
+  it("describes the selected table's columns once, with its schema", async () => {
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id"], rows: [["1"]], pk_column: "id",
+    });
+    const describeColumns = vi.spyOn(tauriLib, "invokeDescribeColumns").mockResolvedValue([]);
+
+    renderDb({ schema: "alt", name: "orders" });
+
+    await waitFor(() =>
+      expect(describeColumns).toHaveBeenCalledWith("c1", { schema: "alt", name: "orders" }),
+    );
+    // The schema does not change when the page or the filter does, so this is
+    // fetched per table, not per query.
+    expect(describeColumns).toHaveBeenCalledTimes(1);
+  });
+
+  // Slice 1 inferred the family from a sample value. A text column whose
+  // values happen to be digits was offered `>` and `<`, which SQL will happily
+  // run on text with results nobody wants.
+  it("offers filter operators from the real column type, not from the values", async () => {
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["ref_code"], rows: [["4821"]], pk_column: null,
+    });
+    const describeColumns = vi.spyOn(tauriLib, "invokeDescribeColumns").mockResolvedValue([
+      {
+        name: "ref_code",
+        udt: "text",
+        nullable: true,
+        default_expr: null,
+        is_identity: false,
+        references: null,
+      },
+    ]);
+
+    renderDb(ORDERS);
+    await waitFor(() => expect(describeColumns).toHaveBeenCalled());
+    await screen.findByText("4821");
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    fireEvent.click(screen.getByRole("button", { name: "+ Add filter" }));
+
+    await waitFor(() => {
+      const operators = screen.getByRole("combobox", { name: "Filter operator, condition 1" });
+      expect([...operators.querySelectorAll("option")].map((o) => o.textContent)).toEqual([
+        "=", "≠", "contains", "starts with", "is null", "is not null",
+      ]);
+    });
   });
 
   it("fetches rows for the table it is given, without needing a click first", async () => {
@@ -352,25 +402,6 @@ describe("DbTab", () => {
     const columnPicker = screen.getByRole("combobox", { name: "Filter column, condition 2" });
     expect(Array.from(columnPicker.querySelectorAll("option")).map((o) => o.textContent)).toEqual(["id", "status"]);
     expect(columnPicker).toHaveValue("id");
-  });
-
-  // Sampling row 0 alone reports a column as text the moment its first cell is
-  // NULL, which offers "contains" where "is true"/"is false" belong.
-  it("infers a column's operator family from the first non-null value, not row 0", async () => {
-    const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
-      columns: ["id", "paid"], rows: [["1", null], ["2", "true"]], pk_column: "id",
-    });
-    renderDb(ORDERS);
-    await waitFor(() => expect(listRows).toHaveBeenCalled());
-
-    fireEvent.click(await screen.findByRole("button", { name: "Filter" }));
-    fireEvent.click(screen.getByRole("button", { name: /add filter/i }));
-    fireEvent.change(screen.getByRole("combobox", { name: /^Filter column/ }), { target: { value: "paid" } });
-
-    const operators = screen.getByRole("combobox", { name: /^Filter operator/ });
-    expect(Array.from(operators.querySelectorAll("option")).map((o) => o.textContent)).toEqual([
-      "is true", "is false", "is null", "is not null",
-    ]);
   });
 
   it("derives the page count from the total, not from the fetched rows", async () => {

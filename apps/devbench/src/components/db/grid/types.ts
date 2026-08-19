@@ -42,8 +42,9 @@ export const OP_LABELS: Record<FilterOp, string> = {
   is_false: "is false",
 };
 
-/** Slice 1 infers the family from the value, as the grid already does.
- *  Slice 2 replaces this with the real type from `describe_columns`. */
+/** Which operator set a column gets. Resolved from the column's real Postgres
+ *  type — see `familyOfUdt` in `./columnMeta`. "number" covers dates too:
+ *  spec §4 gives numerics and dates one operator set. */
 export type ColumnFamily = "text" | "number" | "boolean";
 
 export const OPERATORS_FOR_FAMILY: Record<ColumnFamily, FilterOp[]> = {
@@ -51,12 +52,6 @@ export const OPERATORS_FOR_FAMILY: Record<ColumnFamily, FilterOp[]> = {
   number: ["eq", "ne", "gt", "lt", "is_null", "is_not_null"],
   boolean: ["is_true", "is_false", "is_null", "is_not_null"],
 };
-
-export function inferFamily(sampleValue: string | null): ColumnFamily {
-  if (sampleValue === "true" || sampleValue === "false") return "boolean";
-  if (sampleValue !== null && /^-?\d+(\.\d+)?$/.test(sampleValue)) return "number";
-  return "text";
-}
 
 /** A condition the backend will skip: unticked, or needing a value it lacks. */
 export function isActiveCondition(condition: FilterCondition): boolean {

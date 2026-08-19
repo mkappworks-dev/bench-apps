@@ -3,12 +3,13 @@ import { SchemaTree } from "./SchemaTree";
 import { DataGrid, cellDisplay, CellValue } from "./DataGrid";
 import { QueryConsole } from "./QueryConsole";
 import { GridToolbar } from "./grid/GridToolbar";
-import { inferFamily, type ColumnFamily } from "./grid/types";
+import { familyOfColumn, type ColumnInfo } from "./grid/columnMeta";
 import { readLayout, writeLayout, type GridLayout } from "./grid/gridLayout";
 import { normalizeTable, tableKey } from "../../lib/tableIdentity";
 import {
   invokeListTableRows,
   invokeCountTableRows,
+  invokeDescribeColumns,
   invokeListWatchedTables,
   invokeSetWatchedTable,
   invokePreviewCellEdit,
@@ -94,6 +95,10 @@ export function DbTab({
   // column picker and leave "+ Add filter" building a condition on `undefined`.
   // The toolbar reads this instead: the last shape this table actually returned.
   const [lastKnownColumns, setLastKnownColumns] = useState<string[]>([]);
+  // Column types, defaults and foreign-key targets for the selected table.
+  // Fetched once per table — the schema does not change when the page or the
+  // filter does.
+  const [columnMeta, setColumnMeta] = useState<ColumnInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   // A list, outermost term first — "status, then newest first" is a normal
@@ -257,6 +262,32 @@ export function DbTab({
     // is re-wrapped into a fresh object by normalizeTable on every render, so
     // depending on the object would re-run this effect (and re-fetch) every
     // render instead of only on an actual table change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [table ? tableKey(table) : null, activeConnectionId]);
+
+  // Its own effect rather than a call inside fetchRows: the metadata is per
+  // table, and fetchRows also runs on every page, sort, filter and refresh.
+  useEffect(() => {
+    if (!table || !activeConnectionId) {
+      setColumnMeta([]);
+      return;
+    }
+    let cancelled = false;
+    invokeDescribeColumns(activeConnectionId, table)
+      .then((meta) => {
+        if (!cancelled) setColumnMeta(meta);
+      })
+      .catch(() => {
+        // No metadata degrades to text operators and no link icons, which is
+        // a usable grid. Taking the tab down because the catalog query failed
+        // would be worse than the feature simply being absent.
+        if (!cancelled) setColumnMeta([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Keyed on the identity string for the same reason the fetch effect above
+    // is: a legacy string prop is re-wrapped into a fresh object every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [table ? tableKey(table) : null, activeConnectionId]);
 
@@ -583,17 +614,10 @@ export function DbTab({
     );
   }
 
-  // Samples the first NON-NULL value in the column across the fetched page,
-  // not just row 0 — a NULL there would report the column as text and offer
-  // "contains"/"starts with" where "is true"/"is false" belong. Still a
-  // heuristic; Slice 2 replaces the whole thing with describe_columns' real
-  // type metadata.
-  function familyOfColumn(column: string): ColumnFamily {
-    const index = tableRows?.columns.indexOf(column) ?? -1;
-    if (index < 0) return "text";
-    const sample = (tableRows?.rows ?? []).map((row) => row[index]).find((v) => v !== null);
-    return inferFamily(sample ?? null);
-  }
+  // The real Postgres type, not a guess from a sample value. Before the
+  // metadata lands (and if it never does) every column reads as text, whose
+  // operators are the ones that work on anything.
+  const familyOf = (column: string) => familyOfColumn(columnMeta, column);
 
   // Watch state is scoped per connection, not just per app. Re-hydrating
   // whenever activeConnectionId changes keeps it in sync with the picker.
@@ -725,7 +749,7 @@ export function DbTab({
                           abandonEditForQueryChange();
                           void fetchRows(table!, activeConnectionId!, filter, sort, page, limitRef.current);
                         }}
-                        familyOf={familyOfColumn}
+                        familyOf={familyOf}
                       />
                     }
                   />
