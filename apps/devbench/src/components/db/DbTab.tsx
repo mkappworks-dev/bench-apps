@@ -712,10 +712,14 @@ export function DbTab({
                         limit={limit}
                         onLimitChange={(next) => {
                           abandonEditForQueryChange();
+                          // Deliberately no fetch: the toolbar always follows this
+                          // with onPageChange(1), which fetches page 0 at the new
+                          // size via the ref set just below. Fetching here as well
+                          // would bill every page-size change a second row query
+                          // and count, and the requestId race discards its result.
                           limitRef.current = next;
                           setLimit(next);
                           setPage(0);
-                          void fetchRows(table!, activeConnectionId!, filter, sort, 0, next);
                         }}
                         onRefresh={() => {
                           abandonEditForQueryChange();

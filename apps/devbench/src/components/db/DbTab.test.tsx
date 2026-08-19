@@ -253,6 +253,31 @@ describe("DbTab", () => {
     );
   });
 
+  // The toolbar's rows-per-page control calls onLimitChange and then
+  // onPageChange. Only the second may fetch: fetching from both bills every
+  // page-size change two round trips (and two counts), and the first one's
+  // result is thrown away by the requestId race anyway.
+  it("changing rows per page issues exactly one row query and one count", async () => {
+    const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id"], rows: [["1"]], pk_column: "id",
+    });
+    const count = vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(500);
+
+    renderDb(ORDERS);
+    await waitFor(() => expect(listRows).toHaveBeenCalled());
+    listRows.mockClear();
+    count.mockClear();
+
+    // Both handlers run synchronously inside the change event, so the call
+    // counts are already final here — no waitFor needed, and none that could
+    // mask a second query arriving late.
+    fireEvent.change(screen.getByRole("combobox", { name: "Rows per page" }), { target: { value: "250" } });
+
+    expect(listRows).toHaveBeenCalledTimes(1);
+    expect(count).toHaveBeenCalledTimes(1);
+    expect(listRows).toHaveBeenCalledWith("c1", ORDERS, expect.objectContaining({ limit: 250, offset: 0 }));
+  });
+
   it("sends the applied filter to both the row query and the count", async () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "status"], rows: [["1", "paid"]], pk_column: "id",
