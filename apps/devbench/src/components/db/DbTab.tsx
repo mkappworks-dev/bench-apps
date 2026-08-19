@@ -15,26 +15,18 @@ import {
   invokeGetReferencedRow,
   invokeListWatchedTables,
   invokeSetWatchedTable,
-  invokePreviewCellEdit,
-  invokeCommitPreview,
-  invokeRollbackPreview,
   type FilterCondition,
   type QualifiedTable,
   type SortTerm,
   type TableRows,
 } from "../../lib/tauri";
+import { stagedUpdateFor } from "../../lib/pendingChanges";
 import { useAppStore } from "../../store/useAppStore";
 
-// `draft` mirrors the wire value directly (`string | null`) rather than a
-// separate string + "is this null" flag — one field that's either a string
-// or NULL, matching what actually goes over the wire to preview_cell_edit.
-// `pending` is true while a preview/commit/rollback request for *this* edit
-// is in flight — it disables the button that would fire an overlapping
-// duplicate request, and gates whether a landing response is still allowed
-// to touch component state (see `editGenerationRef` below).
-type CellEdit =
-  | { rowIndex: number; columnIndex: number; phase: "editing"; draft: string | null; pending: boolean }
-  | { rowIndex: number; columnIndex: number; phase: "preview"; draft: string | null; previewId: string; pending: boolean };
+// A cell being edited. No phase and no in-flight flag: accepting an edit
+// mutates local state and returns — there is no request to be in flight, and
+// no transaction whose fate a response has to decide.
+type CellEdit = { rowIndex: number; columnIndex: number; draft: string | null };
 
 function isEditableCell(pkColumn: string | null, column: string, value: string | null): boolean {
   // A cell the grid can't even faithfully display (pk_column === null means
@@ -42,10 +34,6 @@ function isEditableCell(pkColumn: string | null, column: string, value: string |
   // isn't really the value — editing it would mean overwriting something the
   // user never actually saw) must not be editable.
   return pkColumn !== null && column !== pkColumn && value !== "<unsupported type>";
-}
-
-function isExpiredPreviewError(message: string): boolean {
-  return message.includes("no open preview");
 }
 
 function CheckIcon() {
@@ -96,6 +84,7 @@ export function DbTab({
   const setInsertTarget = useAppStore((s) => s.setInsertTarget);
   const setChatOpen = useAppStore((s) => s.setChatOpen);
   const pending = useAppStore((s) => s.pending);
+  const stagePendingUpdate = useAppStore((s) => s.stagePendingUpdate);
 
   const [tableRows, setTableRows] = useState<TableRows | null>(null);
   // The backend derives `columns` from the first returned row, so a filter that
@@ -171,43 +160,6 @@ export function DbTab({
   // discarded instead of clobbering it when it eventually resolves.
   const requestIdRef = useRef(0);
 
-  // Mirrors `editing` for effects/cleanups that must not themselves depend on
-  // `editing` (a table-switch effect keyed on `editing` would refire the
-  // fetch on every keystroke of a draft). Kept in sync after every render.
-  const editingRef = useRef<CellEdit | null>(null);
-  useEffect(() => {
-    editingRef.current = editing;
-  }, [editing]);
-
-  // Bumped every time an edit is abandoned (table/connection switch, sort,
-  // paging, a different cell, cancel, or unmount). previewEdit/commitEdit/
-  // rollbackEdit each capture the current value before their `await` and
-  // compare it after: a mismatch means whatever they were acting on is gone
-  // by the time the response lands, so they must not touch component state —
-  // this is the same shape as `requestIdRef` above, applied to the mutation
-  // path instead of the read path. Without it, a request that outlives the
-  // edit it belongs to can resurrect a preview UI on a different table,
-  // report a successful write as failed, or stomp a freshly-fetched grid
-  // with stale rows from the edit it started on.
-  const editGenerationRef = useRef(0);
-
-  // An open preview holds a real transaction (and its row lock) on the
-  // user's database. Firing this whenever a preview is abandoned — by table
-  // switch, sort, paging, editing a different cell, cancelling, or unmount —
-  // is what keeps that lock from leaking for up to the sweep's full
-  // 2-minute window. Swallowing the result: if the sweep already reclaimed
-  // it, this call fails with "no open preview", which is not a real problem
-  // — the outcome (transaction gone) is identical either way.
-  function abandonEdit(current: CellEdit | null) {
-    editGenerationRef.current++;
-    // If a commit or rollback is already in flight for this preview
-    // (`pending`), it already owns deciding that preview's fate — firing a
-    // second, redundant rollback here would just race it for no benefit.
-    if (current?.phase === "preview" && !current.pending) {
-      void invokeRollbackPreview(current.previewId).catch(() => {});
-    }
-  }
-
   async function fetchRows(
     t: QualifiedTable,
     connId: string,
@@ -262,9 +214,7 @@ export function DbTab({
   useEffect(() => {
     // A stale edit can't survive a table/connection switch: its rowIndex and
     // columnIndex are about to describe entirely different data once the new
-    // table's rows land, and any open preview is a transaction against
-    // whatever connection/table it was opened on.
-    abandonEdit(editingRef.current);
+    // table's rows land.
     setEditing(null);
     setEditError(null);
     closeFk();
@@ -347,25 +297,12 @@ export function DbTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending.length]);
 
-  // Rolls back any preview left open when the tab itself goes away (closed,
-  // or its pane repurposed) — the table/connection-switch effect above only
-  // covers switches within a mounted DbTab, not unmounting it outright. If a
-  // preview/commit *request* is still in flight (no materialized preview to
-  // roll back yet, or a commit already claimed it), bumping the generation
-  // here is what makes that request's own continuation self-correct when it
-  // eventually lands — `setEditing` after unmount would be a no-op, so this
-  // is the only recovery path for that case.
-  useEffect(() => {
-    return () => abandonEdit(editingRef.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Any query-shape change (sort, filter, page, limit, refresh) abandons an
-  // in-progress edit the same way a table switch does: the rows it targeted
-  // are about to be replaced, and an open preview is a transaction that must
-  // not leak.
+  // A query-shape change (sort, filter, page, limit, refresh) or a table switch
+  // drops an open editor: its rowIndex and columnIndex are about to describe
+  // different data. The PENDING SET is deliberately untouched — it is global by
+  // design (spec §10) and keyed by primary key, not by row position, so it
+  // survives every one of these.
   function abandonEditForQueryChange() {
-    abandonEdit(editing);
     setEditing(null);
     setEditError(null);
     // A filter/sort/page/limit/refresh replaces tableRows without clearing
@@ -471,132 +408,45 @@ export function DbTab({
   }
 
   function startEdit(rowIndex: number, columnIndex: number, currentValue: string | null) {
-    // A cell mid-request for its own preview/commit/rollback can't be
-    // abandoned by clicking elsewhere — every other cell renders disabled
-    // while anything is pending (see `renderCell`), so this is a defensive
-    // backstop, not the primary guard.
-    if (editing?.pending) return;
-    abandonEdit(editing);
     setEditError(null);
-    setEditing({ rowIndex, columnIndex, phase: "editing", draft: currentValue, pending: false });
+    setEditing({ rowIndex, columnIndex, draft: currentValue });
   }
 
-  async function previewEdit() {
-    if (!editing || editing.phase !== "editing" || editing.pending || !tableRows?.pk_column || !activeConnectionId || !table) return;
+  /** The row's primary key value, or null when there is nothing safe to key a
+   *  change by. Read from the CURRENT rows, so it is the stored value even
+   *  when the cell beside it is showing a staged one. */
+  function pkValueForRow(rowIndex: number): string | null {
+    if (!tableRows?.pk_column) return null;
     const pkIndex = tableRows.columns.indexOf(tableRows.pk_column);
-    const pkValue = tableRows.rows[editing.rowIndex][pkIndex];
+    return tableRows.rows[rowIndex]?.[pkIndex] ?? null;
+  }
+
+  function stageCell(rowIndex: number, columnIndex: number, next: string | null) {
+    if (!table || !tableRows?.pk_column) return;
+    const pkValue = pkValueForRow(rowIndex);
     if (pkValue === null) {
-      setEditError("Can't edit this row — its primary key value is NULL.");
+      setEditError("Can't stage a change to this row — its primary key value is NULL.");
       return;
     }
-    // Captured before the `await`: `generation` is compared against
-    // `editGenerationRef.current` when the request lands to tell whether
-    // this edit is still the one the user is looking at (see
-    // `editGenerationRef`'s comment). `target` is this edit's own identity,
-    // independent of whatever `editing` holds by the time we get a reply.
-    const generation = editGenerationRef.current;
-    const target = editing;
-    const column = tableRows.columns[target.columnIndex];
-    setEditing({ ...target, pending: true });
-    try {
-      const preview = await invokePreviewCellEdit(activeConnectionId, table, tableRows.pk_column, pkValue, column, target.draft);
-      if (generation !== editGenerationRef.current) {
-        // Whatever this edit belonged to (this cell, this table, this
-        // mounted tab) is gone — table switch, cancel, or unmount happened
-        // while the request was in flight. We now hold a live transaction
-        // nobody's watching; roll it back immediately rather than leaking
-        // it for the sweep's ~2-minute window.
-        void invokeRollbackPreview(preview.preview_id).catch(() => {});
-        return;
-      }
-      setEditError(null);
-      setEditing({ ...target, phase: "preview", previewId: preview.preview_id, pending: false });
-    } catch (err) {
-      // Nobody's watching this outcome anymore — don't resurrect edit UI for
-      // a cell (or table) the user has already left.
-      if (generation !== editGenerationRef.current) return;
-      // The row this edit targeted no longer matches 1-for-1 (e.g. deleted
-      // or changed by something else since the page loaded) or the preview
-      // never opened at all — nothing was written either way. Drop back to
-      // "editing" rather than clearing the draft, so a genuinely transient
-      // failure doesn't cost the user their typed value.
-      setEditError(err instanceof Error ? err.message : String(err));
-      setEditing({ ...target, pending: false });
-    }
-  }
-
-  async function commitEdit() {
-    if (!editing || editing.phase !== "preview" || editing.pending || !tableRows) return;
-    const generation = editGenerationRef.current;
-    const target = editing;
-    setEditing({ ...target, pending: true });
-    try {
-      await invokeCommitPreview(target.previewId);
-    } catch (err) {
-      if (generation !== editGenerationRef.current) return; // see success branch below
-      const message = err instanceof Error ? err.message : String(err);
-      // Distinguish "the sweep already rolled this back" (previews expire
-      // ~2 minutes after being opened) from any other commit failure — both
-      // mean nothing was written, but only one is worth telling the user
-      // "you waited too long," not "something is broken."
-      setEditError(
-        isExpiredPreviewError(message)
-          ? "This preview expired before you committed it (previews auto-expire after 2 minutes) — nothing was written. Preview the change again to retry."
-          : `Commit failed — nothing was written: ${message}`,
-      );
-      // The preview_id is unusable regardless of which branch failed (sqlx
-      // consumes the transaction on both a successful and a failed commit),
-      // so retrying means previewing again, not resubmitting the same id.
-      setEditing({ rowIndex: target.rowIndex, columnIndex: target.columnIndex, phase: "editing", draft: target.draft, pending: false });
-      return;
-    }
-    if (generation !== editGenerationRef.current) {
-      // The write committed for real — that part already happened and
-      // can't be (and doesn't need to be) undone. But `tableRows` in this
-      // closure is a snapshot from whatever table this edit started on; if
-      // the user has since switched tables, applying it here would stomp
-      // the *new* table's freshly-fetched rows with the old table's stale
-      // snapshot. Nothing further to reconcile locally — the next time this
-      // table is opened, a fresh fetch shows the committed value for real.
-      return;
-    }
-    const { rowIndex, columnIndex, draft } = target;
-    setTableRows({
-      ...tableRows,
-      rows: tableRows.rows.map((row, ri) => (ri === rowIndex ? row.map((v, ci) => (ci === columnIndex ? draft : v)) : row)),
-    });
-    setEditing(null);
     setEditError(null);
-  }
-
-  async function rollbackEdit() {
-    if (!editing || editing.phase !== "preview" || editing.pending) {
-      setEditing(null);
-      return;
-    }
-    const generation = editGenerationRef.current;
-    const previewId = editing.previewId;
-    setEditing({ ...editing, pending: true });
-    try {
-      await invokeRollbackPreview(previewId);
-    } catch (err) {
-      // Only worth surfacing if this is still the edit in view — an
-      // already-resolved preview (the sweep beat the user to it) isn't a
-      // real failure either way, and one that landed after the user moved
-      // on isn't something to report against whatever they're looking at now.
-      if (generation === editGenerationRef.current) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (!isExpiredPreviewError(message)) setEditError(message);
-      }
-    }
-    setEditing(null);
+    stagePendingUpdate({
+      kind: "update",
+      table,
+      pk_column: tableRows.pk_column,
+      pk_value: pkValue,
+      column: tableRows.columns[columnIndex],
+      // ALWAYS the stored value from `tableRows`, never the staged one. See
+      // pendingChanges.ts: this is what makes the set a diff rather than a log,
+      // and what the backend's IS NOT DISTINCT FROM guard compares against.
+      old_value: tableRows.rows[rowIndex][columnIndex] ?? null,
+      new_value: next,
+    });
   }
 
   // Icon buttons here are neutral (`text-text-faint`), matching AppStrip's
   // icon-button convention — DESIGN.md reserves semantic color for actual
   // state, and a confirm/cancel affordance is generic interactivity, not
-  // state. The diff's red-strikethrough/green-new-value text below is the
-  // legitimate use of semantic color: it reports a real fact (old vs. new).
+  // state.
   // (Deviates from the mockup, which fills these `.save`/`.cancel` buttons
   // with success-bg/neutral-bg — same documented tradeoff as SchemaTree's
   // watch-icon and the console toggle's aria-pressed highlighting.) Sizing
@@ -604,9 +454,8 @@ export function DbTab({
   const actionButtonClass =
     "grid h-5 w-5 shrink-0 place-items-center rounded text-text-faint hover:bg-surface-2 hover:text-text disabled:opacity-40";
   // Accept carries the mockup's success hue (`.cell-edit .save`); cancel stays
-  // neutral. The green is doing real work here rather than decorating a generic
-  // button — it is the same success/danger pairing as the diff text beside it,
-  // marking which control commits the change the user is looking at.
+  // neutral, so the pair reads as which control accepts the edit and which
+  // abandons it rather than as two identical glyphs.
   const acceptButtonClass =
     "grid h-5 w-5 shrink-0 place-items-center rounded bg-success-bg text-success hover:brightness-125 disabled:opacity-40";
 
@@ -623,85 +472,53 @@ export function DbTab({
   function renderCell(rowIndex: number, columnIndex: number, value: string | null) {
     const column = tableRows?.columns[columnIndex] ?? "";
     const editable = isEditableCell(tableRows?.pk_column ?? null, column, value);
-    const isEditingThisCell = editing !== null && editing.rowIndex === rowIndex && editing.columnIndex === columnIndex;
+    const isEditingThisCell =
+      editing !== null && editing.rowIndex === rowIndex && editing.columnIndex === columnIndex;
 
-    if (isEditingThisCell && editing.phase === "preview") {
-      const { text: oldText } = cellDisplay(value);
-      return (
-        <div className={expandedEditorClass}>
-          <span className="text-danger line-through">{oldText}</span>
-          <span aria-hidden className="text-text-faint">
-            →
-          </span>
-          {editing.draft === null ? (
-            <span className="italic text-success">NULL</span>
-          ) : (
-            <span className="font-semibold text-success">{editing.draft}</span>
-          )}
-          {/* Both buttons lock once a commit/rollback request is in flight —
-              once that round trip is actually running, there's no honest
-              "cancel" to offer; the outcome is already decided server-side. */}
-          <button
-            type="button"
-            aria-label="Rollback edit"
-            disabled={editing.pending}
-            onClick={() => void rollbackEdit()}
-            className={actionButtonClass}
-          >
-            <CrossIcon />
-          </button>
-          <button
-            type="button"
-            aria-label="Commit edit"
-            disabled={editing.pending}
-            onClick={() => void commitEdit()}
-            className={acceptButtonClass}
-          >
-            <CheckIcon />
-          </button>
-        </div>
-      );
-    }
+    const pkValue = pkValueForRow(rowIndex);
+    const staged =
+      table && pkValue !== null
+        ? stagedUpdateFor(pending, table, pkValue, column)
+        : ({ staged: false } as const);
+    // The staged value is what the cell shows and what an edit of it starts
+    // from — spec §10 requires it, and a checkbox that snapped back to its
+    // stored value would look like the click did nothing.
+    const shown = staged.staged ? staged.value : value;
 
     if (isEditingThisCell) {
+      const stage = () => {
+        stageCell(rowIndex, columnIndex, editing.draft);
+        setEditing(null);
+      };
       return (
         <div className={expandedEditorClass}>
           <input
             autoFocus
-            // Named for the column it edits: without this the editor is an
-            // anonymous textbox, indistinguishable to a screen reader (and to
-            // a test) from the grid's filter box.
             aria-label={`Edit ${column}`}
-            disabled={editing.pending}
-            // Sized in characters from the draft itself — the point of the
-            // expansion is to show the whole value, and a mono face makes `ch`
-            // exact. Bounded so one enormous cell can't span the whole grid.
             size={Math.min(Math.max((editing.draft ?? "").length + 1, 12), 60)}
             value={editing.draft ?? ""}
             onChange={(e) => setEditing({ ...editing, draft: e.target.value })}
-            className="min-w-0 rounded border border-accent bg-bg px-1.5 py-0.75 text-xs text-text disabled:opacity-50"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") stage();
+              if (e.key === "Escape") setEditing(null);
+            }}
+            className="min-w-0 rounded border border-accent bg-bg px-1.5 py-0.75 text-xs text-text"
           />
+          {/* "Stage change", not "Preview": it writes nothing, and calling it
+              a preview would overstate what the button does in the other
+              direction from the retired one, which understated it. */}
           <button
             type="button"
-            aria-label="Preview change"
-            disabled={editing.pending}
-            onClick={() => void previewEdit()}
+            aria-label="Stage change"
+            onClick={stage}
             className={acceptButtonClass}
           >
             <CheckIcon />
           </button>
-          {/* Deliberately never disabled, even while a preview request for
-              this exact draft is in flight: the request already left and
-              can't be pulled back, but its eventual response is made to
-              check in (via editGenerationRef) and roll itself back rather
-              than resurrect a preview the user already walked away from. */}
           <button
             type="button"
             aria-label="Cancel edit"
-            onClick={() => {
-              abandonEdit(editing);
-              setEditing(null);
-            }}
+            onClick={() => setEditing(null)}
             className={actionButtonClass}
           >
             <CrossIcon />
@@ -710,38 +527,27 @@ export function DbTab({
       );
     }
 
-    // Disabled while any cell's edit is mid-request, not just this one — one
-    // edit in flight at a time keeps two concurrent commits from racing to
-    // apply their own stale `tableRows` snapshot over each other.
-    const anyEditPending = editing !== null && editing.pending;
-    // The mockup exempts the identity column from the numeric right-align
-    // (`col !== 'id'`), read here as the general rule it stands for: a primary
-    // key is a label that happens to be digits, not a quantity to compare down
-    // a column. Query results keep the plain numeric rule — they declare no key.
-    const { className, kind } = cellDisplay(value);
+    const { className, kind } = cellDisplay(shown);
     const alignClass = kind === "number" && column === tableRows?.pk_column ? "" : className;
 
     const target = fkTargetOf(columnMeta, column);
-    const followable = target !== null && canFollow(columnMeta, column, value);
+    const followable = target !== null && canFollow(columnMeta, column, shown);
     const fkOpen =
       fkCell !== null && fkCell.rowIndex === rowIndex && fkCell.columnIndex === columnIndex;
 
     const valueButton = (
       <button
         type="button"
-        disabled={!editable || anyEditPending}
-        onClick={() => editable && startEdit(rowIndex, columnIndex, value)}
+        disabled={!editable}
+        title={staged.staged ? "Staged — not written until you Apply" : undefined}
+        onClick={() => editable && startEdit(rowIndex, columnIndex, shown)}
         className={`group flex min-w-0 items-center gap-1 text-left ${
           followable ? "flex-1" : "w-full"
         } ${editable ? "hover:cursor-text hover:bg-surface-2" : ""}`}
       >
         <span className={`min-w-0 flex-1 truncate ${alignClass}`}>
-          <CellValue value={value} />
+          <CellValue value={shown} />
         </span>
-        {/* Decorative hover affordance (mirrors the mockup's `::after`
-            pencil) — a real DOM node marked `aria-hidden` rather than CSS
-            generated content, so it can never bleed into the button's
-            accessible name the way `::after` text sometimes does. */}
         {editable ? (
           <span aria-hidden className="hidden shrink-0 text-[10.5px] text-text-faint group-hover:inline">
             ✎
@@ -750,33 +556,49 @@ export function DbTab({
       </button>
     );
 
-    if (!followable || target === null || value === null) return valueButton;
+    // Spec §10: an inset --warning left bar. Semantic colour for real state —
+    // "changed but not written" — which is the only thing it is reserved for.
+    // Absolutely positioned against the `relative` cell DataGrid already
+    // provides for the expanded editor, so the grid needs no new prop and stays
+    // ignorant of the pending set.
+    const stagedBar = staged.staged ? (
+      <span
+        aria-hidden
+        data-staged="true"
+        className="pointer-events-none absolute inset-y-0 left-0 w-0.5 bg-warning"
+      />
+    ) : null;
 
-    // The link is a SIBLING of the value button, never nested in it: a button
-    // inside a button is invalid HTML, and the click would bubble into the
-    // cell editor and open it underneath the popover.
+    if (!followable || target === null || shown === null) {
+      return (
+        <>
+          {stagedBar}
+          {valueButton}
+        </>
+      );
+    }
+
     return (
-      <div className="flex w-full min-w-0 items-center gap-1.5">
-        {valueButton}
-        <FkLinkButton
-          target={target}
-          // Toggle rather than always-open: FkPopover's own pointerdown guard
-          // skips this trigger on the assumption that the click here already
-          // decides open/closed, so an unconditional openFk would refetch
-          // instead of letting the icon close its own popover.
-          onOpen={() => (fkOpen ? closeFk() : void openFk(rowIndex, columnIndex, column, value))}
-        />
-        {fkOpen ? (
-          <FkPopover
+      <>
+        {stagedBar}
+        <div className="flex w-full min-w-0 items-center gap-1.5">
+          {valueButton}
+          <FkLinkButton
             target={target}
-            row={fkRow}
-            loading={fkLoading}
-            error={fkError}
-            onJump={() => handleJump(target, value)}
-            onClose={closeFk}
+            onOpen={() => (fkOpen ? closeFk() : void openFk(rowIndex, columnIndex, column, shown))}
           />
-        ) : null}
-      </div>
+          {fkOpen ? (
+            <FkPopover
+              target={target}
+              row={fkRow}
+              loading={fkLoading}
+              error={fkError}
+              onJump={() => handleJump(target, shown)}
+              onClose={closeFk}
+            />
+          ) : null}
+        </div>
+      </>
     );
   }
 
@@ -884,7 +706,12 @@ export function DbTab({
                     renderCell={renderCell}
                     layout={layout}
                     onLayoutChange={updateLayout}
-                    raisedRowIndex={fkCell?.rowIndex ?? null}
+                    // Both overlays need to escape their own row's stacking
+                    // context. Every virtualized row carries a `transform`, so
+                    // an overlay's own z-index is sealed inside it and a LATER
+                    // row paints over it — the editor had this bug too, not
+                    // just the FK popover. Raising the ROW is the only fix.
+                    raisedRowIndex={fkCell?.rowIndex ?? editing?.rowIndex ?? null}
                     toolbar={
                       <GridToolbar
                         // Not tableRows.columns: a filter matching zero rows
