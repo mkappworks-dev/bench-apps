@@ -656,9 +656,27 @@ mod tests {
     #[tokio::test]
     async fn a_disabled_sort_term_is_not_applied() {
         let pool = test_pool().await;
+        // Fixture needed; ambient seeded data made test pass by accident.
+        sqlx::query("DROP TABLE IF EXISTS disabled_sort_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE disabled_sort_test (id serial PRIMARY KEY, name text)")
+            .execute(&pool).await.unwrap();
+        for name in ["alice", "charlie", "bob"] {
+            sqlx::query("INSERT INTO disabled_sort_test (name) VALUES ($1)")
+                .bind(name).execute(&pool).await.unwrap();
+        }
+
         let disabled = SortTerm { column: "id".into(), descending: true, enabled: false };
-        let result = list_table_rows_impl(&pool, &public("orders"), &[], &[disabled], 5, 0).await;
+        let result = list_table_rows_impl(&pool, &public("disabled_sort_test"), &[], &[disabled], 5, 0).await;
         assert!(result.is_ok(), "a disabled term must be skipped, not rejected");
+
+        let rows = result.unwrap();
+        let id_col = rows.columns.iter().position(|c| c == "id").unwrap();
+        let ids: Vec<_> = rows.rows.iter()
+            .map(|r| r[id_col].as_ref().map(|s| s.parse::<i32>().unwrap()))
+            .collect();
+        assert_eq!(ids, vec![Some(1), Some(2), Some(3)], "disabled DESC sort must not change row order");
+
+        sqlx::query("DROP TABLE disabled_sort_test").execute(&pool).await.unwrap();
     }
 
     #[tokio::test]
