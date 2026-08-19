@@ -464,6 +464,29 @@ mod tests {
         sqlx::query("DROP TABLE apply_gone").execute(&pool).await.unwrap();
     }
 
+    // End-to-end proof that the read path was the only thing missing: the
+    // `IS NOT DISTINCT FROM` guard binds `old_value` as `$3::numeric`, so this
+    // only commits if the decimal string sqlx read back (see db.rs's numeric
+    // decode tests) is exactly what's still stored.
+    #[tokio::test]
+    async fn updates_a_numeric_column_matching_the_guard_on_its_decimal_string() {
+        let pool = test_pool().await;
+        fixture(&pool, "apply_numeric", "id serial PRIMARY KEY, price numeric").await;
+        sqlx::query("INSERT INTO apply_numeric (price) VALUES (19.99)").execute(&pool).await.unwrap();
+
+        let outcome = apply_changes_impl(&pool, &[
+            update("apply_numeric", "1", "price", Some("19.99"), Some("24.50")),
+        ]).await.unwrap();
+
+        assert_eq!(outcome, ApplyOutcome { applied: 1, conflict: None });
+
+        let price: Option<String> = sqlx::query_scalar("SELECT price::text FROM apply_numeric WHERE id = 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(price.as_deref(), Some("24.50"));
+
+        sqlx::query("DROP TABLE apply_numeric").execute(&pool).await.unwrap();
+    }
+
     #[tokio::test]
     async fn rejects_a_malicious_column_before_it_reaches_sql() {
         let pool = test_pool().await;

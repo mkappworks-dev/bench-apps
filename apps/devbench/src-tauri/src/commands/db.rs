@@ -55,6 +55,13 @@ pub(crate) fn cell_to_string(row: &sqlx::postgres::PgRow, index: usize) -> Optio
     if let Ok(v) = row.try_get::<Option<i64>, _>(index) { return v.map(|n| n.to_string()); }
     if let Ok(v) = row.try_get::<Option<i32>, _>(index) { return v.map(|n| n.to_string()); }
     if let Ok(v) = row.try_get::<Option<f64>, _>(index) { return v.map(|n| n.to_string()); }
+    // NUMERIC's OID doesn't match f64's decode, so it falls through to here.
+    // rust_decimal::Decimal (not bigdecimal::BigDecimal) matters: sqlx's
+    // bigdecimal conversion derives scale from base-10000 digit-group
+    // boundaries and ignores Postgres's own dscale, so it pads 0.37 out to
+    // "0.3700"; rust_decimal reads dscale directly and rescales to it,
+    // reproducing exactly what Postgres itself displays.
+    if let Ok(v) = row.try_get::<Option<rust_decimal::Decimal>, _>(index) { return v.map(|n| n.to_string()); }
     if let Ok(v) = row.try_get::<Option<bool>, _>(index) { return v.map(|b| b.to_string()); }
     if let Ok(v) = row.try_get::<Option<chrono::NaiveDateTime>, _>(index) { return v.map(|d| d.to_string()); }
     if let Ok(v) = row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(index) { return v.map(|d| d.to_string()); }
@@ -63,7 +70,8 @@ pub(crate) fn cell_to_string(row: &sqlx::postgres::PgRow, index: usize) -> Optio
     // None of the supported decode paths matched. This is NOT the same thing as a
     // genuine SQL NULL (which returns early above via `v.map(...)` on `None`) — it
     // means the column holds a real, non-null value of a type we don't know how to
-    // decode (NUMERIC/DECIMAL, JSONB, arrays, enums, ...).
+    // decode (JSONB, arrays, enums, a NUMERIC past rust_decimal's ~28-29 significant
+    // digits, ...).
     // Rendering that the same as NULL would silently misrepresent real row data, so
     // it gets a visible marker instead. Full decode support for every Postgres type
     // is out of scope here — this only makes the failure mode honest.
@@ -538,20 +546,87 @@ mod tests {
     async fn unsupported_column_types_render_distinctly_from_genuine_null() {
         let pool = test_pool().await;
         sqlx::query("DROP TABLE IF EXISTS unsupported_type_test").execute(&pool).await.unwrap();
-        // `amount` is NUMERIC, which this codebase doesn't decode (no bigdecimal/
-        // rust_decimal feature enabled) — it's a real, non-null value that must NOT
-        // render the same as `notes`, which is a genuine SQL NULL.
-        sqlx::query("CREATE TABLE unsupported_type_test (id serial PRIMARY KEY, amount numeric, notes text)")
+        // `payload` is JSONB, which this codebase doesn't decode — it's a real,
+        // non-null value that must NOT render the same as `notes`, which is a
+        // genuine SQL NULL.
+        sqlx::query("CREATE TABLE unsupported_type_test (id serial PRIMARY KEY, payload jsonb, notes text)")
             .execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO unsupported_type_test (amount, notes) VALUES (42.50, NULL)")
+        sqlx::query("INSERT INTO unsupported_type_test (payload, notes) VALUES ('{\"a\": 1}', NULL)")
             .execute(&pool).await.unwrap();
 
         let result = list_table_rows_impl(&pool, &public("unsupported_type_test"), &[], &[], 200, 0).await.unwrap();
-        assert_eq!(result.columns, vec!["id", "amount", "notes"]);
+        assert_eq!(result.columns, vec!["id", "payload", "notes"]);
         assert_eq!(result.rows[0][1], Some("<unsupported type>".to_string()));
         assert_eq!(result.rows[0][2], None, "a genuine NULL must still render as None");
 
         sqlx::query("DROP TABLE unsupported_type_test").execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn numeric_column_round_trips_as_its_exact_decimal_string() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS numeric_decode_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE numeric_decode_test (id serial PRIMARY KEY, price numeric)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO numeric_decode_test (price) VALUES (19.99)").execute(&pool).await.unwrap();
+
+        let result = list_table_rows_impl(&pool, &public("numeric_decode_test"), &[], &[], 200, 0).await.unwrap();
+        assert_eq!(result.rows[0][1], Some("19.99".to_string()));
+        assert_ne!(result.rows[0][1], Some("<unsupported type>".to_string()));
+
+        sqlx::query("DROP TABLE numeric_decode_test").execute(&pool).await.unwrap();
+    }
+
+    // f64 can only hold ~15-17 significant decimal digits, so a lossy
+    // `numeric -> f64 -> to_string` path would round or pad these away.
+    // rust_decimal::Decimal rescales to Postgres's own dscale instead.
+    #[tokio::test]
+    async fn numeric_column_preserves_scale_and_precision_beyond_f64() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS numeric_scale_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE numeric_scale_test (id serial PRIMARY KEY, amount numeric)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO numeric_scale_test (amount) VALUES (0.37), (0.1234567890123456789)")
+            .execute(&pool).await.unwrap();
+
+        let result = list_table_rows_impl(&pool, &public("numeric_scale_test"), &[], &[], 200, 0).await.unwrap();
+        assert_eq!(result.rows[0][1], Some("0.37".to_string()), "must be exact — not \"0.37000\", not \"0.4\"");
+        assert_eq!(result.rows[1][1], Some("0.1234567890123456789".to_string()), "precision beyond f64 must survive");
+
+        sqlx::query("DROP TABLE numeric_scale_test").execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn null_numeric_column_reads_as_none_not_marker_or_empty_string() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS numeric_null_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE numeric_null_test (id serial PRIMARY KEY, amount numeric)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO numeric_null_test (amount) VALUES (NULL)").execute(&pool).await.unwrap();
+
+        let result = list_table_rows_impl(&pool, &public("numeric_null_test"), &[], &[], 200, 0).await.unwrap();
+        assert_eq!(result.rows[0][1], None, "a NULL numeric must stay None, not the marker and not an empty string");
+
+        sqlx::query("DROP TABLE numeric_null_test").execute(&pool).await.unwrap();
+    }
+
+    // rust_decimal::Decimal caps at ~28-29 significant digits; Postgres NUMERIC
+    // does not. A value past that cap must still fall through to the marker —
+    // not a truncated or rounded number, which on a money column would be the
+    // one outcome worse than the marker.
+    #[tokio::test]
+    async fn a_numeric_value_beyond_decimal_precision_reads_as_the_marker_not_a_truncated_number() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS numeric_overflow_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE numeric_overflow_test (id serial PRIMARY KEY, amount numeric)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO numeric_overflow_test (amount) VALUES (0.12345678901234567890123456789012345)")
+            .execute(&pool).await.unwrap();
+
+        let result = list_table_rows_impl(&pool, &public("numeric_overflow_test"), &[], &[], 200, 0).await.unwrap();
+        assert_eq!(result.rows[0][1], Some("<unsupported type>".to_string()));
+
+        sqlx::query("DROP TABLE numeric_overflow_test").execute(&pool).await.unwrap();
     }
 
     #[tokio::test]
