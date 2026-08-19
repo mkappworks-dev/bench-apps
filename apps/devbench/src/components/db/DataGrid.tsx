@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -142,6 +143,25 @@ function PinIcon({ pinned }: { pinned: boolean }) {
   );
 }
 
+function CopyIcon() {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      width="12"
+      height="12"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <rect x="8" y="8" width="12" height="12" rx="1.5" />
+      <path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8" />
+    </svg>
+  );
+}
+
 function rowAsTsv(row: (string | null)[]): string {
   return row.map((v) => v ?? "").join("\t");
 }
@@ -169,6 +189,11 @@ export function DataGrid({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
   const [dragColumn, setDragColumn] = useState<string | null>(null);
+  const [copyMenuRow, setCopyMenuRow] = useState<number | null>(null);
+  const copyMenuRef = useRef<HTMLDivElement | null>(null);
+  // The menu is an overlay inside a transformed row, so it can only escape its
+  // later siblings by raising the ROW — the same reason raisedRowIndex exists.
+  const effectiveRaisedRow = copyMenuRow ?? raisedRowIndex;
   // Live width during an in-progress resize drag, overlaid on `layout` for
   // display only — onLayoutChange (which the caller may persist) fires once
   // on release, not on every mousemove.
@@ -330,6 +355,42 @@ export function DataGrid({
     }
   }
 
+  // Same dismissal idiom as GridToolbar's own popovers: a trigger's click
+  // already toggles the menu, so it's excluded here or its toggle would
+  // reopen what this just closed.
+  useEffect(() => {
+    if (copyMenuRow === null) return;
+    function onPointerDown(event: PointerEvent) {
+      const node = event.target as Node | null;
+      if (node instanceof Element && node.closest("[data-copy-menu-trigger]")) return;
+      if (copyMenuRef.current?.contains(node)) return;
+      setCopyMenuRow(null);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setCopyMenuRow(null);
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [copyMenuRow]);
+
+  // Virtualization unmounts the row underneath an open menu once it scrolls
+  // out of the overscan window, which would otherwise leave the menu
+  // anchored to a row that no longer exists.
+  useEffect(() => {
+    if (copyMenuRow === null) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    function onScroll() {
+      setCopyMenuRow(null);
+    }
+    el.addEventListener("scroll", onScroll);
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [copyMenuRow]);
+
   return (
     // No overflow-hidden here: GridToolbar's popovers are `position: absolute`
     // against this ancestor's stacking context, and an overflow-hidden
@@ -468,8 +529,9 @@ export function DataGrid({
                         // See raisedRowIndex's doc comment: this row's own
                         // transform makes it a stacking context, so an
                         // overlay inside it can only escape later siblings by
-                        // raising the row, not by raising the overlay.
-                        zIndex: raisedRowIndex === dataRowIndex ? 20 : undefined,
+                        // raising the row, not by raising the overlay. Folds
+                        // in the copy menu's own row for the same reason.
+                        zIndex: effectiveRaisedRow === dataRowIndex ? 20 : undefined,
                       }}
                     >
                       {visual.map((col) => {
@@ -514,23 +576,49 @@ export function DataGrid({
                           </div>
                         );
                       })}
-                      <div role="cell" className="flex items-center px-2">
+                      <div role="cell" className="relative flex items-center gap-1 px-2">
                         <button
                           type="button"
-                          aria-label="Copy row as tab-separated values"
-                          onClick={() => void copyRow(row, "tsv")}
-                          className="px-1 text-xs text-text-faint hover:text-text"
+                          data-copy-menu-trigger
+                          aria-label="Copy row"
+                          aria-haspopup="menu"
+                          aria-expanded={copyMenuRow === dataRowIndex}
+                          onClick={() => setCopyMenuRow(copyMenuRow === dataRowIndex ? null : dataRowIndex)}
+                          className="grid size-5 shrink-0 place-items-center rounded-sm text-text-faint hover:bg-surface-2 hover:text-text"
                         >
-                          TSV
+                          <CopyIcon />
                         </button>
-                        <button
-                          type="button"
-                          aria-label="Copy row as JSON"
-                          onClick={() => void copyRow(row, "json")}
-                          className="px-1 text-xs text-text-faint hover:text-text"
-                        >
-                          JSON
-                        </button>
+                        {copyMenuRow === dataRowIndex ? (
+                          <div
+                            ref={copyMenuRef}
+                            role="menu"
+                            aria-label="Copy row"
+                            className="absolute right-0 top-full z-20 mt-1 min-w-30 rounded-lg border border-border bg-surface p-1 shadow-lg"
+                          >
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => {
+                                void copyRow(row, "tsv");
+                                setCopyMenuRow(null);
+                              }}
+                              className="flex w-full items-center gap-2 rounded-sm px-1.5 py-1 text-left text-xs text-text-muted hover:bg-surface-2 hover:text-text"
+                            >
+                              Copy as TSV
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => {
+                                void copyRow(row, "json");
+                                setCopyMenuRow(null);
+                              }}
+                              className="flex w-full items-center gap-2 rounded-sm px-1.5 py-1 text-left text-xs text-text-muted hover:bg-surface-2 hover:text-text"
+                            >
+                              Copy as JSON
+                            </button>
+                          </div>
+                        ) : null}
                         {renderRowActions ? renderRowActions(dataRowIndex) : null}
                       </div>
                     </div>

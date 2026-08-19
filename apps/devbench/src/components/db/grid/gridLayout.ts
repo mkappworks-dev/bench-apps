@@ -5,7 +5,7 @@ export const MIN_COLUMN_PX = 140;
  *  one constant meant the default width was also the smallest achievable one,
  *  so a drag could only ever widen a column. */
 export const MIN_RESIZED_COLUMN_PX = 56;
-export const ACTIONS_COLUMN_PX = 90;
+export const ACTIONS_COLUMN_PX = 60;
 const LAYOUT_STORAGE_PREFIX = "devbench.grid-layout.";
 
 /** Per-table view preferences. Only ever holds column *names*, never indices —

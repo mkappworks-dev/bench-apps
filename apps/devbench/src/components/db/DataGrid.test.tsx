@@ -95,18 +95,80 @@ describe("DataGrid", () => {
     expect(screen.getByTestId("sort-chevron-id")).toHaveClass("rotate-180");
   });
 
+  it("does not render the copy menu until the trigger is clicked", () => {
+    render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
+    expect(screen.queryByText("Copy as TSV")).not.toBeInTheDocument();
+    expect(screen.queryByText("Copy as JSON")).not.toBeInTheDocument();
+  });
+
+  it("opening the copy trigger reveals both TSV and JSON options", () => {
+    render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Copy row" }));
+    expect(screen.getByText("Copy as TSV")).toBeInTheDocument();
+    expect(screen.getByText("Copy as JSON")).toBeInTheDocument();
+  });
+
   it("copies a row as tab-separated values", async () => {
     render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
-    fireEvent.click(screen.getByRole("button", { name: "Copy row as tab-separated values" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy row" }));
+    fireEvent.click(screen.getByText("Copy as TSV"));
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("1\tpending"));
   });
 
   it("copies a row as JSON", async () => {
     render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
-    fireEvent.click(screen.getByRole("button", { name: "Copy row as JSON" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy row" }));
+    fireEvent.click(screen.getByText("Copy as JSON"));
     await waitFor(() =>
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith(JSON.stringify({ id: "1", status: "pending" })),
     );
+  });
+
+  it("closes the menu after choosing an item", async () => {
+    render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Copy row" }));
+    fireEvent.click(screen.getByText("Copy as TSV"));
+    expect(screen.queryByText("Copy as TSV")).not.toBeInTheDocument();
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalled());
+  });
+
+  it("closes the menu on a pointer-down outside it, without copying", () => {
+    render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Copy row" }));
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByText("Copy as TSV")).not.toBeInTheDocument();
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it("closes the menu on Escape", () => {
+    render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Copy row" }));
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByText("Copy as TSV")).not.toBeInTheDocument();
+  });
+
+  // Virtualization unmounts the row underneath an open menu, so a menu that
+  // outlives a scroll would be left anchored to nothing.
+  it("closes the menu when the grid is scrolled", () => {
+    render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Copy row" }));
+    expect(screen.getByText("Copy as TSV")).toBeInTheDocument();
+    const scrollContainer = document.querySelector(".overflow-auto") as HTMLElement;
+    fireEvent.scroll(scrollContainer);
+    expect(screen.queryByText("Copy as TSV")).not.toBeInTheDocument();
+  });
+
+  // Same hazard raisedRowIndex exists to fix: the row's own transform makes
+  // it a stacking context, so escaping later siblings means raising the row
+  // that owns the open menu, not just the menu's own z-index.
+  it("raises the row whose copy menu is open to zIndex 20", () => {
+    render(<DataGrid columns={["id"]} rows={[["a"], ["b"]]} />);
+    const triggers = screen.getAllByRole("button", { name: "Copy row" });
+    fireEvent.click(triggers[1]);
+    const openRow = screen.getByText("b").closest('[role="row"]') as HTMLElement;
+    const otherRow = screen.getByText("a").closest('[role="row"]') as HTMLElement;
+    expect(openRow.style.zIndex).toBe("20");
+    expect(otherRow.style.zIndex).toBe("");
   });
 
   it("lets a consumer override cell rendering (the seam Task 12 uses for inline editing)", () => {
@@ -150,7 +212,7 @@ describe("DataGrid", () => {
   it("dragging a column's resize handle fixes that column's width, leaving others flexible", () => {
     render(<ControlledGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
     const headerRow = screen.getByRole("button", { name: "Sort by id" }).closest('[role="row"]') as HTMLElement;
-    expect(headerRow.style.gridTemplateColumns).toBe("minmax(140px, 1fr) minmax(140px, 1fr) 90px");
+    expect(headerRow.style.gridTemplateColumns).toBe("minmax(140px, 1fr) minmax(140px, 1fr) 60px");
 
     // getBoundingClientRect is mocked (see beforeAll) to always report a
     // width of 800, so dragging 40px right should pin the column at 840px.
@@ -158,7 +220,7 @@ describe("DataGrid", () => {
     fireEvent.mouseMove(window, { clientX: 40 });
     fireEvent.mouseUp(window);
 
-    expect(headerRow.style.gridTemplateColumns).toBe("840px minmax(140px, 1fr) 90px");
+    expect(headerRow.style.gridTemplateColumns).toBe("840px minmax(140px, 1fr) 60px");
   });
 
   it("shift-clicking a header asks for an additive sort rather than replacing the current one", () => {
@@ -239,7 +301,8 @@ describe("DataGrid", () => {
   it("shows visible feedback when a clipboard copy fails, instead of failing silently", async () => {
     vi.spyOn(navigator.clipboard, "writeText").mockRejectedValue(new Error("Clipboard permission denied"));
     render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
-    fireEvent.click(screen.getByRole("button", { name: "Copy row as tab-separated values" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy row" }));
+    fireEvent.click(screen.getByText("Copy as TSV"));
     expect(await screen.findByRole("alert")).toHaveTextContent(/clipboard permission denied/i);
   });
 
@@ -270,7 +333,7 @@ describe("DataGrid", () => {
     );
     expect(screen.getByRole("button", { name: "Act on row 0" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Act on row 1" })).toBeTruthy();
-    // The copy actions are not retired by this slice and must survive.
-    expect(screen.getAllByRole("button", { name: "Copy row as JSON" })).toHaveLength(2);
+    // The copy trigger is not retired by this slice and must survive.
+    expect(screen.getAllByRole("button", { name: "Copy row" })).toHaveLength(2);
   });
 });
