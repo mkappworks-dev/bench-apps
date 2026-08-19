@@ -14,7 +14,7 @@
 
 - Visual source of truth: `docs/mockups/devbench-db-connections.html` (runnable; serve with `python3 -m http.server 8899` from `docs/mockups`). The FK parts are its `.fk-link` / `.fk-pop` rules and `renderFkPopover()`.
 - Type scale from the mockup: `--fs-xs: 10.5px`, `--fs-sm: 12px`, `--fs-md: 13.5px`.
-- Column and table identifiers are **validated** with `validate_identifier` before interpolation. Filter and lookup **values are always bound parameters** — never interpolated.
+- Column and table identifiers are **validated** with `validate_identifier_labeled(kind, identifier)` before interpolation — the untyped `validate_identifier` wrapper was dropped in `d41bfed`, and every caller now names what it is validating so a rejected value sends the reader to the right input. Filter and lookup **values are always bound parameters** — never interpolated.
 - jsdom has no layout engine. Never assert layout in vitest, and never write a test that appears to check layout but asserts nothing. Anything positional is verified in a real browser via Playwright with `getComputedStyle` / `getBoundingClientRect`, reporting measured numbers.
 - **Baseline to keep green, measured on this worktree at `15ad0c3`:**
   - `cd apps/devbench && bun run test` → **406 passing / 44 files**
@@ -547,7 +547,7 @@ git commit -m "feat(devbench): describe a table's columns, types and foreign key
 - Modify: `apps/devbench/src-tauri/src/main.rs`
 
 **Interfaces:**
-- Consumes: `ForeignKeyRef` and the pg_catalog FK pairing from Task 1; `crate::commands::db::{TableRows, cell_to_string, get_column_type, get_primary_key_column, validate_identifier}`
+- Consumes: `ForeignKeyRef` and the pg_catalog FK pairing from Task 1; `crate::commands::db::{TableRows, cell_to_string, get_column_type, get_primary_key_column, validate_identifier_labeled}`
 - Produces:
   - `pub async fn get_referenced_row_impl(pool: &PgPool, table: &QualifiedTable, column: &str, value: &str) -> Result<Option<TableRows>, String>`
   - `pub(crate) async fn fk_target_of(pool: &PgPool, table: &QualifiedTable, column: &str) -> Result<Option<ForeignKeyRef>, String>`
@@ -741,7 +741,7 @@ Add to the `use` block at the top of `db_columns.rs`:
 
 ```rust
 use crate::commands::db::{
-    cell_to_string, get_column_type, get_primary_key_column, validate_identifier, TableRows,
+    cell_to_string, get_column_type, get_primary_key_column, validate_identifier_labeled, TableRows,
 };
 ```
 
@@ -801,7 +801,7 @@ pub async fn get_referenced_row_impl(
     column: &str,
     value: &str,
 ) -> Result<Option<TableRows>, String> {
-    validate_identifier(column)?;
+    validate_identifier_labeled("column", column)?;
 
     let target = fk_target_of(pool, table, column)
         .await?
@@ -812,14 +812,14 @@ pub async fn get_referenced_row_impl(
     // which a table reaches a query anywhere else in this codebase, and
     // keeping it so means there is no second, weaker path to audit.
     let target_table = QualifiedTable::new(&target.schema, &target.table)?;
-    validate_identifier(&target.column)?;
+    validate_identifier_labeled("referenced column", &target.column)?;
 
     // Cast the bound value to the referenced column's own type rather than
     // casting the column — `WHERE col::text = $1` is non-sargable and forces a
     // seq scan even on the indexed key this lookup exists to use. Same shape
     // as query.rs's cell-edit path.
     let target_type = get_column_type(pool, &target_table, &target.column).await?;
-    validate_identifier(&target_type)?;
+    validate_identifier_labeled("referenced column type", &target_type)?;
 
     let sql = format!(
         "SELECT * FROM {} WHERE \"{}\" = $1::{} LIMIT 1",
@@ -1952,7 +1952,7 @@ ending at line 261 with its `eslint-disable-next-line` and dependency array):
     // Keyed on the identity string for the same reason the fetch effect above
     // is: a legacy string prop is re-wrapped into a fresh object every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [table ? `${table.schema}.${table.name}` : null, activeConnectionId]);
+  }, [table ? tableKey(table) : null, activeConnectionId]);
 ```
 
 - [ ] **Step 4: Use the real family**
@@ -2364,7 +2364,7 @@ Add these functions after `abandonEditForQueryChange` (line 284):
   function handleJump(target: ForeignKeyRef, value: string) {
     if (!activeConnectionId) return;
     const targetTable: QualifiedTable = { schema: target.schema, name: target.table };
-    const targetKey = `${target.schema}.${target.table}`;
+    const targetKey = tableKey(targetTable);
     const jumpFilter: FilterCondition[] = [
       { column: target.column, op: "eq", value, enabled: true },
     ];
@@ -2379,7 +2379,7 @@ Add these functions after `abandonEditForQueryChange` (line 284):
 
     closeFk();
 
-    if (table && targetKey === `${table.schema}.${table.name}`) {
+    if (table && targetKey === tableKey(table)) {
       // A self-referencing key. `table` does not change, so the table-switch
       // effect never runs — apply the jump here or the filter is parked and
       // then dropped.
@@ -2416,7 +2416,7 @@ fetch call so the effect reads:
     // this effect would clear a render later. Anything else starts unfiltered.
     const jump = pendingJumpRef.current;
     const jumpFilter =
-      jump && table && jump.key === `${table.schema}.${table.name}` ? jump.filter : [];
+      jump && table && jump.key === tableKey(table) ? jump.filter : [];
     pendingJumpRef.current = null;
     setFilter(jumpFilter);
     setLimit(100);
