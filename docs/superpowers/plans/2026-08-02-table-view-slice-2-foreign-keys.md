@@ -17,7 +17,11 @@
 - Column and table identifiers are **validated** with `validate_identifier_labeled(kind, identifier)` before interpolation — the untyped `validate_identifier` wrapper was dropped in `d41bfed`, and every caller now names what it is validating so a rejected value sends the reader to the right input. Filter and lookup **values are always bound parameters** — never interpolated.
 - jsdom has no layout engine. Never assert layout in vitest, and never write a test that appears to check layout but asserts nothing. Anything positional is verified in a real browser via Playwright with `getComputedStyle` / `getBoundingClientRect`, reporting measured numbers.
 - **Baseline to keep green, measured on this worktree at `15ad0c3`:**
-  - `cd apps/devbench && bun run test` → **406 passing / 44 files**
+  - `cd apps/devbench && bun run test` → **407 passing / 44 files**
+  - Concurrent sessions have moved this number three times while this plan was being written (402 → 406 → 407).
+    **Re-measure immediately before each task and reconcile against that**, rather than trusting the absolute
+    numbers below — they are a check, not an authority. If your measured baseline differs, the per-task delta
+    (+11, +13, +1, +2, +8) is what must hold.
   - `cd apps/devbench && bun run build` → clean (runs `tsc` then `vite build`)
   - `cd apps/devbench/src-tauri && cargo test` → **228 passing, 1 ignored** (lib) and **6 passing** (`smoke_test`)
   - Run `cargo test`, **not** `cargo test --lib`. `--lib` does not compile `tests/*.rs` at all. Slice 2a used it as
@@ -528,7 +532,7 @@ Then the whole suite, which must be the baseline plus these 5:
 cd apps/devbench/src-tauri && cargo test 2>&1 | tail -20
 ```
 
-Expected: **231 passed** (226 baseline + 5), 1 ignored.
+Expected: the measured lib baseline **+ 5**, 1 ignored (228 + 5 = 233 if the baseline is unchanged). Report both.
 
 - [ ] **Step 7: Commit**
 
@@ -884,7 +888,7 @@ Expected: 10 passing.
 cd apps/devbench/src-tauri && cargo test 2>&1 | tail -20
 ```
 
-Expected: **236 passed** (226 baseline + 10), 1 ignored.
+Expected: the measured lib baseline **+ 10**, 1 ignored (228 + 10 = 238 if unchanged). Report both.
 
 - [ ] **Step 6: Commit**
 
@@ -1160,7 +1164,7 @@ export function invokeGetReferencedRow(
 cd apps/devbench && bun run test 2>&1 | tail -5 && bun run build 2>&1 | tail -5
 ```
 
-Expected: **413 passing / 45 files** (402 baseline + 11), build clean.
+Expected: **418 passing / 45 files** (407 baseline + 11), build clean.
 
 - [ ] **Step 7: Commit**
 
@@ -1533,7 +1537,7 @@ Expected: PASS, 13 tests.
 cd apps/devbench && bun run test 2>&1 | tail -5 && bun run build 2>&1 | tail -5
 ```
 
-Expected: **426 passing / 46 files** (413 + 13), build clean.
+Expected: **431 passing / 46 files** (418 + 13), build clean.
 
 - [ ] **Step 6: Commit**
 
@@ -1784,7 +1788,7 @@ Expected: PASS, 6 tests.
 cd apps/devbench && bun run test 2>&1 | tail -5 && bun run build 2>&1 | tail -5
 ```
 
-Expected: **427 passing / 46 files**. The file already holds 5 tests and this
+Expected: **432 passing / 46 files**. The file already holds 5 tests and this
 rewrite leaves it with 6, so the net is +1, not +6 — the rewrite reorganises the
 existing coverage rather than adding to it. Build clean. If `DataGrid.test.tsx`
 asserted on the strip this would fail here; it does not — there is no existing
@@ -2045,7 +2049,7 @@ Expected: PASS, the file's existing tests plus 2.
 cd apps/devbench && bun run test 2>&1 | tail -5 && bun run build 2>&1 | tail -5
 ```
 
-Expected: **429 passing / 46 files** (427 + 2), build clean.
+Expected: **434 passing / 46 files** (432 + 2), build clean.
 
 - [ ] **Step 7: Commit**
 
@@ -2507,7 +2511,7 @@ Expected: PASS, the file's existing tests plus 8.
 cd apps/devbench && bun run test 2>&1 | tail -5 && bun run build 2>&1 | tail -5
 ```
 
-Expected: **437 passing / 46 files** (429 + 8), build clean.
+Expected: **442 passing / 46 files** (434 + 8), build clean.
 
 Then confirm the regression-critical grid tests specifically:
 
@@ -2845,8 +2849,8 @@ cd apps/devbench && bun run build 2>&1 | tail -5
 cd apps/devbench/src-tauri && cargo test 2>&1 | tail -20
 ```
 
-Report the actual counts against the baseline (402 vitest / 44 files, 226 cargo
-`--lib`). If anything fails, say so and paste the output.
+Report the actual counts against the baseline measured at the start of the run.
+If anything fails, say so and paste the output.
 
 - [ ] **Step 10: Commit any fixes**
 
