@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { RequestBuilder } from "./RequestBuilder";
-import { ResponseViewer } from "./ResponseViewer";
+import { ResponseViewer, type SentRequest } from "./ResponseViewer";
 import { HistorySidebar } from "./HistorySidebar";
 import { Rollup, type RollupData } from "../rollup/Rollup";
 import { useAppStore, type Tab } from "../../store/useAppStore";
@@ -17,6 +17,8 @@ interface DisplayResult {
   correlationId: string | null;
   response: FireRequestOutput;
   rollup: RollupData;
+  /** Only set when restored from History — shows what was actually sent, read-only. */
+  sentRequest: SentRequest | null;
 }
 
 export function ApiTab({
@@ -94,6 +96,8 @@ export function ApiTab({
         dbError: correlation.db_error,
         windowOpen: true,
       },
+      // A live send already shows what is being sent in the composer above.
+      sentRequest: null,
     });
     setHistoryRefreshKey((k) => k + 1);
 
@@ -144,7 +148,12 @@ export function ApiTab({
     setResult({
       // Matches no live id, so an outstanding send cannot fill in a history view.
       correlationId: null,
-      response: { status_code: entry.status_code, body: entry.response_body, duration_ms: entry.duration_ms },
+      response: {
+        status_code: entry.status_code,
+        headers: entry.response_headers,
+        body: entry.response_body,
+        duration_ms: entry.duration_ms,
+      },
       rollup: {
         tableDiffs: null,
         watchedTableCount: watchedTables.size,
@@ -154,6 +163,12 @@ export function ApiTab({
         emailsTruncated: false,
         dbError: null,
         windowOpen: false,
+      },
+      sentRequest: {
+        method: entry.method,
+        url: entry.url,
+        headers: entry.request_headers,
+        body: entry.request_body,
       },
     });
   }
@@ -181,7 +196,7 @@ export function ApiTab({
         {error ? (
           <div className="rounded-lg border border-border bg-danger-bg p-3 text-sm text-danger">{error}</div>
         ) : null}
-        <ResponseViewer result={result?.response ?? null} />
+        <ResponseViewer result={result?.response ?? null} sentRequest={result?.sentRequest ?? null} />
         {result || sending ? (
           <div>
             <div className="m-0.5 text-[11.5px] font-bold uppercase tracking-wide text-text-faint">
