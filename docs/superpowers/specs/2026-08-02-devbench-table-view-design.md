@@ -611,3 +611,14 @@ Slices 3 and 4 are not planned yet.
   longer matches. Accepted: re-sorting rows as you edit them would be worse.
 - **SQL entries group alone.** A staged statement has no table, so it files
   under its own heading rather than under the table it touches.
+- **Popover and jump can disagree on a match.** `get_referenced_row` binds the
+  lookup value cast to the referenced column's real type (`= $1::timestamptz`,
+  say). The jump's pinned filter compiles through the filter compiler to
+  `"col"::text = $1`, comparing string representations instead. For a target
+  column whose display rendering differs from Postgres's own `::text` output
+  — `timestamptz` and `float8` extremes are the known cases — the two checks
+  disagree: the popover finds and shows the row, then the jump lands on an
+  empty grid with no error. Accepted for now: foreign keys overwhelmingly
+  target int, uuid or text primary keys, where both renderings agree. The
+  real fix is a change to the filter compiler's casting strategy, which
+  affects every filter in the application and belongs in its own change.

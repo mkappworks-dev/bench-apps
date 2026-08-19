@@ -298,6 +298,12 @@ export function DbTab({
       return;
     }
     let cancelled = false;
+    // Cleared before the fetch starts, not just on catch/no-table: on a
+    // table switch, leaving the old table's metadata in place would let it
+    // render against the new table's rows until this resolves. Absent
+    // metadata degrades to a plain grid; stale metadata actively lies about
+    // the schema (wrong FK targets, wrong filter operators).
+    setColumnMeta([]);
     invokeDescribeColumns(activeConnectionId, table)
       .then((meta) => {
         if (!cancelled) setColumnMeta(meta);
@@ -390,13 +396,9 @@ export function DbTab({
       { column: target.column, op: "eq", value, enabled: true },
     ];
 
-    // Pins and hidden columns describe a view of this table that the jump is
-    // not asking for — and a hidden column could hide the very column being
-    // jumped to. Widths and order are left alone: they say how wide a column
-    // is, not which rows you are looking at.
-    const targetLayoutKey = `${activeConnectionId}:${targetKey}`;
-    const targetLayout = readLayout(targetLayoutKey);
-    const clearedLayout = { ...targetLayout, pinned: [], hidden: [] };
+    // Layouts are keyed per table (gridLayout.ts, `layoutKey` above), so the
+    // source table's pins and hidden columns never travel to the target in
+    // the first place — there is nothing here that needs clearing.
 
     closeFk();
 
@@ -405,7 +407,6 @@ export function DbTab({
       // effect never runs — apply the jump here or the filter is parked and
       // then dropped.
       abandonEditForQueryChange();
-      updateLayout(clearedLayout);
       setSort([]);
       setPage(0);
       setFilter(jumpFilter);
@@ -413,9 +414,6 @@ export function DbTab({
       return;
     }
 
-    // Written before the switch: the next render recomputes layoutKey, sees it
-    // changed, and re-reads storage — which is where it will find this.
-    writeLayout(targetLayoutKey, clearedLayout);
     pendingJumpRef.current = { key: targetKey, filter: jumpFilter };
     onPatchState({ table: targetTable });
   }

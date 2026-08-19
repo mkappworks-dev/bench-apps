@@ -593,6 +593,45 @@ describe("DbTab", () => {
     expect(screen.queryByRole("button", { name: /Show referenced row/ })).not.toBeInTheDocument();
   });
 
+  // Regression guard for a bug caught in review: the describe_columns effect
+  // cleared metadata only when there was no table at all, so on an A -> B
+  // switch it left A's metadata in place until B's own describe_columns
+  // resolved. If B's rows land first (as they do here, since B's
+  // describe_columns is still pending), the grid painted B's data under A's
+  // schema — a link icon claiming a foreign key B's column doesn't have.
+  it("shows no link icon for a table switched to while its own metadata is still loading", async () => {
+    const deferredPaymentsDescribe: { resolve: ((value: typeof FK_META) => void) | null } = { resolve: null };
+    vi.spyOn(tauriLib, "invokeDescribeColumns").mockImplementation((_conn, t) => {
+      if (t.name === "orders") return Promise.resolve(FK_META);
+      return new Promise((resolve) => {
+        deferredPaymentsDescribe.resolve = resolve;
+      });
+    });
+    vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation((_conn, t) => {
+      if (t.name === "orders") {
+        return Promise.resolve({ columns: ["id", "user_id"], rows: [["1", "usr_88"]], pk_column: "id" });
+      }
+      return Promise.resolve({ columns: ["id", "user_id"], rows: [["9", "no-fk-here"]], pk_column: "id" });
+    });
+    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([ORDERS, PAYMENTS]);
+
+    render(<DbTabHarness initialTable={ORDERS} />);
+    await screen.findByRole("button", { name: /public\.users\.id/ });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Browse public.payments" }));
+
+    // payments' rows have landed; its describe_columns call is still
+    // in flight. Absent metadata must render, never orders' stale metadata.
+    await screen.findByText("no-fk-here");
+    expect(screen.queryByRole("button", { name: /Show referenced row/ })).not.toBeInTheDocument();
+
+    // And once payments' own (FK-less) metadata does arrive, still nothing.
+    await act(async () => {
+      deferredPaymentsDescribe.resolve?.([]);
+    });
+    expect(screen.queryByRole("button", { name: /Show referenced row/ })).not.toBeInTheDocument();
+  });
+
   it("fetches and shows the referenced row when the icon is clicked", async () => {
     mockFkTable();
     const referenced = vi.spyOn(tauriLib, "invokeGetReferencedRow").mockResolvedValue({
@@ -667,31 +706,32 @@ describe("DbTab", () => {
     );
   });
 
-  it("clears pins and hidden columns on the table it jumps to", async () => {
-    localStorage.setItem(
-      "devbench.grid-layout.c1:public.users",
-      JSON.stringify({ widths: { id: 200 }, order: ["email", "id"], pinned: ["id"], hidden: ["email"] }),
-    );
+  // Layouts are keyed per table (gridLayout.ts, layoutKey above), so the
+  // source table's pins and hidden columns never reach the target in the
+  // first place — there is nothing for the jump to clear. A previous version
+  // of handleJump cleared the *destination's* own saved pins/hidden anyway,
+  // permanently wiping settings on a table the user never touched.
+  it("leaves the destination table's saved layout alone", async () => {
+    const seededLayout = { widths: { id: 200 }, order: ["email", "id"], pinned: ["id"], hidden: ["email"] };
+    localStorage.setItem("devbench.grid-layout.c1:public.users", JSON.stringify(seededLayout));
     mockFkTable();
     vi.spyOn(tauriLib, "invokeGetReferencedRow").mockResolvedValue({
       columns: ["id", "email"], rows: [["usr_88", "grace@example.com"]], pk_column: "id",
     });
+    const listRows = vi.spyOn(tauriLib, "invokeListTableRows");
 
     render(<DbTabHarness initialTable={ORDERS} />);
     fireEvent.click(await screen.findByRole("button", { name: /Show referenced row/ }));
     await screen.findByRole("dialog", { name: /public\.users/ });
     fireEvent.click(screen.getByRole("button", { name: /open public\.users at this row/i }));
 
-    await waitFor(() => {
-      const saved = JSON.parse(localStorage.getItem("devbench.grid-layout.c1:public.users")!);
-      // A hidden column could hide the very column you jumped to see.
-      expect(saved.hidden).toEqual([]);
-      expect(saved.pinned).toEqual([]);
-      // Widths and order describe how wide a column is, not which rows you are
-      // looking at — no reason for a jump to throw them away.
-      expect(saved.widths).toEqual({ id: 200 });
-      expect(saved.order).toEqual(["email", "id"]);
-    });
+    await waitFor(() =>
+      expect(listRows).toHaveBeenCalledWith("c1", { schema: "public", name: "users" }, expect.anything()),
+    );
+
+    // Widths, order, pinned and hidden all survive the jump exactly as
+    // seeded — the jump must not touch stored layout at all.
+    expect(JSON.parse(localStorage.getItem("devbench.grid-layout.c1:public.users")!)).toEqual(seededLayout);
   });
 
   // A self-referencing key does not change `table`, so the table-switch effect
