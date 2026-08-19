@@ -421,14 +421,28 @@ provisional is the *transaction*, and the result label says so.
 ## 13. Backend commands
 
 ```rust
-// One query serving two features: information_schema.columns joined to the FK
-// constraint views yields type/nullable/default/identity AND the referenced
-// table/column per column. Fetched once per table.
+// One query serving two features: information_schema.columns for
+// type/nullable/default/identity, LEFT JOINed to a pg_catalog subquery for the
+// referenced table/column per column. Fetched once per table.
+//
+// pg_catalog rather than information_schema's constraint views because
+// constraint_column_usage reports a constraint's referenced columns with no
+// ordinal: a two-column key cross-joins, so each referencing column claims
+// every referenced column, and the LEFT JOIN duplicates the column rows on top
+// of that. pg_constraint.conkey[i] <-> confkey[i] pairs by position exactly.
 describe_columns(connection_id, table) -> Vec<ColumnInfo>
 
 struct ColumnInfo {
   name: String, udt: String, nullable: bool,
-  default_expr: Option<String>, is_identity: bool,
+  default_expr: Option<String>,
+  is_identity: bool,                   // "the database assigns this": IDENTITY,
+                                       // GENERATED ALWAYS, or a serial's
+                                       // nextval() default. Broader than
+                                       // information_schema.is_identity, which
+                                       // is false for a serial — §9 renders all
+                                       // three read-only, and a literal reading
+                                       // would put an editable id in every
+                                       // insert form.
   references: Option<ForeignKeyRef>,   // { schema, table, column }
 }
 
@@ -562,8 +576,10 @@ Slice 1 therefore infers type the way the grid already does (from the string
 value), and Slice 2 replaces that inference with the real type. This is a
 deliberate temporary duplication, not an oversight.
 
-**The implementation plan covers Slice 1 only.** Slices 2 and 3 get their own
-plans once Slice 1 is merged and its assumptions have survived contact.
+**Each slice gets its own plan, written once its predecessor has survived
+contact.** Slice 1: `docs/superpowers/plans/2026-08-02-table-view-slice-1-toolbar.md`.
+Slice 2: `docs/superpowers/plans/2026-08-02-table-view-slice-2-foreign-keys.md`.
+Slices 3 and 4 are not planned yet.
 
 ## 18. Risks and known gaps
 
