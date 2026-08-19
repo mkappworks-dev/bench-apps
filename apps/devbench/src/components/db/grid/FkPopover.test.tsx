@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { FkLinkButton, FkPopover } from "./FkPopover";
 import type { ForeignKeyRef } from "./columnMeta";
 
@@ -36,10 +35,10 @@ describe("FkLinkButton", () => {
     expect(button.className).not.toMatch(/invisible|opacity-0|group-hover/);
   });
 
-  it("opens on click", async () => {
+  it("opens on click", () => {
     const onOpen = vi.fn();
     render(<FkLinkButton target={TARGET} onOpen={onOpen} />);
-    await userEvent.click(screen.getByRole("button", { name: /public\.users\.id/ }));
+    fireEvent.click(screen.getByRole("button", { name: /public\.users\.id/ }));
     expect(onOpen).toHaveBeenCalledOnce();
   });
 });
@@ -84,34 +83,34 @@ describe("FkPopover", () => {
     expect(screen.queryByText(/No matching row/)).not.toBeInTheDocument();
   });
 
-  it("offers open and close actions with real names", async () => {
+  it("offers open and close actions with real names", () => {
     const props = renderPopover();
-    await userEvent.click(screen.getByRole("button", { name: /open public\.users/i }));
+    fireEvent.click(screen.getByRole("button", { name: /open public\.users/i }));
     expect(props.onJump).toHaveBeenCalledOnce();
-    await userEvent.click(screen.getByRole("button", { name: /close/i }));
+    fireEvent.click(screen.getByRole("button", { name: /close/i }));
     expect(props.onClose).toHaveBeenCalledOnce();
   });
 
-  it("closes on Escape", async () => {
+  it("closes on Escape", () => {
     const props = renderPopover();
-    await userEvent.keyboard("{Escape}");
+    fireEvent.keyDown(document, { key: "Escape" });
     expect(props.onClose).toHaveBeenCalledOnce();
   });
 
-  it("closes when the pointer goes down outside it", async () => {
+  it("closes when the pointer goes down outside it", () => {
     const props = renderPopover();
-    await userEvent.click(document.body);
+    fireEvent.pointerDown(document.body);
     expect(props.onClose).toHaveBeenCalled();
   });
 
   // The trigger's own click toggles the popover. If a pointerdown on it also
   // closed here, the toggle would reopen what this just dismissed and the
   // popover would never close by clicking its own icon.
-  it("leaves a pointer down on the trigger to the trigger", async () => {
+  it("leaves a pointer down on the trigger to the trigger", () => {
     const props = renderPopover();
     const { container } = render(<FkLinkButton target={TARGET} onOpen={vi.fn()} />);
     const trigger = container.querySelector("[data-fk-trigger]") as HTMLElement;
-    await userEvent.click(trigger);
+    fireEvent.pointerDown(trigger);
     expect(props.onClose).not.toHaveBeenCalled();
   });
 
