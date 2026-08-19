@@ -6,6 +6,7 @@ import { GridToolbar } from "./grid/GridToolbar";
 import { canFollow, familyOfColumn, fkTargetOf, type ColumnInfo, type ForeignKeyRef } from "./grid/columnMeta";
 import { FkLinkButton, FkPopover } from "./grid/FkPopover";
 import { readLayout, writeLayout, type GridLayout } from "./grid/gridLayout";
+import { SecondaryButton } from "../ui/SecondaryButton";
 import { normalizeTable, tableKey } from "../../lib/tableIdentity";
 import {
   invokeListTableRows,
@@ -91,8 +92,10 @@ export function DbTab({
   const setActiveConnectionId = useAppStore((s) => s.setActiveConnectionId);
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
   const setDockPanel = useAppStore((s) => s.setDockPanel);
+  const dockPanel = useAppStore((s) => s.dockPanel);
   const setInsertTarget = useAppStore((s) => s.setInsertTarget);
   const setChatOpen = useAppStore((s) => s.setChatOpen);
+  const pending = useAppStore((s) => s.pending);
 
   const [tableRows, setTableRows] = useState<TableRows | null>(null);
   // The backend derives `columns` from the first returned row, so a filter that
@@ -324,6 +327,25 @@ export function DbTab({
     // is: a legacy string prop is re-wrapped into a fresh object every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [table ? tableKey(table) : null, activeConnectionId]);
+
+  // Apply commits in the dock, which cannot reach this grid. When the set goes
+  // from non-empty to empty by anything other than Discard, the rows on screen
+  // are stale AND their staged overlay has just been cleared — so an applied
+  // cell would visibly snap back to its pre-Apply value. Refetching is what
+  // makes the grid agree with the database again.
+  //
+  // Discard all also empties the set, and also needs this: the staged overlay
+  // disappearing is exactly the same repaint, and a refetch of unchanged rows
+  // is cheap and always correct.
+  const hadPendingRef = useRef(pending.length > 0);
+  useEffect(() => {
+    const had = hadPendingRef.current;
+    hadPendingRef.current = pending.length > 0;
+    if (!had || pending.length > 0) return;
+    if (!table || !activeConnectionId) return;
+    void fetchRows(table, activeConnectionId, filter, sort, page, limitRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending.length]);
 
   // Rolls back any preview left open when the tab itself goes away (closed,
   // or its pane repurposed) — the table/connection-switch effect above only
@@ -807,12 +829,27 @@ export function DbTab({
         {activeConnectionId ? (
           <div className="flex h-11 items-center border-b border-border px-3.5">
             <span className="text-xs font-semibold text-text-muted">{table ? table.name : "No table selected"}</span>
+            {pending.length > 0 ? (
+              <SecondaryButton
+                className="ml-auto h-7 gap-1.5"
+                aria-pressed={dockPanel === "pending"}
+                onClick={() => {
+                  setDockPanel("pending");
+                  setChatOpen(true);
+                }}
+              >
+                <span>Pending</span>
+                <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-lg bg-accent px-1 text-[10.5px] font-bold text-accent-on">
+                  {pending.length}
+                </span>
+              </SecondaryButton>
+            ) : null}
             <button
               type="button"
               aria-label="Query console"
               aria-pressed={consoleOpen}
               onClick={() => setConsoleOpen((open) => !open)}
-              className="ml-auto flex h-7.5 shrink-0 items-center gap-1.5 rounded-sm px-2.25 text-xs font-medium text-text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-text aria-pressed:bg-surface-2 aria-pressed:text-text"
+              className={`${pending.length > 0 ? "ml-2" : "ml-auto"} flex h-7.5 shrink-0 items-center gap-1.5 rounded-sm px-2.25 text-xs font-medium text-text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-text aria-pressed:bg-surface-2 aria-pressed:text-text`}
             >
               <span className={`flex transition-transform duration-150 ${consoleOpen ? "rotate-180" : ""}`}>
                 <ConsoleChevronIcon />

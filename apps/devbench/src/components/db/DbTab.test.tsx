@@ -1305,4 +1305,31 @@ describe("DbTab", () => {
     // silently blank form rather than a visible failure.
     expect(useAppStore.getState().insertTarget?.columns.map((c) => c.name)).toEqual(["id", "status"]);
   });
+
+  it("shows the Pending button only once something is staged, and opens the panel", async () => {
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
+    });
+    useAppStore.getState().discardAllPending();
+
+    renderDb(ORDERS);
+    // DataGrid's role is "table" (see DataGrid.tsx), not "grid" — waiting on
+    // it is just this test's way of letting the initial row fetch settle.
+    await screen.findByRole("table");
+    // Hidden entirely when empty: it must never advertise a state that does
+    // not exist (spec §3). Matched by "Pending <count>", not just a leading
+    // "pending" — the row's own status value is "pending" too, and that cell
+    // is itself a button (see DbTab.tsx's editable-cell button).
+    expect(screen.queryByRole("button", { name: /^pending \d/i })).toBeNull();
+
+    act(() => {
+      useAppStore.getState().stagePendingUpdate({
+        kind: "update", table: ORDERS, pk_column: "id", pk_value: "1",
+        column: "status", old_value: "pending", new_value: "shipped",
+      });
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Pending 1" }));
+    expect(useAppStore.getState().dockPanel).toBe("pending");
+  });
 });

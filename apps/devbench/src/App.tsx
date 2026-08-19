@@ -6,6 +6,7 @@ import { TABS } from "./components/shell/tools";
 import { SessionsSidebar } from "./components/shell/SessionsSidebar";
 import { ChatDock } from "./components/shell/ChatDock";
 import { InsertPanel } from "./components/db/InsertPanel";
+import { PendingPanel } from "./components/db/PendingPanel";
 import { SettingsScreen } from "./components/settings/SettingsScreen";
 import { SplitContent } from "./components/shell/SplitContent";
 import { StartupErrorScreen } from "./components/shell/StartupErrorScreen";
@@ -162,6 +163,14 @@ export default function App() {
         {chatOpen ? (
           dockPanel === "insert" && insertTarget ? (
             <InsertPanel target={insertTarget} onClose={() => setDockPanel("chat")} />
+          ) : dockPanel === "pending" ? (
+            <PendingPanel
+              connectionId={activeConnectionId}
+              onClose={() => setDockPanel("chat")}
+              // DbTab watches the pending set and refetches when it empties
+              // after an Apply, so nothing more is needed here.
+              onApplied={() => {}}
+            />
           ) : (
             <ChatDock onClose={() => setChatOpen(false)} />
           )
