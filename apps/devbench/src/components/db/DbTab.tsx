@@ -134,9 +134,10 @@ export function DbTab({
 
   const [editing, setEditing] = useState<CellEdit | null>(null);
   const [consoleOpen, setConsoleOpen] = useState(false);
-  // Cell-edit failures render next to the grid, not in place of it — reusing
-  // `error` (which swaps the whole grid for an error box) would make a
-  // failed single-cell commit look like the entire table failed to load.
+  // A staging refusal (currently only "this row's primary key is NULL")
+  // renders next to the grid, not in place of it — reusing `error`, which
+  // swaps the whole grid for an error box, would make one unusable cell look
+  // like the entire table failed to load.
   const [editError, setEditError] = useState<string | null>(null);
 
   // Column widths/order/pins/hidden, scoped per connection+table exactly like
@@ -293,6 +294,12 @@ export function DbTab({
     hadPendingRef.current = pending.length > 0;
     if (!had || pending.length > 0) return;
     if (!table || !activeConnectionId) return;
+    // An open editor cannot survive this refetch: the rows underneath it are
+    // about to be replaced while editing.rowIndex stays put, so accepting
+    // would stage the draft against whatever row lands at that index — with
+    // that row's own old_value, which the backend's guard would happily
+    // accept. Every other query-shape change abandons the editor first.
+    abandonEditForQueryChange();
     void fetchRows(table, activeConnectionId, filter, sort, page, limitRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending.length]);

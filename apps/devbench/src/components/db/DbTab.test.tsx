@@ -1044,6 +1044,56 @@ describe("DbTab", () => {
       // it so the update lands inside the test rather than after it.
       await waitFor(() => expect(useAppStore.getState().pending).toEqual([]));
     });
+
+    // The dock renders beside a MOUNTED DbTab, so Apply (or Discard all) can
+    // land with a cell editor open. The refetch replaces tableRows underneath
+    // it while editing.rowIndex stays put — accepting then would carry another
+    // row's pk_value and old_value, a wrong UPDATE the backend's
+    // IS NOT DISTINCT FROM guard would accept as correct.
+    it("closes an open editor when Apply empties the pending set and refetches", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
+      });
+
+      renderDb(ORDERS);
+      fireEvent.click(await screen.findByText("pending"));
+      await screen.findByLabelText("Edit status");
+
+      // Something else stages, then the set empties — the shape of an Apply
+      // landing while this tab sits with an editor open.
+      act(() => {
+        useAppStore.getState().stagePendingUpdate({
+          kind: "update", table: ORDERS, pk_column: "id", pk_value: "9",
+          column: "status", old_value: "a", new_value: "b",
+        });
+      });
+      act(() => {
+        useAppStore.getState().discardAllPending();
+      });
+
+      await waitFor(() => expect(screen.queryByLabelText("Edit status")).toBeNull());
+    });
+
+    it("closes an open editor when the table changes underneath it", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation(async (_conn, t) => ({
+        columns: ["id", "status"],
+        rows: [["1", t.name === "orders" ? "pending" : "waiting"]],
+        pk_column: "id",
+      }));
+
+      const { rerender, onPatchState } = renderDb(ORDERS);
+      fireEvent.click(await screen.findByText("pending"));
+      await screen.findByLabelText("Edit status");
+
+      rerender(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table={PAYMENTS} onPatchState={onPatchState} />);
+
+      // Waits for the NEW table's rows, not merely for the editor to vanish:
+      // the switch blanks the grid for a moment, and an assertion taken during
+      // that gap passes even when `editing` is never cleared — the editor then
+      // reappears on payments' row 0 carrying orders' draft.
+      expect(await screen.findByText("waiting")).toBeInTheDocument();
+      expect(screen.queryByLabelText("Edit status")).toBeNull();
+    });
   });
 
   it("opens the insert panel on the table whose toolbar was used", async () => {
