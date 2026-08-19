@@ -219,9 +219,9 @@ mod tests {
     async fn deleting_removes_only_that_query() {
         let (_dir, db) = db().await;
         let keep = create_saved_query_impl(&db.pool, "default", "keep", "", 1).await.unwrap();
-        let drop = create_saved_query_impl(&db.pool, "default", "drop", "", 2).await.unwrap();
+        let doomed = create_saved_query_impl(&db.pool, "default", "doomed", "", 2).await.unwrap();
 
-        delete_saved_query_impl(&db.pool, &drop.id).await.unwrap();
+        delete_saved_query_impl(&db.pool, &doomed.id).await.unwrap();
 
         let listed = list_saved_queries_impl(&db.pool, "default").await.unwrap();
         assert_eq!(listed, vec![keep]);
@@ -951,7 +951,9 @@ a schema. No behaviour change."
 Add to `ConnectionRail.test.tsx`. Note `render` returns nothing positional — every assertion here is about presence, text and calls, because jsdom has no layout:
 
 ```tsx
-  function renderRail(overrides: Partial<React.ComponentProps<typeof ConnectionRail>> = {}) {
+  // Parameters<typeof …>[0] rather than React.ComponentProps: this file does
+  // not import React, and the new JSX transform does not put it in scope.
+  function renderRail(overrides: Partial<Parameters<typeof ConnectionRail>[0]> = {}) {
     return render(
       <ConnectionRail
         connectionId="c1"
@@ -2288,6 +2290,8 @@ honest."
 **Interfaces:**
 - Consumes: nothing new. Task 7 replaced the console's only reason to exist.
 - Produces: a smaller surface. `preview_query`, `rollback_preview`, `preview_state` and the sweep all **stay** — Task 7's Run is their live caller.
+
+**Every line number below is advisory; the symbol name is binding.** Tasks 3-7 insert into `tauri.ts` and `DbTab.tsx` before this task reads them, so the offsets cited here — measured at `c8d686f` — will have moved. Locate each target by name and let Step 5's grep be the check.
 
 **Do this in one commit, frontend and backend together.** Deleting `invokeCommitPreview` while `QueryConsole` still imports it breaks the build; deleting the console while `commit_preview` is still registered leaves a Tauri command no code can reach. They are one change.
 
