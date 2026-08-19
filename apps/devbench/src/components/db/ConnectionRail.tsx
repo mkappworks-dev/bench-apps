@@ -10,13 +10,19 @@ import { Menu, ChevronIcon } from "../ui/Menu";
 import { useAppStore } from "../../store/useAppStore";
 import { tableKey } from "../../lib/tableIdentity";
 
-export function SchemaTree({
+export function ConnectionRail({
   connectionId,
   selected,
   watchedTables,
   onToggleWatch,
   onSelectTable,
   onConnectionChange,
+  // Optional, defaulted to today's behaviour: the 11 pre-existing call sites
+  // (this file's own tests) predate the queries segment and don't pass
+  // these, and must keep compiling and behaving exactly as before.
+  initialSegment = "tables",
+  activeQueryId = null,
+  onOpenQuery = () => {},
 }: {
   connectionId: string | null;
   selected: QualifiedTable | null;
@@ -25,6 +31,14 @@ export function SchemaTree({
   onToggleWatch: (table: QualifiedTable) => void;
   onSelectTable: (table: QualifiedTable) => void;
   onConnectionChange: (connectionId: string) => void;
+  /** "queries" on a query tab, "tables" on a table tab. Initial value only —
+   *  the user can switch, and their switch is not persisted. */
+  initialSegment?: "tables" | "queries";
+  /** The query this rail's host tab is showing, if it is a query tab. */
+  activeQueryId?: string | null;
+  /** Open (or focus) a query tab. The rail owns creating and deleting a saved
+   *  query; it does not own tabs, so opening one is the host's job. */
+  onOpenQuery?: (queryId: string) => void;
 }) {
   const [connections, setConnections] = useState<ConnectionSummary[]>([]);
   // Distinct from `connections.length === 0`: a failed fetch must not read as

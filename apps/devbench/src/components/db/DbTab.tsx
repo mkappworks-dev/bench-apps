@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { SchemaTree } from "./SchemaTree";
+import { ConnectionRail } from "./ConnectionRail";
 import { DataGrid, cellDisplay, CellValue } from "./DataGrid";
 import { QueryConsole } from "./QueryConsole";
 import { GridToolbar } from "./grid/GridToolbar";
@@ -723,13 +723,16 @@ export function DbTab({
     // (SplitContent's per-tab wrapper), so without it the same shrink-refusal
     // just recurs one level higher than the content column below.
     <div className="flex h-full w-full min-h-0 min-w-0">
-      <SchemaTree
+      <ConnectionRail
         connectionId={activeConnectionId}
         selected={table}
         watchedTables={watchedTables}
         onToggleWatch={handleToggleWatch}
         onSelectTable={(t) => onPatchState({ table: t })}
         onConnectionChange={setActiveConnectionId}
+        initialSegment="tables"
+        activeQueryId={null}
+        onOpenQuery={() => {}} // wired in Task 5
       />
       {/* min-w-0 overrides the flex default of min-width: auto, which refuses
           to shrink below descendant content width — without it, a wide table

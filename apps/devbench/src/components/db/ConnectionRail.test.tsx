@@ -1,10 +1,10 @@
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { SchemaTree } from "./SchemaTree";
+import { ConnectionRail } from "./ConnectionRail";
 import * as tauriLib from "../../lib/tauri";
 import { useAppStore } from "../../store/useAppStore";
 
-describe("SchemaTree", () => {
+describe("ConnectionRail", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     useAppStore.setState({ route: "workspace", settingsPane: "general" });
@@ -17,7 +17,7 @@ describe("SchemaTree", () => {
     ]);
 
     render(
-      <SchemaTree
+      <ConnectionRail
         connectionId="c1"
         selected={null}
         watchedTables={new Set()}
@@ -38,7 +38,7 @@ describe("SchemaTree", () => {
     const onToggleWatch = vi.fn();
 
     render(
-      <SchemaTree
+      <ConnectionRail
         connectionId="c1"
         selected={null}
         watchedTables={new Set()}
@@ -64,7 +64,7 @@ describe("SchemaTree", () => {
     const onConnectionChange = vi.fn();
 
     const { container } = render(
-      <SchemaTree
+      <ConnectionRail
         connectionId="c1"
         selected={null}
         watchedTables={new Set()}
@@ -95,7 +95,7 @@ describe("SchemaTree", () => {
     vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([]);
 
     render(
-      <SchemaTree
+      <ConnectionRail
         connectionId="c1"
         selected={null}
         watchedTables={new Set()}
@@ -119,7 +119,7 @@ describe("SchemaTree", () => {
     const listTables = vi.spyOn(tauriLib, "invokeDbConnectAndListTables");
 
     render(
-      <SchemaTree
+      <ConnectionRail
         connectionId={null}
         selected={null}
         watchedTables={new Set()}
@@ -138,7 +138,7 @@ describe("SchemaTree", () => {
     vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockRejectedValue(new Error("connection refused"));
 
     render(
-      <SchemaTree
+      <ConnectionRail
         connectionId="c1"
         selected={null}
         watchedTables={new Set()}
@@ -160,7 +160,7 @@ describe("SchemaTree", () => {
     const listTables = vi.spyOn(tauriLib, "invokeDbConnectAndListTables");
 
     render(
-      <SchemaTree
+      <ConnectionRail
         connectionId={null}
         selected={null}
         watchedTables={new Set()}
@@ -179,7 +179,7 @@ describe("SchemaTree", () => {
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
 
     render(
-      <SchemaTree
+      <ConnectionRail
         connectionId={null}
         selected={null}
         watchedTables={new Set()}
@@ -201,7 +201,7 @@ describe("SchemaTree", () => {
     const onSelectTable = vi.fn();
 
     render(
-      <SchemaTree
+      <ConnectionRail
         connectionId="c1"
         selected={null}
         watchedTables={new Set()}
@@ -231,7 +231,7 @@ describe("SchemaTree", () => {
     ]);
 
     render(
-      <SchemaTree
+      <ConnectionRail
         connectionId="c1"
         selected={{ schema: "public", name: "orders" }}
         watchedTables={new Set()}
@@ -256,7 +256,7 @@ describe("SchemaTree", () => {
       { schema: "public", name: "orders" },
     ]);
     render(
-      <SchemaTree
+      <ConnectionRail
         connectionId="c1"
         selected={null}
         watchedTables={new Set()}
