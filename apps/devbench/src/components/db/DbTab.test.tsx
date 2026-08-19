@@ -43,6 +43,10 @@ function DbTabHarness({ initialTable }: { initialTable: tauriLib.QualifiedTable 
 describe("DbTab", () => {
   beforeEach(() => {
     localStorage.clear();
+    // The pending set is module-global app state (spec §10) and no test owns
+    // it — without this, a test that stages a change leaves the next one
+    // rendering a staged value instead of its own fixture's stored one.
+    useAppStore.getState().discardAllPending();
     vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(0);
@@ -880,45 +884,6 @@ describe("DbTab", () => {
   });
 
   describe("inline cell editing", () => {
-    it("cells are not clickable to edit when the table has no single-column primary key", async () => {
-      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
-        columns: ["tenant_id", "item_id"],
-        rows: [["t1", "i1"]],
-        pk_column: null,
-      });
-
-      renderDb(PAYMENTS);
-      await waitFor(() => screen.getByText("t1"));
-
-      fireEvent.click(screen.getByText("t1"));
-      expect(screen.queryByRole("textbox", { name: /^Edit / })).not.toBeInTheDocument();
-      expect(screen.getByText(/No single-column primary key/)).toBeInTheDocument();
-    });
-
-    // The backend renders an unstringifiable value as this literal marker
-    // (distinct from NULL) — editing it would mean overwriting something the
-    // user never actually saw, PK or no PK.
-    it("cells showing <unsupported type> are not editable even when the table has a primary key", async () => {
-      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
-        columns: ["id", "status", "payload"],
-        rows: [["1", "pending", "<unsupported type>"]],
-        pk_column: "id",
-      });
-
-      renderDb(ORDERS);
-      await waitFor(() => screen.getByText("<unsupported type>"));
-
-      // Prove editing works at all in this row first — an ordinary cell in
-      // the same row must open — so the assertion below can't pass simply
-      // because nothing in the row is editable yet.
-      fireEvent.click(screen.getByText("pending"));
-      expect(await screen.findByDisplayValue("pending")).toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
-
-      fireEvent.click(screen.getByText("<unsupported type>"));
-      expect(screen.queryByRole("textbox", { name: /^Edit / })).not.toBeInTheDocument();
-    });
-
     it("clicking an editable cell shows an input; accepting stages the change without writing it", async () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
@@ -961,6 +926,45 @@ describe("DbTab", () => {
       expect(await screen.findByText("shipped")).toBeTruthy();
       expect(screen.queryByText("pending")).toBeNull();
       expect(document.querySelector('[data-staged="true"]')).toBeTruthy();
+    });
+
+    it("cells are not clickable to edit when the table has no single-column primary key", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["tenant_id", "item_id"],
+        rows: [["t1", "i1"]],
+        pk_column: null,
+      });
+
+      renderDb(PAYMENTS);
+      await waitFor(() => screen.getByText("t1"));
+
+      fireEvent.click(screen.getByText("t1"));
+      expect(screen.queryByRole("textbox", { name: /^Edit / })).not.toBeInTheDocument();
+      expect(screen.getByText(/No single-column primary key/)).toBeInTheDocument();
+    });
+
+    // The backend renders an unstringifiable value as this literal marker
+    // (distinct from NULL) — editing it would mean overwriting something the
+    // user never actually saw, PK or no PK.
+    it("cells showing <unsupported type> are not editable even when the table has a primary key", async () => {
+      vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["id", "status", "payload"],
+        rows: [["1", "pending", "<unsupported type>"]],
+        pk_column: "id",
+      });
+
+      renderDb(ORDERS);
+      await waitFor(() => screen.getByText("<unsupported type>"));
+
+      // Prove editing works at all in this row first — an ordinary cell in
+      // the same row must open — so the assertion below can't pass simply
+      // because nothing in the row is editable yet.
+      fireEvent.click(screen.getByText("pending"));
+      expect(await screen.findByDisplayValue("pending")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
+
+      fireEvent.click(screen.getByText("<unsupported type>"));
+      expect(screen.queryByRole("textbox", { name: /^Edit / })).not.toBeInTheDocument();
     });
 
     // NULL and "" are different values on the wire, and an untouched draft of
@@ -1036,6 +1040,9 @@ describe("DbTab", () => {
       fireEvent.click(screen.getByRole("button", { name: "Stage change" }));
 
       expect(useAppStore.getState().pending).toEqual([]);
+      // The 1 -> 0 transition fires DbTab's post-Apply refetch (Task 5). Await
+      // it so the update lands inside the test rather than after it.
+      await waitFor(() => expect(useAppStore.getState().pending).toEqual([]));
     });
   });
 
