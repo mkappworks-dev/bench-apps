@@ -46,6 +46,11 @@ describe("InsertPanel", () => {
     expect((screen.getByRole("button", { name: /stage insert/i }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("keeps Save disabled when the column metadata has not arrived yet", () => {
+    renderPanel([]);
+    expect((screen.getByRole("button", { name: /stage insert/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   // Spec §9: leaving a field blank visibly means "let the database decide".
   it("shows a default expression as the field's placeholder and does not require it", () => {
     renderPanel([column("created_at", { nullable: false, default_expr: "now()", udt: "timestamptz" })]);

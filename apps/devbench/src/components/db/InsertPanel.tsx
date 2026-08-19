@@ -23,7 +23,12 @@ export function InsertPanel({ target, onClose }: { target: InsertTarget; onClose
   const setDockPanel = useAppStore((s) => s.setDockPanel);
 
   const editable = target.columns.filter((c) => !isAssigned(c));
-  const missing = editable.some((c) => isRequired(c) && !(draft[c.name] ?? "").trim());
+  // A form with no fields has nothing to stage. Reachable in the window where
+  // the grid's rows have landed but describe_columns has not: `some` over an
+  // empty list is false, so without this Save would be enabled and would stage
+  // an empty insert — which fails the whole Apply transaction, taking every
+  // other staged change down with it.
+  const missing = editable.length === 0 || editable.some((c) => isRequired(c) && !(draft[c.name] ?? "").trim());
 
   function stage() {
     if (missing) return;
