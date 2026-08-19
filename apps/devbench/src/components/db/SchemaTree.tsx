@@ -8,6 +8,7 @@ import {
 } from "../../lib/tauri";
 import { Menu, ChevronIcon } from "../ui/Menu";
 import { useAppStore } from "../../store/useAppStore";
+import { tableKey } from "../../lib/tableIdentity";
 
 export function SchemaTree({
   connectionId,
@@ -118,7 +119,7 @@ export function SchemaTree({
       ) : (
         <div className="flex flex-col gap-0.5 p-1.5">
           {tables.map((t) => {
-            const key = `${t.schema}.${t.name}`;
+            const key = tableKey(t);
             const isSelected = selected?.schema === t.schema && selected?.name === t.name;
             return (
               <div

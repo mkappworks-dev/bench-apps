@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeTable } from "./tableIdentity";
+import { normalizeTable, tableKey } from "./tableIdentity";
 
 describe("normalizeTable", () => {
   it("resolves a bare string to the public schema", () => {
@@ -32,5 +32,14 @@ describe("normalizeTable", () => {
     expect(normalizeTable({ name: "orders" })).toBeNull();
     expect(normalizeTable({ schema: "public", name: 42 })).toBeNull();
     expect(normalizeTable({ schema: null, name: "orders" })).toBeNull();
+  });
+});
+
+describe("tableKey", () => {
+  // This exact format is persisted in localStorage grid-layout keys — do not
+  // "improve" the separator without a migration.
+  it("joins schema and name with a dot", () => {
+    expect(tableKey({ schema: "public", name: "orders" })).toBe("public.orders");
+    expect(tableKey({ schema: "alt", name: "dup" })).toBe("alt.dup");
   });
 });

@@ -19,3 +19,11 @@ export function normalizeTable(table: unknown): QualifiedTable | null {
   }
   return null;
 }
+
+/** `"schema.name"` — persisted in localStorage grid-layout keys and used as
+ *  React keys/Set membership. The separator is load-bearing: it's already on
+ *  disk in users' saved column layouts, so changing it orphans their widths,
+ *  pins and hidden columns. */
+export function tableKey(t: QualifiedTable): string {
+  return `${t.schema}.${t.name}`;
+}

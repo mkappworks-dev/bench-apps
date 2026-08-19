@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { QualifiedTable } from "../lib/tauri";
+import { tableKey } from "../lib/tableIdentity";
 
 export type ToolKind = "api" | "db" | "log" | "email";
 export type Pane = "left" | "right";
@@ -130,19 +131,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   watchedTableList: [],
   toggleWatchedTable: (table) =>
     set((state) => {
-      const key = `${table.schema}.${table.name}`;
+      const key = tableKey(table);
       const watching = !state.watchedTables.has(key);
       const nextSet = new Set(state.watchedTables);
       if (watching) nextSet.add(key);
       else nextSet.delete(key);
       const nextList = watching
         ? [...state.watchedTableList, table]
-        : state.watchedTableList.filter((t) => `${t.schema}.${t.name}` !== key);
+        : state.watchedTableList.filter((t) => tableKey(t) !== key);
       return { watchedTables: nextSet, watchedTableList: nextList };
     }),
   setWatchedTables: (tables) =>
     set({
-      watchedTables: new Set(tables.map((t) => `${t.schema}.${t.name}`)),
+      watchedTables: new Set(tables.map(tableKey)),
       watchedTableList: tables,
     }),
   chatOpen: true,

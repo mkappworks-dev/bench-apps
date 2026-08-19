@@ -5,7 +5,7 @@ import { QueryConsole } from "./QueryConsole";
 import { GridToolbar } from "./grid/GridToolbar";
 import { inferFamily, type ColumnFamily } from "./grid/types";
 import { readLayout, writeLayout, type GridLayout } from "./grid/gridLayout";
-import { normalizeTable } from "../../lib/tableIdentity";
+import { normalizeTable, tableKey } from "../../lib/tableIdentity";
 import {
   invokeListTableRows,
   invokeCountTableRows,
@@ -126,7 +126,7 @@ export function DbTab({
   // Columns popover needs to read and write the same state the grid renders
   // from. Same render-time key-swap as DataGrid had: an effect would let one
   // render paint the previous table's layout before catching up.
-  const layoutKey = `${activeConnectionId}:${table ? `${table.schema}.${table.name}` : "null"}`;
+  const layoutKey = `${activeConnectionId}:${table ? tableKey(table) : "null"}`;
   const [storedLayout, setStoredLayout] = useState(() => ({ key: layoutKey, layout: readLayout(layoutKey) }));
   if (storedLayout.key !== layoutKey) {
     setStoredLayout({ key: layoutKey, layout: readLayout(layoutKey) });
@@ -258,7 +258,7 @@ export function DbTab({
     // depending on the object would re-run this effect (and re-fetch) every
     // render instead of only on an actual table change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [table ? `${table.schema}.${table.name}` : null, activeConnectionId]);
+  }, [table ? tableKey(table) : null, activeConnectionId]);
 
   // Rolls back any preview left open when the tab itself goes away (closed,
   // or its pane repurposed) — the table/connection-switch effect above only
@@ -606,7 +606,7 @@ export function DbTab({
 
   async function handleToggleWatch(table: QualifiedTable) {
     if (!activeConnectionId) return;
-    const key = `${table.schema}.${table.name}`;
+    const key = tableKey(table);
     const nextWatched = !watchedTables.has(key);
     onToggleWatch(table);
     try {
