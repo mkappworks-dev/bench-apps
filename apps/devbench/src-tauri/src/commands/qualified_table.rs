@@ -20,8 +20,12 @@ impl QualifiedTable {
     }
 
     /// `"public"."orders"` — the only path by which a table reaches SQL.
+    /// Doubling embedded `"` (Postgres's own escaping rule) keeps this
+    /// self-sufficient rather than relying solely on the validator's
+    /// allowlist rejecting `"` — two independent layers, not one disguised
+    /// as two.
     pub fn quoted(&self) -> String {
-        format!("\"{}\".\"{}\"", self.schema, self.name)
+        format!("\"{}\".\"{}\"", self.schema.replace('"', "\"\""), self.name.replace('"', "\"\""))
     }
 
     pub fn schema(&self) -> &str {
@@ -64,6 +68,17 @@ mod tests {
     fn quotes_both_parts_separately() {
         let t = QualifiedTable::new("public", "orders").unwrap();
         assert_eq!(t.quoted(), "\"public\".\"orders\"");
+    }
+
+    // `new()` currently rejects `"` before this could ever be reached in
+    // production — this test constructs the struct directly (reachable only
+    // because this module is a child of qualified_table's own module, so it
+    // alone can see the private fields) to prove `quoted()` escapes on its
+    // own, so relaxing the allowlist later cannot silently reopen injection.
+    #[test]
+    fn quoted_doubles_an_embedded_quote_even_though_the_validator_currently_forbids_one() {
+        let t = QualifiedTable { schema: "a\"b".to_string(), name: "c\"d".to_string() };
+        assert_eq!(t.quoted(), "\"a\"\"b\".\"c\"\"d\"");
     }
 
     #[test]
