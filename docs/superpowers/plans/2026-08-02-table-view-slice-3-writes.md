@@ -3430,3 +3430,132 @@ Checked while writing, recorded so a reader does not have to re-derive them:
 - **Deliberately out of scope, with reasons in the constraints:** §13's per-`(connection, table, filter)` count cache (nothing is complaining about the cost yet, and it would add an invalidation path); §12's Run query / Add to pending UI (Slice 4 — but the `sql` variant of the type and its Apply arm are built, because Apply must handle whatever the set holds); §3a/§3b rail and query tabs (Slice 4); §7's replacement of string-based boolean detection (the spec itself defers it).
 - **Type consistency.** `PendingChange`'s field names are snake_case on both sides. `pk_column` / `pk_value` / `old_value` / `new_value` / `previewed_effect` / `row_missing` are spelled identically in `db_apply.rs`, `pendingChanges.ts`, every test and every panel. `stagedUpdateFor` is the one staged-value lookup and is called by Task 6's `renderCell` and nothing else. `stageCell` (Task 6) is the one staging call site and is reused unchanged by Task 7.
 - **Known gap this plan does not close:** spec §18's "staged values are not re-queried" still holds — a cell staged to a value that no longer matches the active filter stays visible. That is the accepted behaviour, not an oversight.
+
+---
+
+## Measured results
+
+Task 10's browser gate, run against Chromium 1234 (Playwright 1.62.1, headless)
+on the Vite dev server with `scripts/fk-stub.js` injected via `addInitScript`.
+Numbers, not verdicts — a later change that moves one of these should be
+visible as a moved number.
+
+**Viewport:** 1440 × 900 CSS px, `deviceScaleFactor: 1`. Step 4 alone also
+reads at 1600 × 900, because at 1440 the dock already squeezes the toolbar
+below its own collapse threshold and the labels would never be seen expanded.
+
+**Fixture as loaded:** 12 data columns + 1 actions column, `aria-rowcount="100"`
+(page 1 of 3 over the stub's 260 rows), 24 rows rendered by the virtualizer.
+Zero console errors across the whole run.
+
+### Step 3 — the four regression-critical behaviours
+
+| reading | value |
+| --- | --- |
+| `headerDelta` | −400 |
+| `bodyDelta` | −400 (equal — header and body track together) |
+| `renderedRows` | 24 |
+| `docScrollWidth` / `docClientWidth` | 1440 / 1440 (equal — the page does not scroll horizontally) |
+| `rowHeights` | `[33]` — one value, so the trash button did not change row height |
+
+### Step 4 — the toolbar with the Insert button present
+
+| reading | 1600 × 900 | 1440 × 900 |
+| --- | --- | --- |
+| `barWidth` (border box) | 788 | 628 |
+| toolbar content box (what `@container` reads) | 772 | 612 |
+| `barHeight` | 37 | 37 |
+| distinct child centres | `[127]` | `[127]` |
+| occupied band / tallest child | 26 / 26 | 26 / 26 |
+| `insertPresent` | true | true |
+| Insert `title` | `Insert row` | `Insert row` |
+| Insert `.tb-label` display / width | `block` / 35.7px | `none` / 0px |
+
+One row on both sides of the threshold: every visible child shares centre y=127
+and the whole band is 26px, the height of the tallest child, so nothing wrapped
+— and `barHeight` stays 37 either way.
+
+Two notes on the instrument, because the brief's snippet reads differently than
+it intends:
+
+- `distinctTops` is `[114, 119, 127, 115]` at **both** widths and always will
+  be. The bar is `items-center`, so children of different heights (26px
+  buttons, the 16px divider, the 0px spacer, the 24px pager) legitimately have
+  different `top`s on a single row. Distinct **centres** (and the band-vs-
+  tallest-child comparison above) is what actually distinguishes one row from
+  two; `distinctTops.length === 1` would only hold if every child were the same
+  height.
+- The 620px threshold is on the toolbar's **content** box, which `px-2` makes
+  16px narrower than `getBoundingClientRect().width`. `barWidth` 628 is already
+  collapsed (content 612). `globals.css` records the same measurement.
+
+### Step 5 — the cell editor's escape from its row's stacking context
+
+Measured with `document.elementFromPoint`, never a z-index comparison. Edited
+the `status` cell of the 13th rendered row (ordinal 12 of 24, **11 later
+sibling rows** below it — the later siblings are what make the test mean
+anything).
+
+| reading | value |
+| --- | --- |
+| editor `aria-label` | `Edit status` |
+| cell rect | left 751, right 891 (140 wide) |
+| editor rect | left 751, right 930 (179 wide, 34 tall) |
+| overhang past the cell's right edge | **39px** — the editor does spill over the columns to its right |
+| editing row's computed `z-index` | 20 (the row is raised, not the overlay) |
+| hit at (759, 589) — left | `insideEditor: true`, DIV |
+| hit at (841, 589) — centre | `insideEditor: true`, INPUT |
+| hit at (922, 589) — **right, over the overhang** | `insideEditor: true`, DIV |
+
+All three points land inside the editor. The right-hand point is the one that
+would read `false` if a later row painted across the overhang.
+
+### Step 6 — the staged-cell marker
+
+Toggled a `paid` checkbox, then measured the `[data-staged="true"]` bar.
+
+| reading | value |
+| --- | --- |
+| `width` | 2 |
+| `height` / cell height | 32 / 32 → `spansCell: true` |
+| `flushLeft` | 0 |
+| `background` | `rgb(227, 164, 56)` |
+| `--warning` token | `#e3a438`, resolving to `rgb(227, 164, 56)` — **same colour** |
+
+### Step 7 — the dock swapping occupants without changing width
+
+| occupant | `aria-label` | width | `--w-chat` |
+| --- | --- | --- | --- |
+| chat | `AI Assistant` | 320 | `320px` |
+| insert | `Insert row` | 320 | `320px` |
+| pending | `Pending changes` | 320 | `320px` |
+
+Then dragging the Pending panel's resize handle 80px left: `--w-chat` moved
+`320px` → `400px` and the panel measured 400 — so `DockShell`'s extraction kept
+the resize behaviour, not just the compile.
+
+Instrument note: `document.querySelector('aside[aria-label]')` returns the
+**Sessions sidebar** (`aria-label="Sessions"`, 240px), which is the first
+`<aside>` in the document. The dock is the last one; the readings above are the
+last `<aside>`, and the full list was captured at every step to prove which is
+which.
+
+### Step 8 — the insert panel's generated fields
+
+Fields in `describe_columns` order, one per stub column:
+
+| column | control | notes |
+| --- | --- | --- |
+| `id` | `INPUT` text | **`readOnly: true`**, placeholder `auto` |
+| `user_id` | `INPUT` text | required |
+| `status` | `INPUT` text | placeholder **`'pending'::text`** |
+| `amount` | `INPUT` **`number`** | required |
+| `paid` | **`SELECT`** | required |
+| `created_at` | `INPUT` text | placeholder **`now()`** |
+| `notes` | `INPUT` text | placeholder `NULL` (nullable) |
+| `region`, `channel`, `sku`, `reference` | `INPUT` text | required |
+| `quantity` | `INPUT` **`number`** | required |
+
+`Stage insert` is `disabled: true` with the required columns empty and
+`disabled: false` once they are filled. `docScrollWidth` 1440 = `docClientWidth`
+1440 with the panel open — the dock does not widen the page.

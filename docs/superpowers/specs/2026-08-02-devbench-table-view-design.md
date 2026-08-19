@@ -335,6 +335,15 @@ type PendingChange =
   | { kind: "sql"; table: string | null; statement: string; previewedEffect: string };
 ```
 
+Implementation note (Slice 3): `table` is a validated `QualifiedTable`
+(`{ schema, name }`), not a plain string — for the reason this section already
+gives for splitting the primary key into `pkColumn` + `pkValue`: a pre-joined
+string is a string that ends up interpolated into SQL. Field names on the wire
+are snake_case (`pk_column`, `old_value`, `previewed_effect`), matching serde
+and `TableRows`'s existing `pk_column`. `values` stays a JSON object and
+deserializes into a `BTreeMap`, so the generated column list and VALUES list
+are built from one deterministic order.
+
 The primary key travels as `pkColumn` + `pkValue`, not as a pre-built `WHERE`
 string. The mockup simplifies this to a display string; the implementation must
 not, because that string would end up interpolated into SQL.
@@ -391,6 +400,13 @@ overwriting.
 
 `IS NOT DISTINCT FROM` rather than `=` so a staged edit of a `NULL` cell
 matches correctly.
+
+Every bound value is cast to its column's catalog type (`$1::int4`), never the
+column to text. sqlx binds parameters as TEXT and Postgres has no assignment
+cast from text, so an uncast `SET "n" = $1` is a hard error on any non-text
+column; casting the column instead would be sargable-destroying on the keyed
+side. The type comes from the catalog and is identifier-validated before
+interpolation.
 
 ### Scope
 
@@ -466,6 +482,17 @@ struct ApplyOutcome {
   applied: usize,
   conflict: Option<ConflictReport>,   // Some(_) => nothing was written
 }
+
+struct ConflictReport {
+  index: usize,            // position in the submitted set
+  table: String,           // "public.orders", for display only
+  description: String,     // "id = 42"
+  column: Option<String>,  // None for a delete
+  expected: Option<String>,
+  found: Option<String>,
+  row_missing: bool,       // the PK matched no row — distinct from found: None,
+                           // which means the row is there holding NULL
+}
 ```
 
 `list_table_rows` gains `filter`; its existing over-fetch-by-one for
@@ -510,9 +537,18 @@ stretch it into a full-height field.
 For **cell edits only**: `editGenerationRef`, the in-flight button disabling,
 rollback-on-arrival, and the preview sweep. These exist solely to protect one
 live transaction; staged intent holds none. Their removal is the point of the
-change, not a side effect — but the bug they were introduced for (a committed
-write reported as failed, and a leaked transaction) must be re-checked against
-the new model in review.
+change, not a side effect. The bug they were introduced for was re-checked
+against the new model before they were deleted (Slice 3, Task 6), and the
+re-check concluded:
+
+> The bug those guards fixed was a **committed write reported as failed, and a
+> leaked transaction**. Both were possible only because a preview opened a real
+> transaction that outlived the UI that owned it. After this task, clicking ✓
+> mutates local state and returns synchronously — there is no request, no
+> transaction, no id, and therefore no window in which a response can land
+> against a component that has moved on. The failure mode is not merely
+> unguarded; it is unreachable. The one remaining round trip is Apply, which is
+> a single call the panel awaits and whose outcome it reports in full.
 
 Also removed: the client-side filter bar, its state and counter; the bottom
 pager strip; the boolean pills; and the query console drawer entirely — its
@@ -590,7 +626,8 @@ deliberate temporary duplication, not an oversight.
 **Each slice gets its own plan, written once its predecessor has survived
 contact.** Slice 1: `docs/superpowers/plans/2026-08-02-table-view-slice-1-toolbar.md`.
 Slice 2: `docs/superpowers/plans/2026-08-02-table-view-slice-2-foreign-keys.md`.
-Slices 3 and 4 are not planned yet.
+Slice 3: `docs/superpowers/plans/2026-08-02-table-view-slice-3-writes.md`.
+Slice 4 is not planned yet.
 
 ## 18. Risks and known gaps
 

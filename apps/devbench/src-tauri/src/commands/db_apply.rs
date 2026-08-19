@@ -342,7 +342,9 @@ mod tests {
     // TEXT, and Postgres has no assignment cast from text to integer or
     // boolean, so an uncast `SET "n" = $1` is a hard error on any column that
     // is not text. The retired single-preview cell-edit path had exactly this
-    // bug and never tripped it, because all four of its tests edited a text column.
+    // bug and never tripped it: of its five tests, two rejected a malicious
+    // identifier before reaching SQL at all, and the three that did issue an
+    // UPDATE all edited a text column.
     #[tokio::test]
     async fn casts_values_for_non_text_columns() {
         let pool = test_pool().await;

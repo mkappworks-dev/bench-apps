@@ -24,6 +24,12 @@
     `ref-${i}-${"x".repeat(20)}`,
   ]);
 
+  // Shaped so the insert panel has one of each field kind to draw: `id` is
+  // database-assigned (read-only), `status` and `created_at` carry defaults
+  // (placeholder, not required), `notes` is nullable, and everything else is
+  // NOT NULL with no default (required).
+  const DEFAULTS = { status: "'pending'::text", created_at: "now()" };
+
   const META = COLUMNS.map((name) => ({
     name,
     udt: name === "paid" ? "bool"
@@ -31,7 +37,7 @@
        : name === "created_at" ? "timestamptz"
        : "text",
     nullable: name === "notes",
-    default_expr: null,
+    default_expr: DEFAULTS[name] ?? null,
     is_identity: name === "id",
     references: name === "user_id" ? { schema: "public", table: "users", column: "id" } : null,
   }));
@@ -92,6 +98,9 @@
       rows: [[args.value, `${args.value}@example.com`, "active"]],
       pk_column: "id",
     }),
+    // Echoes success. The gate measures the UI around Apply, not the write —
+    // a stub that reported a conflict would exercise the error path instead.
+    apply_changes: (args) => ({ applied: (args.changes ?? []).length, conflict: null }),
   };
 
   window.__TAURI_INTERNALS__ = {
