@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LogSourcesSidebar } from "./LogSourcesSidebar";
-import { AddLogSourceForm } from "./AddLogSourceForm";
+import { AddLogSourcePopup } from "./AddLogSourcePopup";
 import { LogStream } from "./LogStream";
 import {
   invokeAddLogSource,
   invokeListLogSources,
   invokeReadLogLines,
   invokeRemoveLogSource,
+  type AddLogSourceInput,
   type LogLine,
   type LogSourceStatus,
 } from "../../lib/tauri";
@@ -78,10 +79,10 @@ export function LogTab({
     };
   }, [sourceId, refreshSources]);
 
-  async function handleAdd(input: { label: string; path: string }) {
+  async function handleAdd(input: AddLogSourceInput) {
     setAddError(null);
     try {
-      await invokeAddLogSource({ label: input.label, kind: "file", path: input.path });
+      await invokeAddLogSource(input);
       setShowAdd(false);
       await refreshSources();
     } catch (err) {
@@ -110,7 +111,7 @@ export function LogTab({
       />
       <div className="flex flex-1 flex-col overflow-hidden">
         {showAdd ? (
-          <AddLogSourceForm onSubmit={handleAdd} onCancel={() => setShowAdd(false)} error={addError} />
+          <AddLogSourcePopup onSubmit={handleAdd} onCancel={() => setShowAdd(false)} error={addError} />
         ) : null}
         <div className="flex items-center gap-2 border-b border-border p-2.5">
           <input
