@@ -21,7 +21,12 @@ const ORDERS = { schema: "public", name: "orders" };
 const PAYMENTS = { schema: "public", name: "payments" };
 
 function renderDb(table: tauriLib.QualifiedTable | string | null, onPatchState = vi.fn()) {
-  return { onPatchState, ...render(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table={table} onPatchState={onPatchState} />) };
+  return {
+    onPatchState,
+    ...render(
+      <DbTab watchedTables={new Set()} onToggleWatch={() => {}} table={table} onPatchState={onPatchState} onOpenQuery={() => {}} />,
+    ),
+  };
 }
 
 // DbTab is a controlled component — `table` comes from the parent's tab
@@ -36,6 +41,7 @@ function DbTabHarness({ initialTable }: { initialTable: tauriLib.QualifiedTable 
       onToggleWatch={() => {}}
       table={table}
       onPatchState={(patch) => setTable(patch.table)}
+      onOpenQuery={() => {}}
     />
   );
 }
@@ -164,7 +170,15 @@ describe("DbTab", () => {
       expect(listRows).toHaveBeenCalledWith("c1", ORDERS, expect.objectContaining({ offset: 0 })),
     );
 
-    rerender(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table={PAYMENTS} onPatchState={onPatchState} />);
+    rerender(
+      <DbTab
+        watchedTables={new Set()}
+        onToggleWatch={() => {}}
+        table={PAYMENTS}
+        onPatchState={onPatchState}
+        onOpenQuery={() => {}}
+      />,
+    );
     await waitFor(() =>
       expect(listRows).toHaveBeenCalledWith("c1", PAYMENTS, expect.objectContaining({ offset: 0 })),
     );
@@ -189,7 +203,15 @@ describe("DbTab", () => {
     expect(screen.getByRole("button", { name: "Unfreeze id" })).toHaveAttribute("aria-pressed", "true");
     expect(localStorage.getItem("devbench.grid-layout.c1:public.dup")).toContain('"pinned":["id"]');
 
-    rerender(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table={{ schema: "alt", name: "dup" }} onPatchState={onPatchState} />);
+    rerender(
+      <DbTab
+        watchedTables={new Set()}
+        onToggleWatch={() => {}}
+        table={{ schema: "alt", name: "dup" }}
+        onPatchState={onPatchState}
+        onOpenQuery={() => {}}
+      />,
+    );
     await waitFor(() => expect(screen.getByRole("button", { name: "Freeze id" })).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Freeze id" })).toHaveAttribute("aria-pressed", "false");
     expect(localStorage.getItem("devbench.grid-layout.c1:alt.dup")).toBeNull();
@@ -1159,7 +1181,15 @@ describe("DbTab", () => {
       fireEvent.click(await screen.findByText("pending"));
       await screen.findByLabelText("Edit status");
 
-      rerender(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table={PAYMENTS} onPatchState={onPatchState} />);
+      rerender(
+        <DbTab
+          watchedTables={new Set()}
+          onToggleWatch={() => {}}
+          table={PAYMENTS}
+          onPatchState={onPatchState}
+          onOpenQuery={() => {}}
+        />,
+      );
 
       // Waits for the NEW table's rows, not merely for the editor to vanish:
       // the switch blanks the grid for a moment, and an assertion taken during

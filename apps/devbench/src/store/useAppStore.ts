@@ -12,7 +12,10 @@ import {
 } from "../lib/pendingChanges";
 import { mergeSavedQueries, type SavedQuery } from "../lib/savedQueries";
 
-export type ToolKind = "api" | "db" | "log" | "email";
+/** `query` is a real tab kind but deliberately absent from `TABS`: it cannot
+ *  be created from the + menu, because opening one needs a saved query to
+ *  open. See §3b. */
+export type ToolKind = "api" | "db" | "log" | "email" | "query";
 export type Pane = "left" | "right";
 export type ThemePref = "dark" | "light" | "system";
 export type AppRoute = "workspace" | "settings";

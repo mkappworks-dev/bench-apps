@@ -3,8 +3,9 @@ import { Tabs } from "../ui/Tabs";
 import { Menu } from "../ui/Menu";
 import { BrandLockup } from "./Logo";
 import { TABS, TOOL_MENU_OPTIONS } from "./tools";
-import { isSplitOpen, type Pane, type Tab, type ToolKind } from "../../store/useAppStore";
+import { isSplitOpen, useAppStore, type Pane, type Tab, type ToolKind } from "../../store/useAppStore";
 import { normalizeTable } from "../../lib/tableIdentity";
+import { savedQueryById } from "../../lib/savedQueries";
 
 export function AppStrip({
   tabs,
@@ -133,12 +134,37 @@ const ACTION_CLASS =
   "transition-colors duration-150 hover:bg-surface-2 hover:text-text " +
   "aria-pressed:bg-surface-2 aria-pressed:text-text";
 
-function tabLabel(tab: Tab): React.ReactNode {
+/** A hook, because resolving a query's name means reading the store — so it
+ *  is called once per row, never from inside the tab map. `null` for a
+ *  non-query tab is what tells the label and the close name which shape they
+ *  are rendering. */
+function useQueryName(tab: Tab): string | null {
+  const savedQueries = useAppStore((s) => s.savedQueries);
+  if (tab.kind !== "query") return null;
+  const id = typeof tab.state.queryId === "string" ? tab.state.queryId : null;
+  return savedQueryById(savedQueries, id)?.name ?? "untitled query";
+}
+
+function TabLabel({ tab, queryName }: { tab: Tab; queryName: string | null }) {
   const meta = TABS.find((t) => t.id === tab.kind);
-  const base = meta?.label ?? tab.kind;
   // Visible subtitle stays the bare name, not schema-qualified — same
-  // no-visible-change-in-`public` rule SchemaTree's own label follows.
+  // no-visible-change-in-`public` rule ConnectionRail's own label follows.
   const subtitle = tab.kind === "db" ? (normalizeTable(tab.state.table)?.name ?? null) : null;
+
+  // A query tab's NAME is the label, not a subtitle under a kind word: the
+  // document is the thing, and "Query / failed orders today" would read as a
+  // category with an instance under it.
+  if (queryName !== null) {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span aria-hidden="true" className="shrink-0 text-text-faint">
+          <QueryIcon />
+        </span>
+        <span className="max-w-40 truncate font-mono">{queryName}</span>
+      </span>
+    );
+  }
+
   return (
     <span className="flex items-center gap-1.5">
       {meta ? (
@@ -147,17 +173,60 @@ function tabLabel(tab: Tab): React.ReactNode {
         </span>
       ) : null}
       <span className="flex flex-col items-start leading-tight">
-        <span>{base}</span>
+        <span>{meta?.label ?? tab.kind}</span>
         {subtitle ? <span className="font-mono text-[10px] text-text-faint">{subtitle}</span> : null}
       </span>
     </span>
   );
 }
 
-function tabCloseName(tab: Tab): string {
+function tabCloseName(tab: Tab, queryName: string | null): string {
+  if (queryName !== null) return `query ${queryName}`;
   const base = TABS.find((t) => t.id === tab.kind)?.label ?? tab.kind;
   const table = normalizeTable(tab.state.table);
   return table ? `${base} ${table.name}` : base;
+}
+
+function TabRow({
+  tab,
+  activeId,
+  onCloseTab,
+}: {
+  tab: Tab;
+  activeId: string | null;
+  onCloseTab: (id: string) => void;
+}) {
+  // Resolved once here rather than in each consumer: the label and the close
+  // button need the same name, and `useQueryName` is a hook, so it cannot be
+  // called from the tab map this row is rendered by.
+  const queryName = useQueryName(tab);
+
+  return (
+    // A sibling close button, not a child of Tabs.Tab: Tabs.Tab renders a
+    // <button>, and a nested <button> is invalid HTML and breaks click
+    // targeting. Same shape SessionsSidebar already uses for its per-row
+    // archive button.
+    <div className="group flex shrink-0 items-center">
+      <Tabs.Tab
+        value={tab.id}
+        data-selected={tab.id === activeId ? "" : undefined}
+        className={`shrink-0 rounded-sm px-2.5 py-1.5 text-xs font-medium text-text-muted transition-colors duration-150 hover:bg-surface-2 data-selected:bg-surface-2 data-selected:font-semibold data-selected:text-text ${
+          tab.kind === "query"
+            ? "data-selected:bg-query-tint data-selected:shadow-[inset_0_-2px_0_var(--query-edge)]"
+            : ""
+        }`}
+      >
+        <TabLabel tab={tab} queryName={queryName} />
+      </Tabs.Tab>
+      <button
+        aria-label={`Close ${tabCloseName(tab, queryName)}`}
+        onClick={() => onCloseTab(tab.id)}
+        className="-ml-1 grid size-5 shrink-0 place-items-center rounded-sm text-text-faint opacity-0 transition-opacity duration-150 hover:bg-surface-2 hover:text-text group-hover:opacity-100 focus-visible:opacity-100"
+      >
+        <CloseIcon />
+      </button>
+    </div>
+  );
 }
 
 function TabGroup({
@@ -202,26 +271,7 @@ function TabGroup({
     >
       <Tabs.List className="flex min-w-0 items-center gap-0.5 overflow-x-auto" aria-label={label}>
         {paneTabs.map((tab) => (
-          // A sibling close button, not a child of Tabs.Tab: Tabs.Tab renders
-          // a <button>, and a nested <button> is invalid HTML and breaks
-          // click targeting. Same shape SessionsSidebar already uses for its
-          // per-row archive button.
-          <div key={tab.id} className="group flex shrink-0 items-center">
-            <Tabs.Tab
-              value={tab.id}
-              data-selected={tab.id === activeId ? "" : undefined}
-              className="shrink-0 rounded-sm px-2.5 py-1.5 text-xs font-medium text-text-muted transition-colors duration-150 hover:bg-surface-2 data-selected:bg-surface-2 data-selected:font-semibold data-selected:text-text"
-            >
-              {tabLabel(tab)}
-            </Tabs.Tab>
-            <button
-              aria-label={`Close ${tabCloseName(tab)}`}
-              onClick={() => onCloseTab(tab.id)}
-              className="-ml-1 grid size-5 shrink-0 place-items-center rounded-sm text-text-faint opacity-0 transition-opacity duration-150 hover:bg-surface-2 hover:text-text group-hover:opacity-100 focus-visible:opacity-100"
-            >
-              <CloseIcon />
-            </button>
-          </div>
+          <TabRow key={tab.id} tab={tab} activeId={activeId} onCloseTab={onCloseTab} />
         ))}
       </Tabs.List>
       <Menu
@@ -259,6 +309,14 @@ function PlusIcon() {
   return (
     <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
       <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function QueryIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor">
+      <path d="M8 5.5v13l11-6.5z" />
     </svg>
   );
 }

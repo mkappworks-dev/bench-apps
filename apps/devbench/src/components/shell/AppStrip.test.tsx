@@ -1,7 +1,7 @@
 import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppStrip } from "./AppStrip";
-import type { Tab } from "../../store/useAppStore";
+import { useAppStore, type Tab } from "../../store/useAppStore";
 
 const TWO_LEFT_TABS: Tab[] = [
   { id: "t-api", kind: "api", pane: "left", ordinal: 0, state: {} },
@@ -20,7 +20,23 @@ const BASE = {
   onToggleChat: () => {},
 };
 
+const QUERY_TAB: Tab[] = [
+  { id: "t-q", kind: "query", pane: "left", ordinal: 0, state: { queryId: "q1", connectionId: "c1" } },
+];
+
+function seedQuery() {
+  useAppStore.setState({
+    savedQueries: [{ id: "q1", connection_id: "c1", name: "failed orders today", sql: "", created_at: 1 }],
+  });
+}
+
 describe("AppStrip", () => {
+  // Several cases below assert on every rendered tab, so a query left behind
+  // by an earlier case would show up in their lists.
+  beforeEach(() => {
+    useAppStore.setState({ savedQueries: [] });
+  });
+
   it("carries the product lockup in the column beside the traffic lights", () => {
     render(<AppStrip {...BASE} />);
     expect(screen.getByText("Dev Bench")).toBeInTheDocument();
@@ -210,5 +226,20 @@ describe("AppStrip", () => {
     expect(button.disabled).toBe(true);
     fireEvent.click(button);
     expect(onToggleChat).not.toHaveBeenCalled();
+  });
+
+  it("labels a query tab with the saved query's name in mono", () => {
+    seedQuery();
+    render(<AppStrip {...BASE} tabs={QUERY_TAB} activeTabId={{ left: "t-q", right: null }} />);
+
+    const label = screen.getByText("failed orders today");
+    expect(label.className).toContain("font-mono");
+  });
+
+  it("names the close button for a query tab by its query, not by its kind", () => {
+    seedQuery();
+    render(<AppStrip {...BASE} tabs={QUERY_TAB} activeTabId={{ left: "t-q", right: null }} />);
+
+    expect(screen.getByRole("button", { name: "Close query failed orders today" })).toBeInTheDocument();
   });
 });

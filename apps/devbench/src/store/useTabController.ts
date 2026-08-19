@@ -131,8 +131,17 @@ export function useTabController() {
     });
   }
 
-  function focusOrCreateTab(kind: ToolKind, statePatch?: Record<string, unknown>): string {
-    const existing = useAppStore.getState().tabs.find((t) => t.pane === "left" && t.kind === kind);
+  /** `match` narrows the lookup past tab kind. Query tabs need it: two saved
+   *  queries are two tabs, so a kind-only search would focus whichever one
+   *  happened to be first regardless of which query was clicked. */
+  function focusOrCreateTab(
+    kind: ToolKind,
+    statePatch?: Record<string, unknown>,
+    match?: (tab: Tab) => boolean,
+  ): string {
+    const existing = useAppStore
+      .getState()
+      .tabs.find((t) => t.pane === "left" && t.kind === kind && (match ? match(t) : true));
     if (existing) {
       setActiveTabIdInStore("left", existing.id);
       if (statePatch) patchTabState(existing.id, statePatch);

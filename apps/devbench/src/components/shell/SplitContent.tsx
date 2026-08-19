@@ -13,6 +13,7 @@ export function SplitContent({
   onAddTab,
   onPatchState,
   onOpenDb,
+  onOpenQuery,
   onOpenLog,
   onOpenEmail,
   emailFocusRequest,
@@ -22,6 +23,7 @@ export function SplitContent({
   onAddTab: (pane: Pane, kind: ToolKind) => void;
   onPatchState: (id: string, patch: Record<string, unknown>) => void;
   onOpenDb: (table: QualifiedTable) => void;
+  onOpenQuery: (queryId: string) => void;
   onOpenLog: () => void;
   onOpenEmail: (emailId: number | null) => void;
   emailFocusRequest: { tabId: string; emailId: number | null } | null;
@@ -39,7 +41,8 @@ export function SplitContent({
   // that every other tool still depends on, rather than fighting it with
   // negative margins.
   function paneOwnsDbLayout(pane: Pane): boolean {
-    return tabs.find((t) => t.pane === pane && t.id === activeTabId[pane])?.kind === "db";
+    const kind = tabs.find((t) => t.pane === pane && t.id === activeTabId[pane])?.kind;
+    return kind === "db" || kind === "query";
   }
 
   function renderPane(pane: Pane) {
@@ -57,6 +60,7 @@ export function SplitContent({
           tab={tab}
           onPatchState={(patch) => onPatchState(tab.id, patch)}
           onOpenDb={onOpenDb}
+          onOpenQuery={onOpenQuery}
           onOpenLog={onOpenLog}
           onOpenEmail={onOpenEmail}
           emailFocusId={emailFocusRequest?.tabId === tab.id ? emailFocusRequest.emailId : null}

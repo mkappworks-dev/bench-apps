@@ -53,6 +53,16 @@ export default function App() {
   function onToggleSplit(): boolean {
     return tabController.splitActiveTab();
   }
+  function onOpenQuery(queryId: string) {
+    const connectionId = useAppStore.getState().activeConnectionId;
+    if (!connectionId) return;
+    // Matched on queryId: one saved query is one document, so selecting the
+    // same query again focuses its tab instead of stacking a duplicate (§3b).
+    // The connection is captured here and never patched afterwards — moving
+    // the rail's picker must not silently repoint an open query at another
+    // database.
+    tabController.focusOrCreateTab("query", { queryId, connectionId }, (t) => t.state.queryId === queryId);
+  }
 
   // Fire-and-forget, checked once on mount: the normal (no `db_error`) case
   // never touches this state after the initial render, so a healthy startup
@@ -148,6 +158,7 @@ export default function App() {
           onAddTab={onAddTab}
           onPatchState={tabController.patchTabState}
           onOpenDb={(table) => tabController.focusOrCreateTab("db", { table })}
+          onOpenQuery={onOpenQuery}
           onOpenLog={() => tabController.focusOrCreateTab("log")}
           onOpenEmail={(emailId) => {
             const targetId = tabController.focusOrCreateTab("email");

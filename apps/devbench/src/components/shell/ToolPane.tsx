@@ -3,6 +3,7 @@ import type { QualifiedTable } from "../../lib/tauri";
 import { normalizeTable } from "../../lib/tableIdentity";
 import { ApiTab } from "../api/ApiTab";
 import { DbTab } from "../db/DbTab";
+import { QueryTab } from "../db/QueryTab";
 import { LogTab } from "../log/LogTab";
 import { EmailTab } from "../email/EmailTab";
 import { useAppStore } from "../../store/useAppStore";
@@ -21,6 +22,7 @@ export function ToolPane({
   tab,
   onPatchState,
   onOpenDb,
+  onOpenQuery,
   onOpenLog,
   onOpenEmail,
   emailFocusId,
@@ -30,6 +32,7 @@ export function ToolPane({
   tab: Tab;
   onPatchState: (patch: Record<string, unknown>) => void;
   onOpenDb: (table: QualifiedTable) => void;
+  onOpenQuery: (queryId: string) => void;
   onOpenLog: () => void;
   onOpenEmail: (emailId: number | null) => void;
   emailFocusId: number | null;
@@ -64,6 +67,7 @@ export function ToolPane({
           // a validated QualifiedTable.
           table={normalizeTable(tab.state.table)}
           onPatchState={onPatchState}
+          onOpenQuery={onOpenQuery}
         />
       );
     case "log":
@@ -72,5 +76,14 @@ export function ToolPane({
       );
     case "email":
       return <EmailTab focusEmailId={emailFocusId} onOpenHistory={onOpenHistory} />;
+    case "query":
+      return (
+        <QueryTab
+          tab={tab}
+          onOpenQuery={onOpenQuery}
+          watchedTables={watchedTables}
+          onToggleWatch={toggleWatchedTable}
+        />
+      );
   }
 }

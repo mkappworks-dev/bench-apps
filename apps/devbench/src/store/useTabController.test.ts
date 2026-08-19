@@ -214,4 +214,22 @@ describe("useTabController", () => {
     expect(useAppStore.getState().tabs.map((t) => t.id)).toEqual([targetId]);
     expect(useAppStore.getState().tabs[0].kind).toBe("log");
   });
+
+  it("focuses an existing tab matched by state, not merely by kind", () => {
+    // Two query tabs are two documents. A kind-only lookup would focus the
+    // first one no matter which query was clicked.
+    useAppStore.setState({
+      tabs: [
+        { id: "t1", kind: "query", pane: "left", ordinal: 0, state: { queryId: "q1", connectionId: "c1" } },
+        { id: "t2", kind: "query", pane: "left", ordinal: 1, state: { queryId: "q2", connectionId: "c1" } },
+      ],
+      activeTabId: { left: "t1", right: null },
+    });
+
+    const { result } = renderHook(() => useTabController());
+    const id = result.current.focusOrCreateTab("query", undefined, (t) => t.state.queryId === "q2");
+
+    expect(id).toBe("t2");
+    expect(useAppStore.getState().activeTabId.left).toBe("t2");
+  });
 });
