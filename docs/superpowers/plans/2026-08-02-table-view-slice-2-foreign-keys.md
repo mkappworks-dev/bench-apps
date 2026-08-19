@@ -16,11 +16,18 @@
 - Type scale from the mockup: `--fs-xs: 10.5px`, `--fs-sm: 12px`, `--fs-md: 13.5px`.
 - Column and table identifiers are **validated** with `validate_identifier` before interpolation. Filter and lookup **values are always bound parameters** — never interpolated.
 - jsdom has no layout engine. Never assert layout in vitest, and never write a test that appears to check layout but asserts nothing. Anything positional is verified in a real browser via Playwright with `getComputedStyle` / `getBoundingClientRect`, reporting measured numbers.
-- **Baseline to keep green, measured on this worktree at `371b440`:**
-  - `cd apps/devbench && bun run test` → **402 passing / 44 files**
+- **Baseline to keep green, measured on this worktree at `15ad0c3`:**
+  - `cd apps/devbench && bun run test` → **406 passing / 44 files**
   - `cd apps/devbench && bun run build` → clean (runs `tsc` then `vite build`)
-  - `cd apps/devbench/src-tauri && cargo test --lib` → **226 passing, 1 ignored**
-- Postgres for Rust tests: container `devbench-test-pg`, `localhost:5432`, `postgres`/`postgres`, db `devbench_test`. `docker start devbench-test-pg` if unreachable. Don't modify roles or auth.
+  - `cd apps/devbench/src-tauri && cargo test` → **228 passing, 1 ignored** (lib) and **6 passing** (`smoke_test`)
+  - Run `cargo test`, **not** `cargo test --lib`. `--lib` does not compile `tests/*.rs` at all. Slice 2a used it as
+    its gate and `tests/smoke_test.rs` sat broken through three tasks before anything noticed — it had stopped
+    compiling the moment a command signature changed. `--lib` is fine for focused iteration on one module; it is
+    not a suite gate. The repo's own README and PR template already say `cargo test`.
+- Postgres for Rust tests: `localhost:5432`, `postgres`/`postgres`, db `devbench_test`, from this repo's own
+  `docker-compose.yml` (`docker compose up -d postgres`). The container `devbench-test-pg` named in earlier plans
+  no longer exists. `test_pool()` hardcodes port 5432 with no `PGPORT` override, so if another project holds 5432
+  (`openstem-postgres` did during Slice 2a) that port must be freed first. Don't modify roles or auth.
 - **There is no seeded schema.** `docker-compose.yml` creates an empty `devbench_test`; every Rust test in this codebase creates and drops its own fixtures (see `db.rs`'s `orders_for_test`, `dup_ipc`, `alt_ipc`). Follow that. Because cargo runs tests in one process against one shared database concurrently, **every test must use fixture names unique to itself** — two tests sharing `fk_orders` will race and fail intermittently.
 - Tauri commands are registered in **`src-tauri/src/main.rs`** (`tauri::generate_handler![…]`), not `lib.rs`. The Slice 1 plan said `lib.rs`; that was wrong.
 - These four grid behaviours are regression-critical and must still hold after every task: sticky header stays aligned with body columns under horizontal scroll; virtualization keeps rendering rows; horizontal scroll stays contained (`document.documentElement.scrollWidth === clientWidth`); NULL stays visually distinct from `<unsupported type>`.
@@ -518,7 +525,7 @@ Expected: 5 passing.
 Then the whole suite, which must be the baseline plus these 5:
 
 ```bash
-cd apps/devbench/src-tauri && cargo test --lib 2>&1 | tail -5
+cd apps/devbench/src-tauri && cargo test 2>&1 | tail -20
 ```
 
 Expected: **231 passed** (226 baseline + 5), 1 ignored.
@@ -874,7 +881,7 @@ cd apps/devbench/src-tauri && cargo test --lib db_columns 2>&1 | tail -20
 Expected: 10 passing.
 
 ```bash
-cd apps/devbench/src-tauri && cargo test --lib 2>&1 | tail -5
+cd apps/devbench/src-tauri && cargo test 2>&1 | tail -20
 ```
 
 Expected: **236 passed** (226 baseline + 10), 1 ignored.
@@ -2835,7 +2842,7 @@ deviation as a deviation, with both numbers — do not silently accept one.
 ```bash
 cd apps/devbench && bun run test 2>&1 | tail -5
 cd apps/devbench && bun run build 2>&1 | tail -5
-cd apps/devbench/src-tauri && cargo test --lib 2>&1 | tail -5
+cd apps/devbench/src-tauri && cargo test 2>&1 | tail -20
 ```
 
 Report the actual counts against the baseline (402 vitest / 44 files, 226 cargo
