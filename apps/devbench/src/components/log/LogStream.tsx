@@ -23,14 +23,27 @@ function shortTime(timestamp: string | null): string {
   return match ? match[1] : timestamp;
 }
 
-export function LogStream({ lines, filter }: { lines: LogLine[]; filter: string }) {
+export function LogStream({
+  lines,
+  filter,
+  levels = [],
+}: {
+  lines: LogLine[];
+  filter: string;
+  /** Exact level multi-select. Empty means no level constraint. */
+  levels?: string[];
+}) {
   const parentRef = useRef<HTMLDivElement>(null);
 
   const visible = useMemo(() => {
     const needle = filter.trim().toLowerCase();
-    if (!needle) return lines;
-    return lines.filter((l) => l.raw.toLowerCase().includes(needle));
-  }, [lines, filter]);
+    return lines.filter((l) => {
+      if (needle && !l.raw.toLowerCase().includes(needle)) return false;
+      // An unparsed line has no level, so it can't satisfy a level filter.
+      if (levels.length > 0 && (l.level === null || !levels.includes(l.level))) return false;
+      return true;
+    });
+  }, [lines, filter, levels]);
 
   const virtualizer = useVirtualizer({
     count: visible.length,
@@ -55,7 +68,11 @@ export function LogStream({ lines, filter }: { lines: LogLine[]; filter: string 
   }
 
   if (visible.length === 0) {
-    return <div className="p-4 text-sm text-text-faint">No lines match "{filter}".</div>;
+    return (
+      <div className="p-4 text-sm text-text-faint">
+        No lines match {filter.trim() ? `"${filter}"` : "the current filter"}.
+      </div>
+    );
   }
 
   return (
