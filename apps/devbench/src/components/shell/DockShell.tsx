@@ -101,7 +101,7 @@ export function DockShell({
           </button>
         </div>
         {children}
-        {footer ? <div data-dock-foot>{footer}</div> : null}
+        {footer}
       </div>
     </aside>
   );

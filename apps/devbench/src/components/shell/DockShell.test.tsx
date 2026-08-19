@@ -27,13 +27,13 @@ describe("DockShell", () => {
   // A footer is a slot, not a fixture: the Pending panel hides its Apply row
   // entirely when nothing is staged, and the shell must not leave a stray
   // divider behind when it does.
-  it("renders no footer element when given none", () => {
-    const { container, rerender } = render(
+  it("renders nothing for the footer slot until one is given", () => {
+    const { rerender } = render(
       <DockShell label="Insert row" closeLabel="Close insert row" title="Insert row" onClose={() => {}}>
         <div>body</div>
       </DockShell>,
     );
-    expect(container.querySelector("[data-dock-foot]")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stage insert" })).toBeNull();
 
     rerender(
       <DockShell
