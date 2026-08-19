@@ -1207,4 +1207,34 @@ describe("DbTab", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Pending 1" }));
     expect(useAppStore.getState().dockPanel).toBe("pending");
   });
+
+  it("stages a row delete and toggles it back off", async () => {
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id", "status"], rows: [["42", "pending"]], pk_column: "id",
+    });
+    useAppStore.getState().discardAllPending();
+
+    renderDb(ORDERS);
+    fireEvent.click(await screen.findByRole("button", { name: "Stage delete of row 42" }));
+
+    expect(useAppStore.getState().pending).toEqual([
+      { kind: "delete", table: ORDERS, pk_column: "id", pk_value: "42" },
+    ]);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Undo staged delete of row 42" }));
+    expect(useAppStore.getState().pending).toEqual([]);
+  });
+
+  // Spec §11: it requires a single-column primary key — the same rule that
+  // already governs whether a cell is editable. Without one there is no safe
+  // WHERE target, so the action must be absent rather than disabled-and-lying.
+  it("offers no delete action when the table has no single-column primary key", async () => {
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id", "status"], rows: [["42", "pending"]], pk_column: null,
+    });
+
+    renderDb(ORDERS);
+    await screen.findByText("pending");
+    expect(screen.queryByRole("button", { name: /stage delete/i })).toBeNull();
+  });
 });

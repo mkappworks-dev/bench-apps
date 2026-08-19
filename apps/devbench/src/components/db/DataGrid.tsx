@@ -58,6 +58,11 @@ export interface DataGridProps {
    *  row's z-index competes directly with its siblings' `auto` and with the
    *  sticky header's z-30. */
   raisedRowIndex?: number | null;
+  /** Extra controls appended to the row's actions column — DbTab plugs the
+   *  stage-delete toggle in here. Given the DATA row index, exactly like
+   *  `renderCell`, so a reorder or a filter can never redirect an action to a
+   *  different row than the one it was drawn on. */
+  renderRowActions?: (rowIndex: number) => ReactNode;
 }
 
 export type CellKind = "null" | "unsupported" | "number" | "bool-true" | "bool-false" | "text";
@@ -159,6 +164,7 @@ export function DataGrid({
   onLayoutChange,
   toolbar,
   raisedRowIndex = null,
+  renderRowActions,
 }: DataGridProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
@@ -525,6 +531,7 @@ export function DataGrid({
                         >
                           JSON
                         </button>
+                        {renderRowActions ? renderRowActions(dataRowIndex) : null}
                       </div>
                     </div>
                   );

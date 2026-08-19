@@ -255,4 +255,22 @@ describe("DataGrid", () => {
     expect(raisedRow.style.zIndex).toBe("20");
     expect(otherRow.style.zIndex).toBe("");
   });
+
+  it("renders caller-supplied row actions against the data row index", () => {
+    render(
+      <DataGrid
+        columns={["id"]}
+        rows={[["1"], ["2"]]}
+        renderRowActions={(rowIndex) => (
+          <button type="button" aria-label={`Act on row ${rowIndex}`}>
+            x
+          </button>
+        )}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Act on row 0" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Act on row 1" })).toBeTruthy();
+    // The copy actions are not retired by this slice and must survive.
+    expect(screen.getAllByRole("button", { name: "Copy row as JSON" })).toHaveLength(2);
+  });
 });

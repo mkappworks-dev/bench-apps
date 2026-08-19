@@ -20,7 +20,7 @@ import {
   type SortTerm,
   type TableRows,
 } from "../../lib/tauri";
-import { stagedUpdateFor } from "../../lib/pendingChanges";
+import { stagedUpdateFor, hasStagedDelete } from "../../lib/pendingChanges";
 import { useAppStore } from "../../store/useAppStore";
 
 // A cell being edited. No phase and no in-flight flag: accepting an edit
@@ -48,6 +48,14 @@ function CrossIcon() {
   return (
     <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
       <path d="M6 6l12 12M18 6L6 18" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 7h16M10 7V5h4v2M6 7l1 13h10l1-13" />
     </svg>
   );
 }
@@ -85,6 +93,7 @@ export function DbTab({
   const setChatOpen = useAppStore((s) => s.setChatOpen);
   const pending = useAppStore((s) => s.pending);
   const stagePendingUpdate = useAppStore((s) => s.stagePendingUpdate);
+  const togglePendingDelete = useAppStore((s) => s.togglePendingDelete);
 
   const [tableRows, setTableRows] = useState<TableRows | null>(null);
   // The backend derives `columns` from the first returned row, so a filter that
@@ -748,6 +757,35 @@ export function DbTab({
                     // row paints over it — the editor had this bug too, not
                     // just the FK popover. Raising the ROW is the only fix.
                     raisedRowIndex={fkCell?.rowIndex ?? editing?.rowIndex ?? null}
+                    renderRowActions={(rowIndex) => {
+                      // Spec §11: a delete needs a single-column primary key,
+                      // the same rule that governs whether a cell is editable.
+                      const pkColumn = tableRows?.pk_column;
+                      if (!table || !pkColumn) return null;
+                      const pkValue = pkValueForRow(rowIndex);
+                      if (pkValue === null) return null;
+                      const staged = hasStagedDelete(pending, table, pkValue);
+                      return (
+                        <button
+                          type="button"
+                          // Named by the row it acts on: one of these is drawn
+                          // per row, and identical names would make every one
+                          // of them indistinguishable to a screen reader.
+                          aria-label={
+                            staged
+                              ? `Undo staged delete of row ${pkValue}`
+                              : `Stage delete of row ${pkValue}`
+                          }
+                          aria-pressed={staged}
+                          onClick={() => togglePendingDelete(table, pkColumn, pkValue)}
+                          className={`px-1 ${
+                            staged ? "text-danger" : "text-text-faint hover:text-danger"
+                          }`}
+                        >
+                          <TrashIcon />
+                        </button>
+                      );
+                    }}
                     toolbar={
                       <GridToolbar
                         // Not tableRows.columns: a filter matching zero rows
