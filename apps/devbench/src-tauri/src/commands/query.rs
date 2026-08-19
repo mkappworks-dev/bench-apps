@@ -4,7 +4,7 @@ use sqlx::{Column, Either, Row};
 use std::sync::Arc;
 use tauri::State;
 
-use crate::commands::db::{cell_to_string, get_column_type, validate_identifier_labeled};
+use crate::commands::db::cell_to_string;
 use crate::connection_registry::ConnectionRegistry;
 use crate::local_db::LocalDb;
 use crate::preview_state::{PendingPreviewRegistry, PREVIEW_TIMEOUT_MS};
@@ -123,63 +123,6 @@ pub async fn preview_query_impl(
     Ok(QueryPreview { preview_id, columns, rows, rows_affected })
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn preview_cell_edit_impl(
-    registry: &ConnectionRegistry,
-    previews: &PendingPreviewRegistry,
-    db: &sqlx::SqlitePool,
-    secrets: &dyn SecretStore,
-    connection_id: &str,
-    table: &crate::commands::qualified_table::QualifiedTable,
-    pk_column: &str,
-    pk_value: &str,
-    column: &str,
-    value: Option<&str>,
-    now_ms: i64,
-) -> Result<QueryPreview, String> {
-    validate_identifier_labeled("pk column", pk_column)?;
-    validate_identifier_labeled("column", column)?;
-
-    let pool = registry.pool_for(connection_id, db, secrets).await?;
-
-    // Cast the bound value to the PK column's own type ($2::{pk_type}) rather
-    // than casting the column to text: sqlx binds &str parameters as text,
-    // and comparing an untouched integer column against a text parameter has
-    // no operator — but casting the *column* instead (`"{pk_column}"::text`)
-    // is non-sargable and forces a seq scan even on an indexed PK. pk_type
-    // comes from the catalog, not user input, but it's still validated below
-    // before interpolation, matching this file's identifier discipline.
-    let pk_type = get_column_type(&pool, table, pk_column).await?;
-    validate_identifier_labeled("pk type", &pk_type)?;
-
-    let mut tx = pool.begin().await.map_err(|e| format!("failed to open a transaction: {e}"))?;
-
-    let sql = format!(
-        "UPDATE {} SET \"{column}\" = $1 WHERE \"{pk_column}\" = $2::{pk_type}",
-        table.quoted()
-    );
-    let result = sqlx::query(&sql)
-        .bind(value)
-        .bind(pk_value)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("update failed: {e}"))?;
-
-    if result.rows_affected() != 1 {
-        // A PK match of zero or more than one row means something is wrong
-        // with the assumption this edit was built on — not something to
-        // preview and let the user paper over.
-        let _ = tx.rollback().await;
-        return Err(format!(
-            "expected to match exactly 1 row by {pk_column} = {pk_value}, matched {}",
-            result.rows_affected()
-        ));
-    }
-
-    let preview_id = previews.hold(tx, now_ms, PREVIEW_TIMEOUT_MS);
-    Ok(QueryPreview { preview_id, columns: vec![], rows: vec![], rows_affected: Some(1) })
-}
-
 pub async fn commit_preview_impl(previews: &PendingPreviewRegistry, preview_id: &str) -> Result<(), String> {
     let preview = previews.take(preview_id).ok_or_else(|| format!("no open preview with id {preview_id}"))?;
     preview.transaction.commit().await.map_err(|e| format!("commit failed: {e}"))
@@ -203,28 +146,6 @@ pub async fn preview_query(
     preview_query_impl(&registry, &previews, &db.pool, secrets.as_ref(), &connection_id, &sql, chrono::Utc::now().timestamp_millis()).await
 }
 
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn preview_cell_edit(
-    db: State<'_, LocalDb>,
-    secrets: State<'_, Arc<dyn SecretStore>>,
-    registry: State<'_, Arc<ConnectionRegistry>>,
-    previews: State<'_, Arc<PendingPreviewRegistry>>,
-    connection_id: String,
-    table: crate::commands::qualified_table::QualifiedTable,
-    pk_column: String,
-    pk_value: String,
-    column: String,
-    value: Option<String>,
-) -> Result<QueryPreview, String> {
-    preview_cell_edit_impl(
-        &registry, &previews, &db.pool, secrets.as_ref(), &connection_id,
-        &table, &pk_column, &pk_value, &column, value.as_deref(),
-        chrono::Utc::now().timestamp_millis(),
-    )
-    .await
-}
-
 #[tauri::command]
 pub async fn commit_preview(previews: State<'_, Arc<PendingPreviewRegistry>>, preview_id: String) -> Result<(), String> {
     commit_preview_impl(&previews, &preview_id).await
@@ -240,10 +161,6 @@ mod tests {
     use super::*;
     use crate::commands::connections::{create_connection_impl, ConnectionInput};
     use crate::secrets::InMemorySecretStore;
-
-    fn public(name: &str) -> crate::commands::qualified_table::QualifiedTable {
-        crate::commands::qualified_table::QualifiedTable::new("public", name).unwrap()
-    }
 
     async fn db() -> (tempfile::TempDir, LocalDb) {
         let dir = tempfile::tempdir().unwrap();
@@ -535,113 +452,4 @@ mod tests {
         assert!(rollback_preview_impl(&previews, "not-a-real-id").await.is_err());
     }
 
-    // `pk_column` and `column` are still bare `&str`, validated at runtime
-    // inside `preview_cell_edit_impl` — unlike `table`, which is now a
-    // `QualifiedTable` and can't carry a malicious value at all.
-    #[tokio::test]
-    async fn preview_cell_edit_rejects_a_malicious_pk_column() {
-        let (_dir, sqlite) = db().await;
-        let secrets = InMemorySecretStore::default();
-        let created = create_connection_impl(&sqlite.pool, &secrets, local_dev_input()).await.unwrap();
-        let registry = ConnectionRegistry::new();
-        let previews = PendingPreviewRegistry::new();
-
-        let result = preview_cell_edit_impl(
-            &registry, &previews, &sqlite.pool, &secrets, &created.id,
-            &public("orders"), "id; DROP TABLE users; --", "1", "status", Some("shipped"), 0,
-        ).await;
-        assert!(result.is_err(), "a malicious pk_column must be rejected before it reaches SQL");
-    }
-
-    #[tokio::test]
-    async fn preview_cell_edit_rejects_a_malicious_column() {
-        let (_dir, sqlite) = db().await;
-        let secrets = InMemorySecretStore::default();
-        let created = create_connection_impl(&sqlite.pool, &secrets, local_dev_input()).await.unwrap();
-        let registry = ConnectionRegistry::new();
-        let previews = PendingPreviewRegistry::new();
-
-        let result = preview_cell_edit_impl(
-            &registry, &previews, &sqlite.pool, &secrets, &created.id,
-            &public("orders"), "id", "1", "status; DROP TABLE users; --", Some("shipped"), 0,
-        ).await;
-        assert!(result.is_err(), "a malicious column must be rejected before it reaches SQL");
-    }
-
-    #[tokio::test]
-    async fn preview_cell_edit_updates_exactly_the_matched_row() {
-        let raw = raw_pool().await;
-        sqlx::query("DROP TABLE IF EXISTS cell_edit_test").execute(&raw).await.unwrap();
-        sqlx::query("CREATE TABLE cell_edit_test (id serial PRIMARY KEY, status text)").execute(&raw).await.unwrap();
-        sqlx::query("INSERT INTO cell_edit_test (status) VALUES ('pending')").execute(&raw).await.unwrap();
-
-        let (_dir, sqlite) = db().await;
-        let secrets = InMemorySecretStore::default();
-        let created = create_connection_impl(&sqlite.pool, &secrets, local_dev_input()).await.unwrap();
-        let registry = ConnectionRegistry::new();
-        let previews = PendingPreviewRegistry::new();
-
-        let preview = preview_cell_edit_impl(
-            &registry, &previews, &sqlite.pool, &secrets, &created.id,
-            &public("cell_edit_test"), "id", "1", "status", Some("shipped"), 0,
-        ).await.unwrap();
-        assert_eq!(preview.rows_affected, Some(1));
-
-        commit_preview_impl(&previews, &preview.preview_id).await.unwrap();
-
-        let status: String = sqlx::query("SELECT status FROM cell_edit_test WHERE id = 1")
-            .fetch_one(&raw).await.unwrap().get("status");
-        assert_eq!(status, "shipped");
-
-        sqlx::query("DROP TABLE cell_edit_test").execute(&raw).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn preview_cell_edit_updates_a_text_primary_key_row() {
-        let raw = raw_pool().await;
-        sqlx::query("DROP TABLE IF EXISTS cell_edit_text_pk_test").execute(&raw).await.unwrap();
-        sqlx::query("CREATE TABLE cell_edit_text_pk_test (code text PRIMARY KEY, status text)").execute(&raw).await.unwrap();
-        sqlx::query("INSERT INTO cell_edit_text_pk_test (code, status) VALUES ('abc', 'pending')").execute(&raw).await.unwrap();
-
-        let (_dir, sqlite) = db().await;
-        let secrets = InMemorySecretStore::default();
-        let created = create_connection_impl(&sqlite.pool, &secrets, local_dev_input()).await.unwrap();
-        let registry = ConnectionRegistry::new();
-        let previews = PendingPreviewRegistry::new();
-
-        let preview = preview_cell_edit_impl(
-            &registry, &previews, &sqlite.pool, &secrets, &created.id,
-            &public("cell_edit_text_pk_test"), "code", "abc", "status", Some("shipped"), 0,
-        ).await.unwrap();
-        assert_eq!(preview.rows_affected, Some(1));
-
-        commit_preview_impl(&previews, &preview.preview_id).await.unwrap();
-
-        let status: String = sqlx::query("SELECT status FROM cell_edit_text_pk_test WHERE code = 'abc'")
-            .fetch_one(&raw).await.unwrap().get("status");
-        assert_eq!(status, "shipped");
-
-        sqlx::query("DROP TABLE cell_edit_text_pk_test").execute(&raw).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn preview_cell_edit_errors_when_the_primary_key_value_matches_no_row() {
-        let raw = raw_pool().await;
-        sqlx::query("DROP TABLE IF EXISTS cell_edit_no_match_test").execute(&raw).await.unwrap();
-        sqlx::query("CREATE TABLE cell_edit_no_match_test (id serial PRIMARY KEY, status text)").execute(&raw).await.unwrap();
-
-        let (_dir, sqlite) = db().await;
-        let secrets = InMemorySecretStore::default();
-        let created = create_connection_impl(&sqlite.pool, &secrets, local_dev_input()).await.unwrap();
-        let registry = ConnectionRegistry::new();
-        let previews = PendingPreviewRegistry::new();
-
-        let result = preview_cell_edit_impl(
-            &registry, &previews, &sqlite.pool, &secrets, &created.id,
-            &public("cell_edit_no_match_test"), "id", "999", "status", Some("shipped"), 0,
-        ).await;
-        assert!(result.is_err(), "a PK value matching no row must error rather than silently no-op");
-
-        sqlx::query("DROP TABLE cell_edit_no_match_test").execute(&raw).await.unwrap();
-    }
 }

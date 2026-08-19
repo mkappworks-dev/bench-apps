@@ -217,7 +217,6 @@ fn main() {
             commands::mcp::check_mcp_server,
             commands::chat::send_chat_message,
             commands::query::preview_query,
-            commands::query::preview_cell_edit,
             commands::query::commit_preview,
             commands::query::rollback_preview,
         ])

@@ -341,8 +341,8 @@ mod tests {
     // The regression that motivated casting at all: sqlx binds every value as
     // TEXT, and Postgres has no assignment cast from text to integer or
     // boolean, so an uncast `SET "n" = $1` is a hard error on any column that
-    // is not text. The retired preview_cell_edit_impl had exactly this bug and
-    // never tripped it, because all four of its tests edited a text column.
+    // is not text. The retired single-preview cell-edit path had exactly this
+    // bug and never tripped it, because all four of its tests edited a text column.
     #[tokio::test]
     async fn casts_values_for_non_text_columns() {
         let pool = test_pool().await;

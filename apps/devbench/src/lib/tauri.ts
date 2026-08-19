@@ -286,17 +286,6 @@ export function invokePreviewQuery(connectionId: string, sql: string): Promise<Q
   return invoke("preview_query", { connectionId, sql });
 }
 
-export function invokePreviewCellEdit(
-  connectionId: string,
-  table: QualifiedTable,
-  pkColumn: string,
-  pkValue: string,
-  column: string,
-  value: string | null,
-): Promise<QueryPreview> {
-  return invoke("preview_cell_edit", { connectionId, table, pkColumn, pkValue, column, value });
-}
-
 export function invokeCommitPreview(previewId: string): Promise<void> {
   return invoke("commit_preview", { previewId });
 }
