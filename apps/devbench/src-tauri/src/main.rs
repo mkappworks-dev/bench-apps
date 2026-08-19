@@ -170,6 +170,7 @@ fn main() {
             commands::db::count_table_rows,
             commands::db_columns::describe_columns,
             commands::db_columns::get_referenced_row,
+            commands::db_apply::apply_changes,
             commands::request::fire_request,
             commands::history::save_history_entry,
             commands::history::list_history,
