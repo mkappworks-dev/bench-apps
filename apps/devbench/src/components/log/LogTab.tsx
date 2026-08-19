@@ -81,7 +81,7 @@ export function LogTab({
   async function handleAdd(input: { label: string; path: string }) {
     setAddError(null);
     try {
-      await invokeAddLogSource(input.label, input.path);
+      await invokeAddLogSource({ label: input.label, kind: "file", path: input.path });
       setShowAdd(false);
       await refreshSources();
     } catch (err) {

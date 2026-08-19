@@ -3,8 +3,16 @@ import { describe, expect, it, vi } from "vitest";
 import { LogSourcesSidebar } from "./LogSourcesSidebar";
 
 const sources = [
-  { id: "a", label: "server.log", path: "/tmp/server.log", state: "live", error: null },
-  { id: "b", label: "worker.log", path: "/tmp/worker.log", state: "error", error: "cannot read /tmp/worker.log" },
+  { id: "a", label: "server.log", path: "/tmp/server.log", kind: "file", state: "live", error: null, exit_code: null },
+  {
+    id: "b",
+    label: "worker.log",
+    path: "/tmp/worker.log",
+    kind: "file",
+    state: "error",
+    error: "cannot read /tmp/worker.log",
+    exit_code: null,
+  },
 ];
 
 describe("LogSourcesSidebar", () => {
