@@ -387,8 +387,15 @@ export function DataGrid({
     function onScroll() {
       setCopyMenuRow(null);
     }
-    el.addEventListener("scroll", onScroll);
-    return () => el.removeEventListener("scroll", onScroll);
+    // Deferred by a frame on purpose. Clicking a trigger that is not fully in
+    // view focuses it, and the browser scrolls it into view AFTER the click
+    // handler runs — listening synchronously means that scroll dismisses the
+    // menu the same click just opened.
+    const frame = requestAnimationFrame(() => el.addEventListener("scroll", onScroll));
+    return () => {
+      cancelAnimationFrame(frame);
+      el.removeEventListener("scroll", onScroll);
+    };
   }, [copyMenuRow]);
 
   return (

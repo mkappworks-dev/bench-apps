@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach, beforeAll } from "vitest";
 import { DataGrid, type DataGridProps } from "./DataGrid";
 import { EMPTY_LAYOUT, type GridLayout } from "./grid/gridLayout";
@@ -149,13 +149,35 @@ describe("DataGrid", () => {
 
   // Virtualization unmounts the row underneath an open menu, so a menu that
   // outlives a scroll would be left anchored to nothing.
-  it("closes the menu when the grid is scrolled", () => {
+  it("closes the menu when the grid is scrolled", async () => {
     render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
     fireEvent.click(screen.getByRole("button", { name: "Copy row" }));
     expect(screen.getByText("Copy as TSV")).toBeInTheDocument();
     const scrollContainer = document.querySelector(".overflow-auto") as HTMLElement;
+    // The listener attaches a frame after opening (see the effect's own
+    // comment) — a scroll from a later frame is what this pins.
+    await act(async () => {
+      await new Promise(requestAnimationFrame);
+    });
     fireEvent.scroll(scrollContainer);
-    expect(screen.queryByText("Copy as TSV")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("Copy as TSV")).not.toBeInTheDocument());
+  });
+
+  // A trigger that isn't fully in view gets focused by the click, and the
+  // browser scrolls it into view AFTER the click handler runs — a same-frame
+  // scroll must not dismiss the menu that click just opened. (jsdom doesn't
+  // focus-scroll, so this drives the scroll directly.)
+  it("survives the scroll the opening click itself causes", async () => {
+    render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Copy row" }));
+    const scrollContainer = document.querySelector(".overflow-auto") as HTMLElement;
+    fireEvent.scroll(scrollContainer); // same frame as opening
+    expect(screen.getByText("Copy as TSV")).toBeInTheDocument();
+    await act(async () => {
+      await new Promise(requestAnimationFrame);
+    });
+    fireEvent.scroll(scrollContainer); // a frame later
+    await waitFor(() => expect(screen.queryByText("Copy as TSV")).not.toBeInTheDocument());
   });
 
   // Same hazard raisedRowIndex exists to fix: the row's own transform makes
