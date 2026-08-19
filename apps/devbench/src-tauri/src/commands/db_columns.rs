@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use tauri::State;
 
+use crate::commands::db::{
+    cell_to_string, get_column_type, get_primary_key_column, validate_identifier_labeled, TableRows,
+};
 use crate::commands::qualified_table::QualifiedTable;
 use crate::connection_registry::ConnectionRegistry;
 use crate::local_db::LocalDb;
@@ -130,6 +133,120 @@ pub async fn describe_columns(
 ) -> Result<Vec<ColumnInfo>, String> {
     let pool = registry.pool_for(&connection_id, &db.pool, secrets.as_ref()).await?;
     describe_columns_impl(&pool, &table).await
+}
+
+// The single-column form of DESCRIBE_COLUMNS_SQL's FK subquery. Same
+// conkey[i] <-> confkey[i] ordinal pairing, narrowed to one column so the
+// popover does not describe a whole table to follow one key.
+pub(crate) const FK_TARGET_SQL: &str = "\
+SELECT
+  tgt_ns.nspname::text  AS ref_schema,
+  tgt.relname::text     AS ref_table,
+  tgt_att.attname::text AS ref_column
+FROM pg_constraint con
+JOIN pg_class     src    ON src.oid = con.conrelid
+JOIN pg_namespace src_ns ON src_ns.oid = src.relnamespace
+JOIN pg_class     tgt    ON tgt.oid = con.confrelid
+JOIN pg_namespace tgt_ns ON tgt_ns.oid = tgt.relnamespace
+JOIN LATERAL generate_subscripts(con.conkey, 1) AS k(i) ON TRUE
+JOIN pg_attribute src_att ON src_att.attrelid = con.conrelid  AND src_att.attnum = con.conkey[k.i]
+JOIN pg_attribute tgt_att ON tgt_att.attrelid = con.confrelid AND tgt_att.attnum = con.confkey[k.i]
+WHERE con.contype = 'f'
+  AND src_ns.nspname = $1
+  AND src.relname    = $2
+  AND src_att.attname = $3
+ORDER BY con.conname
+LIMIT 1";
+
+pub(crate) async fn fk_target_of(
+    pool: &PgPool,
+    table: &QualifiedTable,
+    column: &str,
+) -> Result<Option<ForeignKeyRef>, String> {
+    let row = sqlx::query(FK_TARGET_SQL)
+        .bind(table.schema())
+        .bind(table.name())
+        .bind(column)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("failed to resolve the foreign key on {table}.{column}: {e}"))?;
+
+    Ok(row.map(|r| ForeignKeyRef {
+        schema: r.get("ref_schema"),
+        table: r.get("ref_table"),
+        column: r.get("ref_column"),
+    }))
+}
+
+/// The referenced row for one cell. `table` and `column` name the cell the
+/// user clicked — the *referencing* side — and the target is resolved from the
+/// catalog here rather than accepted from the caller, so this command can only
+/// read a table the named one actually points at.
+pub async fn get_referenced_row_impl(
+    pool: &PgPool,
+    table: &QualifiedTable,
+    column: &str,
+    value: &str,
+) -> Result<Option<TableRows>, String> {
+    validate_identifier_labeled("column", column)?;
+
+    let target = fk_target_of(pool, table, column)
+        .await?
+        .ok_or_else(|| format!("column {column} on table {table} has no foreign key to follow"))?;
+
+    // Rebuilding the target through the validating constructor rather than
+    // formatting the catalog strings straight into SQL: it is the only path by
+    // which a table reaches a query anywhere else in this codebase, and
+    // keeping it so means there is no second, weaker path to audit.
+    let target_table = QualifiedTable::new(&target.schema, &target.table)?;
+    validate_identifier_labeled("referenced column", &target.column)?;
+
+    // Cast the bound value to the referenced column's own type rather than
+    // casting the column — `WHERE col::text = $1` is non-sargable and forces a
+    // seq scan even on the indexed key this lookup exists to use. Same shape
+    // as query.rs's cell-edit path.
+    let target_type = get_column_type(pool, &target_table, &target.column).await?;
+    validate_identifier_labeled("referenced column type", &target_type)?;
+
+    let sql = format!(
+        "SELECT * FROM {} WHERE \"{}\" = $1::{} LIMIT 1",
+        target_table.quoted(),
+        target.column,
+        target_type,
+    );
+
+    let row = sqlx::query(&sql)
+        .bind(value)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("failed to read {target_table}: {e}"))?;
+
+    let Some(row) = row else { return Ok(None) };
+
+    use sqlx::Column as _;
+    let columns: Vec<String> = row.columns().iter().map(|c| c.name().to_string()).collect();
+    let values = (0..columns.len()).map(|i| cell_to_string(&row, i)).collect();
+
+    // The popover does not use pk_column, but TableRows carries it and every
+    // other producer fills it the same way — leaving it None here would make
+    // the type mean something different depending on who built it.
+    let pk_column = get_primary_key_column(pool, &target_table).await.ok();
+
+    Ok(Some(TableRows { columns, rows: vec![values], pk_column }))
+}
+
+#[tauri::command]
+pub async fn get_referenced_row(
+    db: State<'_, LocalDb>,
+    secrets: State<'_, std::sync::Arc<dyn SecretStore>>,
+    registry: State<'_, std::sync::Arc<ConnectionRegistry>>,
+    connection_id: String,
+    table: QualifiedTable,
+    column: String,
+    value: String,
+) -> Result<Option<TableRows>, String> {
+    let pool = registry.pool_for(&connection_id, &db.pool, secrets.as_ref()).await?;
+    get_referenced_row_impl(&pool, &table, &column, &value).await
 }
 
 #[cfg(test)]
@@ -317,5 +434,166 @@ mod tests {
         let pool = test_pool().await;
         let cols = describe_columns_impl(&pool, &public("dc_no_such_table")).await.unwrap();
         assert!(cols.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetches_the_row_a_foreign_key_points_at() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS gr_orders").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS gr_customers").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE gr_customers (id serial PRIMARY KEY, email text, status text)")
+            .execute(&pool).await.unwrap();
+        sqlx::query(
+            "CREATE TABLE gr_orders (
+               id serial PRIMARY KEY,
+               customer_id int NOT NULL REFERENCES gr_customers(id)
+             )",
+        )
+        .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO gr_customers (email, status) VALUES ('grace@example.com', 'active')")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO gr_orders (customer_id) VALUES (1)").execute(&pool).await.unwrap();
+
+        let found = get_referenced_row_impl(&pool, &public("gr_orders"), "customer_id", "1")
+            .await
+            .unwrap()
+            .expect("customer 1 exists");
+
+        assert_eq!(found.columns, vec!["id", "email", "status"]);
+        assert_eq!(found.rows.len(), 1, "a key points at exactly one row");
+        assert_eq!(
+            found.rows[0],
+            vec![Some("1".to_string()), Some("grace@example.com".to_string()), Some("active".to_string())],
+        );
+        assert_eq!(found.pk_column.as_deref(), Some("id"));
+
+        sqlx::query("DROP TABLE gr_orders").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE gr_customers").execute(&pool).await.unwrap();
+    }
+
+    // Spec §8: a key pointing nowhere is a fact to state, not an error and not
+    // an empty card. `Ok(None)` is what lets the popover say "No matching row
+    // in ..." rather than rendering a failure.
+    #[tokio::test]
+    async fn a_key_pointing_nowhere_is_none_not_an_error() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS gr_dangling_orders").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS gr_dangling_customers").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE gr_dangling_customers (id serial PRIMARY KEY, email text)")
+            .execute(&pool).await.unwrap();
+        sqlx::query(
+            "CREATE TABLE gr_dangling_orders (
+               id serial PRIMARY KEY,
+               customer_id int REFERENCES gr_dangling_customers(id)
+             )",
+        )
+        .execute(&pool).await.unwrap();
+
+        // 4242 is a legal value for the column and simply matches nothing.
+        let missing =
+            get_referenced_row_impl(&pool, &public("gr_dangling_orders"), "customer_id", "4242")
+                .await
+                .unwrap();
+        assert!(missing.is_none(), "no matching row must be Ok(None), not Err");
+
+        sqlx::query("DROP TABLE gr_dangling_orders").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE gr_dangling_customers").execute(&pool).await.unwrap();
+    }
+
+    // Nothing in the UI can reach this — the link icon only renders on a
+    // column that has a target — so it is a programming error and must say so
+    // rather than silently returning None, which would read as "no such row".
+    #[tokio::test]
+    async fn a_column_with_no_foreign_key_is_an_error() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS gr_plain").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE gr_plain (id serial PRIMARY KEY, note text)")
+            .execute(&pool).await.unwrap();
+
+        let err = get_referenced_row_impl(&pool, &public("gr_plain"), "note", "x")
+            .await
+            .unwrap_err();
+        assert!(err.contains("note"), "the error must name the column, got: {err}");
+        assert!(err.contains("foreign key"), "the error must say what is missing, got: {err}");
+
+        sqlx::query("DROP TABLE gr_plain").execute(&pool).await.unwrap();
+    }
+
+    // The value arrives from the frontend as a string, because every grid cell
+    // is a string by the time it is rendered. It must never be interpolated —
+    // it is bound and cast to the referenced column's own type.
+    #[tokio::test]
+    async fn the_lookup_value_is_bound_not_interpolated() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS gr_inject_orders").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS gr_inject_customers").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE gr_inject_customers (id text PRIMARY KEY, email text)")
+            .execute(&pool).await.unwrap();
+        sqlx::query(
+            "CREATE TABLE gr_inject_orders (
+               id serial PRIMARY KEY,
+               customer_id text REFERENCES gr_inject_customers(id)
+             )",
+        )
+        .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO gr_inject_customers (id, email) VALUES ('usr_88', 'a@b.c')")
+            .execute(&pool).await.unwrap();
+
+        // If this were interpolated it would end the string literal and drop a
+        // table. Bound, it is simply a value that matches nothing.
+        let payload = "usr_88'; DROP TABLE gr_inject_customers; --";
+        let found =
+            get_referenced_row_impl(&pool, &public("gr_inject_orders"), "customer_id", payload)
+                .await
+                .unwrap();
+        assert!(found.is_none());
+
+        // The proof it was bound: the table the payload named is still there.
+        let survived = get_referenced_row_impl(&pool, &public("gr_inject_orders"), "customer_id", "usr_88")
+            .await
+            .unwrap();
+        assert!(survived.is_some(), "the referenced table must still exist");
+
+        sqlx::query("DROP TABLE gr_inject_orders").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE gr_inject_customers").execute(&pool).await.unwrap();
+    }
+
+    // The jump needs the target's schema, not just its name — the referenced
+    // table may live in a different schema than the referencing one.
+    #[tokio::test]
+    async fn resolves_a_target_in_another_schema() {
+        let pool = test_pool().await;
+        sqlx::query("CREATE SCHEMA IF NOT EXISTS gr_ref").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS public.gr_xs_orders").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS gr_ref.gr_xs_customers").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE gr_ref.gr_xs_customers (id serial PRIMARY KEY, email text)")
+            .execute(&pool).await.unwrap();
+        sqlx::query(
+            "CREATE TABLE public.gr_xs_orders (
+               id serial PRIMARY KEY,
+               customer_id int REFERENCES gr_ref.gr_xs_customers(id)
+             )",
+        )
+        .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO gr_ref.gr_xs_customers (email) VALUES ('cross@example.com')")
+            .execute(&pool).await.unwrap();
+
+        let target = fk_target_of(&pool, &public("gr_xs_orders"), "customer_id").await.unwrap();
+        assert_eq!(
+            target,
+            Some(ForeignKeyRef {
+                schema: "gr_ref".into(),
+                table: "gr_xs_customers".into(),
+                column: "id".into(),
+            }),
+        );
+
+        let found = get_referenced_row_impl(&pool, &public("gr_xs_orders"), "customer_id", "1")
+            .await.unwrap().expect("the cross-schema row exists");
+        assert_eq!(found.rows[0][1], Some("cross@example.com".to_string()));
+
+        sqlx::query("DROP TABLE public.gr_xs_orders").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE gr_ref.gr_xs_customers").execute(&pool).await.unwrap();
+        sqlx::query("DROP SCHEMA gr_ref").execute(&pool).await.unwrap();
     }
 }

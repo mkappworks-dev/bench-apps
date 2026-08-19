@@ -165,6 +165,7 @@ fn main() {
             commands::db::list_table_rows,
             commands::db::count_table_rows,
             commands::db_columns::describe_columns,
+            commands::db_columns::get_referenced_row,
             commands::request::fire_request,
             commands::history::save_history_entry,
             commands::history::list_history,
