@@ -46,16 +46,20 @@ fn main() {
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
             let db_path = data_dir.join("devbench.db");
+            // Built before data_dir is moved into the block below. A debug build
+            // puts this in a file beside the database instead of the OS keychain
+            // — see secrets::default_store for why.
+            let secrets = devbench::secrets::default_store(&data_dir);
+            let secrets_for_seed = Arc::clone(&secrets);
             let init_result: Result<(LocalDb, u16), String> = tauri::async_runtime::block_on(async move {
                 let db = LocalDb::connect(data_dir).await?;
                 let port = devbench::commands::settings::get_settings_impl(&db.pool)
                     .await
                     .map(|s| s.smtp_port)
                     .unwrap_or(DEFAULT_SMTP_PORT);
-                let secrets_for_seed = devbench::secrets::KeyringSecretStore;
                 if let Err(e) = devbench::commands::connections::seed_default_connection_password_if_missing(
                     &db.pool,
-                    &secrets_for_seed,
+                    secrets_for_seed.as_ref(),
                 )
                 .await
                 {
@@ -155,7 +159,7 @@ fn main() {
             }
             app.manage(emails);
 
-            app.manage(Arc::new(devbench::secrets::KeyringSecretStore) as Arc<dyn devbench::secrets::SecretStore>);
+            app.manage(secrets);
 
             Ok(())
         })
