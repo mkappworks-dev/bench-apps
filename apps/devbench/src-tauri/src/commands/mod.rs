@@ -5,6 +5,7 @@ pub mod db;
 pub mod db_apply;
 pub mod db_columns;
 pub mod db_filter;
+pub mod db_queries;
 pub mod email;
 pub mod history;
 pub mod logs;
