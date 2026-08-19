@@ -746,7 +746,7 @@ export function savedQueryById(all: SavedQuery[], id: string | null): SavedQuery
 cd apps/devbench && bun run test savedQueries
 ```
 
-Expected: PASS, 7 tests.
+Expected: PASS, 6 tests (3 for `mergeSavedQueries`, 2 for `queriesForConnection`, 1 for `savedQueryById`).
 
 - [ ] **Step 5: Add the invoke wrappers**
 
@@ -859,7 +859,7 @@ And to the store body, after `discardAllPending`:
 cd apps/devbench && bun run test && bun run build
 ```
 
-Expected: **baseline + 10** passing (7 helper + 3 store), build clean with 0 warnings.
+Expected: **baseline + 9** passing (6 helper + 3 store) and one new test file, build clean with 0 warnings.
 
 - [ ] **Step 10: Commit**
 
