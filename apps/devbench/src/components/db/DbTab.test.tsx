@@ -1285,4 +1285,24 @@ describe("DbTab", () => {
       });
     });
   });
+
+  it("opens the insert panel on the table whose toolbar was used", async () => {
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
+    });
+    vi.spyOn(tauriLib, "invokeDescribeColumns").mockResolvedValue([
+      { name: "id", udt: "int4", nullable: false, default_expr: null, is_identity: true, references: null },
+      { name: "status", udt: "text", nullable: false, default_expr: null, is_identity: false, references: null },
+    ]);
+
+    renderDb(ORDERS);
+    await screen.findByRole("button", { name: "Insert" });
+    fireEvent.click(screen.getByRole("button", { name: "Insert" }));
+
+    expect(useAppStore.getState().dockPanel).toBe("insert");
+    expect(useAppStore.getState().insertTarget?.table).toEqual(ORDERS);
+    // The panel builds its fields from these, so an empty list here would be a
+    // silently blank form rather than a visible failure.
+    expect(useAppStore.getState().insertTarget?.columns.map((c) => c.name)).toEqual(["id", "status"]);
+  });
 });

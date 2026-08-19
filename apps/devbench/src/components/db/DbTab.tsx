@@ -90,6 +90,9 @@ export function DbTab({
   const activeConnectionId = useAppStore((s) => s.activeConnectionId);
   const setActiveConnectionId = useAppStore((s) => s.setActiveConnectionId);
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
+  const setDockPanel = useAppStore((s) => s.setDockPanel);
+  const setInsertTarget = useAppStore((s) => s.setInsertTarget);
+  const setChatOpen = useAppStore((s) => s.setChatOpen);
 
   const [tableRows, setTableRows] = useState<TableRows | null>(null);
   // The backend derives `columns` from the first returned row, so a filter that
@@ -890,6 +893,15 @@ export function DbTab({
                         onRefresh={() => {
                           abandonEditForQueryChange();
                           void fetchRows(table!, activeConnectionId!, filter, sort, page, limitRef.current);
+                        }}
+                        onInsert={() => {
+                          if (!table || !activeConnectionId) return;
+                          setInsertTarget({ connectionId: activeConnectionId, table, columns: columnMeta });
+                          setDockPanel("insert");
+                          // The dock has to be open for the panel to be seen
+                          // at all — opening the panel into a closed dock
+                          // would read as the button doing nothing.
+                          setChatOpen(true);
                         }}
                         familyOf={familyOf}
                       />

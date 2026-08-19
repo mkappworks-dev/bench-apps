@@ -5,6 +5,7 @@ import { BrandLockup } from "./components/shell/Logo";
 import { TABS } from "./components/shell/tools";
 import { SessionsSidebar } from "./components/shell/SessionsSidebar";
 import { ChatDock } from "./components/shell/ChatDock";
+import { InsertPanel } from "./components/db/InsertPanel";
 import { SettingsScreen } from "./components/settings/SettingsScreen";
 import { SplitContent } from "./components/shell/SplitContent";
 import { StartupErrorScreen } from "./components/shell/StartupErrorScreen";
@@ -22,6 +23,9 @@ export { TABS };
 export default function App() {
   const chatOpen = useAppStore((s) => s.chatOpen);
   const setChatOpen = useAppStore((s) => s.setChatOpen);
+  const dockPanel = useAppStore((s) => s.dockPanel);
+  const setDockPanel = useAppStore((s) => s.setDockPanel);
+  const insertTarget = useAppStore((s) => s.insertTarget);
   const route = useAppStore((s) => s.route);
   const setRoute = useAppStore((s) => s.setRoute);
   const theme = useAppStore((s) => s.theme);
@@ -151,7 +155,17 @@ export default function App() {
           }}
           historyFocusRequest={historyFocusRequest}
         />
-        {chatOpen ? <ChatDock onClose={() => setChatOpen(false)} /> : null}
+        {/* One slot, three occupants (spec §1). Closing a panel returns to
+            chat; only closing chat itself closes the dock. An insert panel
+            with no target can't render a form, so it falls back rather than
+            showing an empty one. */}
+        {chatOpen ? (
+          dockPanel === "insert" && insertTarget ? (
+            <InsertPanel target={insertTarget} onClose={() => setDockPanel("chat")} />
+          ) : (
+            <ChatDock onClose={() => setChatOpen(false)} />
+          )
+        ) : null}
       </div>
     </div>
   );

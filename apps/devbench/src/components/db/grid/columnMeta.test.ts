@@ -6,6 +6,7 @@ import {
   familyOfColumn,
   familyOfUdt,
   fkTargetOf,
+  isNumericUdt,
   type ColumnInfo,
 } from "./columnMeta";
 
@@ -53,6 +54,17 @@ describe("familyOfUdt", () => {
     expect(familyOfUdt("text")).toBe("text");
     expect(familyOfUdt("uuid")).toBe("text");
     expect(familyOfUdt("jsonb")).toBe("text");
+  });
+
+  // Narrower than the "number" FILTER family, which also covers dates because
+  // `>` and `<` answer something for both. An insert field is a real input,
+  // and a date in a number input is unusable.
+  it("counts only true numerics as numeric, not the dates the number family covers", () => {
+    expect(isNumericUdt("int4")).toBe(true);
+    expect(isNumericUdt("numeric")).toBe(true);
+    expect(isNumericUdt("timestamptz")).toBe(false);
+    expect(isNumericUdt("text")).toBe(false);
+    expect(familyOfUdt("timestamptz")).toBe("number");
   });
 });
 

@@ -31,6 +31,15 @@ const ORDERED_UDTS = new Set([
   "date", "timestamp", "timestamptz", "time", "timetz",
 ]);
 
+const NUMERIC_UDTS = new Set(["int2", "int4", "int8", "float4", "float8", "numeric", "money"]);
+
+/** Narrower than the `"number"` filter family, which also covers dates because
+ *  `>` and `<` answer something for both. This one drives a real `<input
+ *  type="number">` in the insert panel, where a date would be unusable. */
+export function isNumericUdt(udt: string): boolean {
+  return NUMERIC_UDTS.has(udt);
+}
+
 export function familyOfUdt(udt: string): ColumnFamily {
   if (BOOLEAN_UDTS.has(udt)) return "boolean";
   if (ORDERED_UDTS.has(udt)) return "number";

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { QualifiedTable } from "../lib/tauri";
+import type { ColumnInfo } from "../components/db/grid/columnMeta";
 import { tableKey } from "../lib/tableIdentity";
 import {
   discardAt,
@@ -18,6 +19,17 @@ export type SettingsPane = "general" | "appearance" | "provider" | "connections"
  *  panel returns to chat; `chatOpen` still governs whether the dock is open at
  *  all, so AppStrip's existing toggle keeps working unchanged. */
 export type DockPanel = "chat" | "pending" | "insert";
+
+/** What the Insert panel builds its form from. Published by the toolbar button
+ *  that opens the panel, because the dock renders outside `SplitContent` and
+ *  cannot reach into a tab's state. Switching tables afterwards does NOT
+ *  retarget an open panel: a staged insert belongs to the table it was written
+ *  for, and the panel's head names it. */
+export interface InsertTarget {
+  connectionId: string;
+  table: QualifiedTable;
+  columns: ColumnInfo[];
+}
 
 export interface Tab {
   id: string;
@@ -69,6 +81,8 @@ interface AppState {
   setChatOpen: (open: boolean) => void;
   dockPanel: DockPanel;
   setDockPanel: (panel: DockPanel) => void;
+  insertTarget: InsertTarget | null;
+  setInsertTarget: (target: InsertTarget | null) => void;
   /** Spec §10: global, not per-tab. It can hold changes to several tables from
    *  several tabs, and Apply commits them together. */
   pending: PendingChange[];
@@ -171,6 +185,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setChatOpen: (open) => set({ chatOpen: open }),
   dockPanel: "chat",
   setDockPanel: (dockPanel) => set({ dockPanel }),
+  insertTarget: null,
+  setInsertTarget: (insertTarget) => set({ insertTarget }),
   pending: [],
   stagePendingUpdate: (entry) => set((s) => ({ pending: stageUpdate(s.pending, entry) })),
   togglePendingDelete: (table, pkColumn, pkValue) =>
