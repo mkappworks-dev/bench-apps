@@ -83,7 +83,10 @@
   - `pub struct ForeignKeyRef { pub schema: String, pub table: String, pub column: String }` (Serialize + Deserialize + PartialEq)
   - `pub struct ColumnInfo { pub name: String, pub udt: String, pub nullable: bool, pub default_expr: Option<String>, pub is_identity: bool, pub references: Option<ForeignKeyRef> }` (Serialize + PartialEq)
   - `pub async fn describe_columns_impl(pool: &PgPool, table: &QualifiedTable) -> Result<Vec<ColumnInfo>, String>`
-  - `pub(crate) const FK_TARGET_SQL: &str` — used by Task 2
+  - `const DESCRIBE_COLUMNS_SQL: &str` — private to this module. It holds the
+    whole-table description query. **It is not `FK_TARGET_SQL`**: Task 2 defines
+    that separately for a different, single-column query, and giving this one
+    that name would both misdescribe its contents and collide with Task 2.
   - Tauri command `describe_columns(connection_id, table)`
 
 - [ ] **Step 1: Register the new module**
