@@ -337,6 +337,12 @@ export function DbTab({
     abandonEdit(editing);
     setEditing(null);
     setEditError(null);
+    // A filter/sort/page/limit/refresh replaces tableRows without clearing
+    // it first (unlike a table switch), so a popover anchored to a rowIndex
+    // from the old rows would silently repaint onto whatever row lands at
+    // that index in the new ones — and a lookup still in flight for it would
+    // paint into the wrong cell entirely.
+    closeFk();
   }
 
   function closeFk() {
@@ -729,7 +735,14 @@ export function DbTab({
     return (
       <div className="flex w-full min-w-0 items-center gap-1.5">
         {valueButton}
-        <FkLinkButton target={target} onOpen={() => void openFk(rowIndex, columnIndex, column, value)} />
+        <FkLinkButton
+          target={target}
+          // Toggle rather than always-open: FkPopover's own pointerdown guard
+          // skips this trigger on the assumption that the click here already
+          // decides open/closed, so an unconditional openFk would refetch
+          // instead of letting the icon close its own popover.
+          onOpen={() => (fkOpen ? closeFk() : void openFk(rowIndex, columnIndex, column, value))}
+        />
         {fkOpen ? (
           <FkPopover
             target={target}
@@ -833,6 +846,7 @@ export function DbTab({
                     renderCell={renderCell}
                     layout={layout}
                     onLayoutChange={updateLayout}
+                    raisedRowIndex={fkCell?.rowIndex ?? null}
                     toolbar={
                       <GridToolbar
                         // Not tableRows.columns: a filter matching zero rows

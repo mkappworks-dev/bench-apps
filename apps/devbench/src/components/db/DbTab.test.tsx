@@ -624,6 +624,22 @@ describe("DbTab", () => {
     expect(await screen.findByText("No matching row in public.users.")).toBeInTheDocument();
   });
 
+  // Wiring-level guard: FkPopover.test.tsx only proves the component renders
+  // whatever `error` prop it's handed — it can't catch openFk's own catch
+  // block being changed to swallow the failure. If it were, the popover would
+  // render the exact forbidden claim below ("No matching row"), reporting an
+  // outage as a fact about the data, and every other FK test would still pass.
+  it("reports a failed lookup as an error, never as a missing row", async () => {
+    mockFkTable();
+    vi.spyOn(tauriLib, "invokeGetReferencedRow").mockRejectedValue(new Error("connection reset"));
+
+    renderDb(ORDERS);
+    fireEvent.click(await screen.findByRole("button", { name: /Show referenced row/ }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("connection reset");
+    expect(screen.queryByText(/No matching row/)).not.toBeInTheDocument();
+  });
+
   // Spec §8: "switches the grid to public.users with a pinned id = usr_88
   // filter, clearing sort, pins and hidden columns."
   it("jumps to the referenced table with a pinned filter on that row", async () => {
@@ -713,16 +729,58 @@ describe("DbTab", () => {
     );
   });
 
-  it("closes the popover when the jump lands", async () => {
-    mockFkTable();
+  // A cross-table jump would close the popover just by unmounting its row
+  // (the table-switch effect nulls tableRows out from under it) even if
+  // handleJump's own closeFk() call were deleted — that doesn't exercise the
+  // thing being guarded. The same-table branch never unmounts anything: only
+  // its own closeFk() call closes the popover, so this is where the guard
+  // actually bites.
+  it("closes the popover when a same-table jump lands", async () => {
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id", "manager_id"], rows: [["e2", "e1"]], pk_column: "id",
+    });
+    vi.spyOn(tauriLib, "invokeDescribeColumns").mockResolvedValue([
+      { name: "id", udt: "text", nullable: false, default_expr: null, is_identity: false, references: null },
+      {
+        name: "manager_id", udt: "text", nullable: true, default_expr: null, is_identity: false,
+        references: { schema: "public", table: "orders", column: "id" },
+      },
+    ]);
     vi.spyOn(tauriLib, "invokeGetReferencedRow").mockResolvedValue({
-      columns: ["id"], rows: [["usr_88"]], pk_column: "id",
+      columns: ["id"], rows: [["e1"]], pk_column: "id",
     });
 
     render(<DbTabHarness initialTable={ORDERS} />);
     fireEvent.click(await screen.findByRole("button", { name: /Show referenced row/ }));
+    await screen.findByRole("dialog", { name: /public\.orders/ });
+    fireEvent.click(screen.getByRole("button", { name: /open public\.orders at this row/i }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /public\.orders/ })).not.toBeInTheDocument(),
+    );
+  });
+
+  // Regression guard: only closeFk's own call sites (onClose, handleJump, the
+  // table-switch effect) used to close a popover — a filter/sort/page/limit/
+  // refresh swaps tableRows without ever clearing it first, so a popover left
+  // anchored to its old rowIndex would silently repaint onto whatever row
+  // lands at that index in the new results, with a stale onJump bound to the
+  // wrong cell's value.
+  it("closes the popover when the underlying query changes", async () => {
+    mockFkTable([
+      ["1", "usr_88"],
+      ["2", "usr_99"],
+    ]);
+    vi.spyOn(tauriLib, "invokeGetReferencedRow").mockResolvedValue({
+      columns: ["id"], rows: [["usr_99"]], pk_column: "id",
+    });
+
+    renderDb(ORDERS);
+    const links = await screen.findAllByRole("button", { name: /Show referenced row/ });
+    fireEvent.click(links[1]);
     await screen.findByRole("dialog", { name: /public\.users/ });
-    fireEvent.click(screen.getByRole("button", { name: /open public\.users at this row/i }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Sort by id" }));
 
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: /public\.users/ })).not.toBeInTheDocument(),

@@ -242,4 +242,17 @@ describe("DataGrid", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy row as tab-separated values" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/clipboard permission denied/i);
   });
+
+  // jsdom can't verify that this actually escapes a later sibling's paint —
+  // that's a real-browser stacking-context question (see raisedRowIndex's doc
+  // comment). What this pins is the one thing jsdom CAN check: the prop
+  // reaches the right row's own style and no other row's.
+  it("raises only the row named by raisedRowIndex, leaving its siblings at the default stacking order", () => {
+    render(<DataGrid columns={["id"]} rows={[["a"], ["b"], ["c"]]} raisedRowIndex={1} />);
+
+    const raisedRow = screen.getByText("b").closest('[role="row"]') as HTMLElement;
+    const otherRow = screen.getByText("a").closest('[role="row"]') as HTMLElement;
+    expect(raisedRow.style.zIndex).toBe("20");
+    expect(otherRow.style.zIndex).toBe("");
+  });
 });

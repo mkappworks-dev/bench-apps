@@ -46,6 +46,18 @@ export interface DataGridProps {
   /** Rendered above the scrollable grid, inside the table wrapper — DbTab
    *  plugs GridToolbar in here. */
   toolbar?: ReactNode;
+  /** Data row index (not the visual/virtualized position) whose row should
+   *  out-rank its siblings in paint order — e.g. a cell popover that needs to
+   *  escape its own row. Every virtualized row carries a `transform`
+   *  (the virtualizer's translateY), and `transform` creates a new stacking
+   *  context: a z-20 overlay inside that row is sealed inside it, so a LATER
+   *  row (a `position: absolute; z-index: auto` sibling, painted in DOM
+   *  order) still paints over it regardless of the overlay's own z-index.
+   *  Raising the row itself — not the overlay — is what actually escapes:
+   *  the rows' container has no stacking context of its own, so a raised
+   *  row's z-index competes directly with its siblings' `auto` and with the
+   *  sticky header's z-30. */
+  raisedRowIndex?: number | null;
 }
 
 export type CellKind = "null" | "unsupported" | "number" | "bool-true" | "bool-false" | "text";
@@ -146,6 +158,7 @@ export function DataGrid({
   layout = EMPTY_LAYOUT,
   onLayoutChange,
   toolbar,
+  raisedRowIndex = null,
 }: DataGridProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
@@ -446,6 +459,11 @@ export function DataGrid({
                         left: 0,
                         width: "100%",
                         transform: `translateY(${virtualRow.start}px)`,
+                        // See raisedRowIndex's doc comment: this row's own
+                        // transform makes it a stacking context, so an
+                        // overlay inside it can only escape later siblings by
+                        // raising the row, not by raising the overlay.
+                        zIndex: raisedRowIndex === dataRowIndex ? 20 : undefined,
                       }}
                     >
                       {visual.map((col) => {
