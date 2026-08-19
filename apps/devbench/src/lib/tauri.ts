@@ -236,6 +236,27 @@ export function invokeCountTableRows(
   return invoke("count_table_rows", { connectionId, table, filter });
 }
 
+export type { ColumnInfo, ForeignKeyRef } from "../components/db/grid/columnMeta";
+import type { ColumnInfo } from "../components/db/grid/columnMeta";
+
+export function invokeDescribeColumns(
+  connectionId: string,
+  table: QualifiedTable,
+): Promise<ColumnInfo[]> {
+  return invoke("describe_columns", { connectionId, table });
+}
+
+/** `null` means the key points at no row — spec §8's "No matching row in …",
+ *  which is a fact to report, not a failure. */
+export function invokeGetReferencedRow(
+  connectionId: string,
+  table: QualifiedTable,
+  column: string,
+  value: string,
+): Promise<TableRows | null> {
+  return invoke("get_referenced_row", { connectionId, table, column, value });
+}
+
 export function invokeListWatchedTables(connectionId: string): Promise<QualifiedTable[]> {
   return invoke("list_watched_tables", { connectionId });
 }
