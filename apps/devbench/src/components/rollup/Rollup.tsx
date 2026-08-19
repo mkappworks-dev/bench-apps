@@ -1,4 +1,5 @@
-import type { EmailSummary, LogLine, TableDiff } from "../../lib/tauri";
+import type { EmailSummary, LogLine, QualifiedTable, TableDiff } from "../../lib/tauri";
+import { tableKey } from "../../lib/tableIdentity";
 
 export interface RollupData {
   /** `null` = the DB was not verified. `[]` = verified, nothing changed. */
@@ -29,13 +30,13 @@ function totalWrites(diffs: TableDiff[]): number {
 }
 
 /** The table with the most changes — where the DB chip's deep-link lands. */
-function busiestTable(diffs: TableDiff[]): string | null {
+function busiestTable(diffs: TableDiff[]): QualifiedTable | null {
   let best: TableDiff | null = null;
   for (const d of diffs) {
     const n = d.inserted + d.updated + d.deleted;
     if (!best || n > best.inserted + best.updated + best.deleted) best = d;
   }
-  return best?.table ?? null;
+  return best ? { schema: best.schema, name: best.table } : null;
 }
 
 function Chip({ label, count, onClick }: { label: string; count: string; onClick: () => void }) {
@@ -65,7 +66,7 @@ export function Rollup({
 }: {
   data: RollupData | null;
   loading: boolean;
-  onOpenDb: (table: string) => void;
+  onOpenDb: (table: QualifiedTable) => void;
   onOpenLog: () => void;
   onOpenEmail: (emailId: number | null) => void;
 }) {
@@ -162,10 +163,13 @@ export function Rollup({
         <div className="flex flex-wrap gap-3 pl-0.5">
           {perTable.map((diff) => (
             <button
-              key={diff.table}
-              onClick={() => onOpenDb(diff.table)}
+              key={tableKey({ schema: diff.schema, name: diff.table })}
+              onClick={() => onOpenDb({ schema: diff.schema, name: diff.table })}
               className="text-xs text-text-muted hover:text-text"
             >
+              {/* Bare name only — a `public`-only user must keep seeing
+                  "orders", never "public.orders". Only the click target and
+                  key above carry the schema. */}
               <span className="font-semibold">{diff.table}</span> {summarize(diff)}
             </button>
           ))}

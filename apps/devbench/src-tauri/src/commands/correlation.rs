@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::State;
 
-use super::db::{get_primary_key_column, validate_identifier};
+use super::db::{get_primary_key_column, validate_identifier_labeled};
 use super::history::{save_history_entry_impl, HistoryEntryInput};
 use super::request::{fire_request_impl, FireRequestInput, FireRequestOutput};
 use crate::commands::qualified_table::QualifiedTable;
@@ -20,13 +20,18 @@ pub struct RowSnapshot {
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct TableDiff {
+    pub schema: String,
     pub table: String,
     pub inserted: i64,
     pub updated: i64,
     pub deleted: i64,
 }
 
-pub fn diff_table_snapshots(table: &str, before: &[RowSnapshot], after: &[RowSnapshot]) -> TableDiff {
+pub fn diff_table_snapshots(
+    table: &QualifiedTable,
+    before: &[RowSnapshot],
+    after: &[RowSnapshot],
+) -> TableDiff {
     let before_map: HashMap<&str, &str> =
         before.iter().map(|r| (r.pk.as_str(), r.hash.as_str())).collect();
     let after_map: HashMap<&str, &str> =
@@ -45,7 +50,8 @@ pub fn diff_table_snapshots(table: &str, before: &[RowSnapshot], after: &[RowSna
     let deleted = before_map.keys().filter(|pk| !after_map.contains_key(*pk)).count() as i64;
 
     TableDiff {
-        table: table.to_string(),
+        schema: table.schema().to_string(),
+        table: table.name().to_string(),
         inserted,
         updated,
         deleted,
@@ -60,7 +66,7 @@ pub async fn snapshot_table(
     // The table is validated by construction. `pk_col`, while normally sourced
     // from `information_schema` (trusted), is validated too as defense-in-depth,
     // matching db.rs's `list_table_rows_impl`.
-    validate_identifier(pk_col)?;
+    validate_identifier_labeled("pk column", pk_col)?;
 
     let sql = format!(
         "SELECT \"{pk_col}\"::text as pk, md5(t::text) as hash FROM {} t",
@@ -113,10 +119,11 @@ async fn diff_all(
     let mut table_diffs = Vec::with_capacity(before.len());
     for (table, pk_col, before_rows) in before {
         let after = snapshot_table(pool, &table, &pk_col).await?;
-        // `table.name()` — bare, not `table.to_string()` — is what reaches
-        // `TableDiff.table`, which is user-facing output. A `public`-only user
-        // must keep seeing exactly the name they always have.
-        let diff = diff_table_snapshots(table.name(), &before_rows, &after);
+        // `TableDiff.table` stays the bare name (never `table.to_string()`,
+        // which would be schema-qualified) — it's user-facing output, and a
+        // `public`-only user must keep seeing exactly the name they always
+        // have. `TableDiff.schema` carries the rest, for the deep link.
+        let diff = diff_table_snapshots(&table, &before_rows, &after);
         if diff.inserted > 0 || diff.updated > 0 || diff.deleted > 0 {
             table_diffs.push(diff);
         }
@@ -401,32 +408,48 @@ mod tests {
     fn detects_an_insert() {
         let before = vec![snap("1", "a")];
         let after = vec![snap("1", "a"), snap("2", "b")];
-        let diff = diff_table_snapshots("orders", &before, &after);
-        assert_eq!(diff, TableDiff { table: "orders".into(), inserted: 1, updated: 0, deleted: 0 });
+        let diff = diff_table_snapshots(&public("orders"), &before, &after);
+        assert_eq!(diff, TableDiff { schema: "public".into(), table: "orders".into(), inserted: 1, updated: 0, deleted: 0 });
     }
 
     #[test]
     fn detects_an_update_even_though_row_count_is_unchanged() {
         let before = vec![snap("1", "a")];
         let after = vec![snap("1", "a-changed")];
-        let diff = diff_table_snapshots("orders", &before, &after);
-        assert_eq!(diff, TableDiff { table: "orders".into(), inserted: 0, updated: 1, deleted: 0 });
+        let diff = diff_table_snapshots(&public("orders"), &before, &after);
+        assert_eq!(diff, TableDiff { schema: "public".into(), table: "orders".into(), inserted: 0, updated: 1, deleted: 0 });
     }
 
     #[test]
     fn detects_a_delete() {
         let before = vec![snap("1", "a"), snap("2", "b")];
         let after = vec![snap("1", "a")];
-        let diff = diff_table_snapshots("orders", &before, &after);
-        assert_eq!(diff, TableDiff { table: "orders".into(), inserted: 0, updated: 0, deleted: 1 });
+        let diff = diff_table_snapshots(&public("orders"), &before, &after);
+        assert_eq!(diff, TableDiff { schema: "public".into(), table: "orders".into(), inserted: 0, updated: 0, deleted: 1 });
     }
 
     #[test]
     fn reports_nothing_when_unchanged() {
         let before = vec![snap("1", "a")];
         let after = vec![snap("1", "a")];
-        let diff = diff_table_snapshots("orders", &before, &after);
-        assert_eq!(diff, TableDiff { table: "orders".into(), inserted: 0, updated: 0, deleted: 0 });
+        let diff = diff_table_snapshots(&public("orders"), &before, &after);
+        assert_eq!(diff, TableDiff { schema: "public".into(), table: "orders".into(), inserted: 0, updated: 0, deleted: 0 });
+    }
+
+    // Regression guard: a diff on a watched non-public table must carry that
+    // table's own schema, not silently read as `public` downstream — the
+    // Rollup deep-link (src/components/rollup/Rollup.tsx) has nothing else to
+    // build the correct identity from.
+    #[test]
+    fn a_diff_on_a_non_public_table_carries_that_schema() {
+        let alt_orders = crate::commands::qualified_table::QualifiedTable::new("alt", "orders").unwrap();
+        let before = vec![snap("1", "a")];
+        let after = vec![snap("1", "a"), snap("2", "b")];
+        let diff = diff_table_snapshots(&alt_orders, &before, &after);
+        assert_eq!(
+            diff,
+            TableDiff { schema: "alt".into(), table: "orders".into(), inserted: 1, updated: 0, deleted: 0 }
+        );
     }
 
     async fn test_pool() -> Pool<Postgres> {
@@ -467,8 +490,8 @@ mod tests {
             .execute(&pool).await.unwrap();
         let after = snapshot_table(&pool, &public("correlation_test"), &pk_col).await.unwrap();
 
-        let diff = diff_table_snapshots("correlation_test", &before, &after);
-        assert_eq!(diff, TableDiff { table: "correlation_test".into(), inserted: 0, updated: 1, deleted: 0 });
+        let diff = diff_table_snapshots(&public("correlation_test"), &before, &after);
+        assert_eq!(diff, TableDiff { schema: "public".into(), table: "correlation_test".into(), inserted: 0, updated: 1, deleted: 0 });
 
         sqlx::query("DROP TABLE correlation_test").execute(&pool).await.unwrap();
     }

@@ -15,7 +15,7 @@ describe("RequestBuilder", () => {
     vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
       correlation_id: "corr-1",
       response: { status_code: 201, body: '{"id":8841}', duration_ms: 142 },
-      table_diffs: [{ table: "orders", inserted: 1, updated: 0, deleted: 0 }],
+      table_diffs: [{ schema: "public", table: "orders", inserted: 1, updated: 0, deleted: 0 }],
       db_error: null,
       history_id: "hist-1",
     });
@@ -36,7 +36,7 @@ describe("RequestBuilder", () => {
       expect(onResult).toHaveBeenCalledWith({
         correlation_id: "corr-1",
         response: { status_code: 201, body: '{"id":8841}', duration_ms: 142 },
-        table_diffs: [{ table: "orders", inserted: 1, updated: 0, deleted: 0 }],
+        table_diffs: [{ schema: "public", table: "orders", inserted: 1, updated: 0, deleted: 0 }],
         db_error: null,
         history_id: "hist-1",
       }),

@@ -47,6 +47,7 @@ export function invokeListHistory(sessionId?: string | null): Promise<HistoryEnt
 }
 
 export interface TableDiff {
+  schema: string;
   table: string;
   inserted: number;
   updated: number;

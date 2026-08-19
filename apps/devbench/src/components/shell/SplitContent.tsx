@@ -1,6 +1,7 @@
 import { ToolPane } from "./ToolPane";
 import { EmptyPane } from "./EmptyPane";
 import { useAppStore, type Pane, type ToolKind } from "../../store/useAppStore";
+import type { QualifiedTable } from "../../lib/tauri";
 
 /**
  * Panes only, no chrome — the tab bars and Split control live in AppStrip.
@@ -20,7 +21,7 @@ export function SplitContent({
 }: {
   onAddTab: (pane: Pane, kind: ToolKind) => void;
   onPatchState: (id: string, patch: Record<string, unknown>) => void;
-  onOpenDb: (table: string) => void;
+  onOpenDb: (table: QualifiedTable) => void;
   onOpenLog: () => void;
   onOpenEmail: (emailId: number | null) => void;
   emailFocusRequest: { tabId: string; emailId: number | null } | null;

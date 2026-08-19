@@ -69,8 +69,8 @@ describe("Rollup", () => {
         data={data({
           watchedTableCount: 2,
           tableDiffs: [
-            { table: "orders", inserted: 1, updated: 0, deleted: 0 },
-            { table: "inventory", inserted: 0, updated: 2, deleted: 0 },
+            { schema: "public", table: "orders", inserted: 1, updated: 0, deleted: 0 },
+            { schema: "public", table: "inventory", inserted: 0, updated: 2, deleted: 0 },
           ],
         })}
         loading={false}
@@ -83,7 +83,55 @@ describe("Rollup", () => {
     const perTable = screen.getByRole("button", { name: /orders/ });
     expect(perTable).toHaveTextContent("1 inserted");
     fireEvent.click(perTable);
-    expect(onOpenDb).toHaveBeenCalledWith("orders");
+    expect(onOpenDb).toHaveBeenCalledWith({ schema: "public", name: "orders" });
+  });
+
+  // Regression guard: before this fix, the per-table deep link and its React
+  // key were built from the bare table name alone, so a diff on a non-public
+  // table silently opened `public.<name>` instead — a different physical
+  // table — while duplicating another schema's same-named row's key.
+  it("deep-links a non-public table's diff to its own schema while keeping the visible label bare", () => {
+    const onOpenDb = vi.fn();
+    render(
+      <Rollup
+        data={data({
+          watchedTableCount: 1,
+          tableDiffs: [{ schema: "alt", table: "orders", inserted: 1, updated: 0, deleted: 0 }],
+        })}
+        loading={false}
+        onOpenDb={onOpenDb}
+        onOpenLog={() => {}}
+        onOpenEmail={() => {}}
+      />,
+    );
+    const perTable = screen.getByRole("button", { name: /orders/ });
+    // A user working solely in `public` must keep seeing "orders", never
+    // "alt.orders" — only the identity behind the click gains the schema.
+    expect(perTable).toHaveTextContent("orders");
+    expect(perTable).not.toHaveTextContent("alt.orders");
+
+    fireEvent.click(perTable);
+    expect(onOpenDb).toHaveBeenCalledWith({ schema: "alt", name: "orders" });
+  });
+
+  // The DB chip's own deep-link (busiestTable) must carry the same full
+  // identity as the per-table buttons below it, not just the bare name.
+  it("the busiest-table DB chip deep-links with the full schema-qualified identity", () => {
+    const onOpenDb = vi.fn();
+    render(
+      <Rollup
+        data={data({
+          watchedTableCount: 1,
+          tableDiffs: [{ schema: "alt", table: "orders", inserted: 5, updated: 0, deleted: 0 }],
+        })}
+        loading={false}
+        onOpenDb={onOpenDb}
+        onOpenLog={() => {}}
+        onOpenEmail={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /DB.*5 writes/ }));
+    expect(onOpenDb).toHaveBeenCalledWith({ schema: "alt", name: "orders" });
   });
 
   it("shows a log chip with the captured line count and deep-links to the Log tab", () => {

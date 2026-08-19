@@ -62,7 +62,7 @@ describe("ApiTab", () => {
     vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
       correlation_id: "corr-1",
       response: { status_code: 201, body: '{"id":1}', duration_ms: 10 },
-      table_diffs: [{ table: "orders", inserted: 1, updated: 0, deleted: 0 }],
+      table_diffs: [{ schema: "public", table: "orders", inserted: 1, updated: 0, deleted: 0 }],
       db_error: null,
       history_id: null,
     });
@@ -88,7 +88,7 @@ describe("ApiTab", () => {
     const dbChip = await screen.findByRole("button", { name: /DB.*1 write/ });
     fireEvent.click(dbChip);
 
-    expect(onOpenDb).toHaveBeenCalledWith("orders");
+    expect(onOpenDb).toHaveBeenCalledWith({ schema: "public", name: "orders" });
   });
 
   // Regression guard: the store's watched-table Set is keyed `"schema.name"`

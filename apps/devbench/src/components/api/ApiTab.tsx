@@ -9,6 +9,7 @@ import {
   type CorrelationResult,
   type FireRequestOutput,
   type HistoryEntry,
+  type QualifiedTable,
 } from "../../lib/tauri";
 
 interface DisplayResult {
@@ -28,7 +29,7 @@ export function ApiTab({
 }: {
   tab: Tab;
   onPatchState: (patch: Record<string, unknown>) => void;
-  onOpenDb: (table: string) => void;
+  onOpenDb: (table: QualifiedTable) => void;
   onOpenLog: () => void;
   onOpenEmail: (emailId: number | null) => void;
   /** Deep-linked from Email's "Sent by" chip — forwarded to HistorySidebar. */

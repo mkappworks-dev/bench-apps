@@ -1,4 +1,5 @@
 import type { Tab } from "../../store/useAppStore";
+import type { QualifiedTable } from "../../lib/tauri";
 import { normalizeTable } from "../../lib/tableIdentity";
 import { ApiTab } from "../api/ApiTab";
 import { DbTab } from "../db/DbTab";
@@ -28,7 +29,7 @@ export function ToolPane({
 }: {
   tab: Tab;
   onPatchState: (patch: Record<string, unknown>) => void;
-  onOpenDb: (table: string) => void;
+  onOpenDb: (table: QualifiedTable) => void;
   onOpenLog: () => void;
   onOpenEmail: (emailId: number | null) => void;
   emailFocusId: number | null;
