@@ -115,6 +115,31 @@ describe("DbTab", () => {
     );
   });
 
+  // Regression guard for a bug verified manually (freezing a column on
+  // public.dup did not leak to alt.dup) but never pinned by a repeatable
+  // test: the grid layout key must be scoped by schema, not table name
+  // alone, or two same-named tables in different schemas would share one
+  // saved layout. Asserts on localStorage keys and the pin button's
+  // aria-pressed state only — not on layout geometry, which jsdom can't
+  // give a meaningful answer for (see DataGrid.test.tsx).
+  it("scopes the saved grid layout to schema, not table name alone", async () => {
+    localStorage.clear();
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id"], rows: [["1"]], pk_column: "id",
+    });
+
+    const { rerender, onPatchState } = renderDb({ schema: "public", name: "dup" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Freeze id" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Freeze id" }));
+    expect(screen.getByRole("button", { name: "Unfreeze id" })).toHaveAttribute("aria-pressed", "true");
+    expect(localStorage.getItem("devbench.grid-layout.c1:public.dup")).toContain('"pinned":["id"]');
+
+    rerender(<DbTab watchedTables={new Set()} onToggleWatch={() => {}} table={{ schema: "alt", name: "dup" }} onPatchState={onPatchState} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Freeze id" })).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Freeze id" })).toHaveAttribute("aria-pressed", "false");
+    expect(localStorage.getItem("devbench.grid-layout.c1:alt.dup")).toBeNull();
+  });
+
   it("selecting a table in the schema tree patches state rather than fetching directly", () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: [], rows: [], pk_column: null });
     const { onPatchState } = renderDb(null);
