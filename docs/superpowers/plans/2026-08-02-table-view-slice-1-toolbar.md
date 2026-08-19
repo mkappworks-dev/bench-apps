@@ -2708,8 +2708,11 @@ below 620px, labels hidden, height unchanged, pager still present).
 
 - [ ] **Step 4: Verify the popovers stack correctly**
 
-Open the Filter popover, scroll the grid, and confirm it renders above the cells
-and below the sticky header:
+Open the Filter popover, scroll the grid, and confirm it renders above both the
+cells and the sticky header. The popover is anchored to a toolbar button that
+sits above the header row, so a popover stacked *below* the header would be
+sliced in half by it — above is correct. Measured: popover z-index 50 over
+sticky header z-index 30, and it stays on top through a grid scroll.
 
 ```js
 ({
