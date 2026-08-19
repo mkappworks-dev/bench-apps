@@ -3,13 +3,15 @@ import { SchemaTree } from "./SchemaTree";
 import { DataGrid, cellDisplay, CellValue } from "./DataGrid";
 import { QueryConsole } from "./QueryConsole";
 import { GridToolbar } from "./grid/GridToolbar";
-import { familyOfColumn, type ColumnInfo } from "./grid/columnMeta";
+import { canFollow, familyOfColumn, fkTargetOf, type ColumnInfo, type ForeignKeyRef } from "./grid/columnMeta";
+import { FkLinkButton, FkPopover } from "./grid/FkPopover";
 import { readLayout, writeLayout, type GridLayout } from "./grid/gridLayout";
 import { normalizeTable, tableKey } from "../../lib/tableIdentity";
 import {
   invokeListTableRows,
   invokeCountTableRows,
   invokeDescribeColumns,
+  invokeGetReferencedRow,
   invokeListWatchedTables,
   invokeSetWatchedTable,
   invokePreviewCellEdit,
@@ -99,6 +101,22 @@ export function DbTab({
   // Fetched once per table — the schema does not change when the page or the
   // filter does.
   const [columnMeta, setColumnMeta] = useState<ColumnInfo[]>([]);
+  // Which cell's FK popover is open, and what the lookup for it returned.
+  // Keyed by cell rather than by value: the same value can appear in several
+  // rows, and only the one that was clicked should open.
+  const [fkCell, setFkCell] = useState<{ rowIndex: number; columnIndex: number } | null>(null);
+  const [fkRow, setFkRow] = useState<TableRows | null>(null);
+  const [fkLoading, setFkLoading] = useState(false);
+  const [fkError, setFkError] = useState<string | null>(null);
+  // Same shape as requestIdRef: a slow lookup that lands after the popover has
+  // closed (or reopened on another cell) must not paint its row into it.
+  const fkRequestRef = useRef(0);
+  // A jump parks its pinned filter here for the table-switch effect to pick
+  // up. Declared with the other refs rather than beside handleJump because the
+  // table-switch effect above closes over it — a `const` declared after that
+  // effect would still work (the callback runs after render), but reading the
+  // component top-to-bottom should not require knowing that.
+  const pendingJumpRef = useRef<{ key: string; filter: FilterCondition[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   // A list, outermost term first — "status, then newest first" is a normal
@@ -243,9 +261,16 @@ export function DbTab({
     abandonEdit(editingRef.current);
     setEditing(null);
     setEditError(null);
+    closeFk();
     setSort([]);
     setPage(0);
-    setFilter([]);
+    // A jump parks its pinned filter here rather than calling setFilter, which
+    // this effect would clear a render later. Anything else starts unfiltered.
+    const jump = pendingJumpRef.current;
+    const jumpFilter =
+      jump && table && jump.key === tableKey(table) ? jump.filter : [];
+    pendingJumpRef.current = null;
+    setFilter(jumpFilter);
     setLimit(100);
     limitRef.current = 100;
     setTotal(0);
@@ -253,7 +278,7 @@ export function DbTab({
     setLastKnownColumns([]);
     setError(null);
     if (table && activeConnectionId) {
-      void fetchRows(table, activeConnectionId, [], [], 0, 100);
+      void fetchRows(table, activeConnectionId, jumpFilter, [], 0, 100);
     } else {
       requestIdRef.current++;
       setLoading(false);
@@ -312,6 +337,81 @@ export function DbTab({
     abandonEdit(editing);
     setEditing(null);
     setEditError(null);
+  }
+
+  function closeFk() {
+    fkRequestRef.current++;
+    setFkCell(null);
+    setFkRow(null);
+    setFkError(null);
+    setFkLoading(false);
+  }
+
+  async function openFk(rowIndex: number, columnIndex: number, column: string, value: string) {
+    if (!table || !activeConnectionId) return;
+    const requestId = ++fkRequestRef.current;
+    setFkCell({ rowIndex, columnIndex });
+    setFkRow(null);
+    setFkError(null);
+    setFkLoading(true);
+    try {
+      const referenced = await invokeGetReferencedRow(activeConnectionId, table, column, value);
+      if (requestId !== fkRequestRef.current) return;
+      setFkRow(referenced);
+    } catch (err) {
+      if (requestId !== fkRequestRef.current) return;
+      // A failed lookup is not the same fact as a key pointing nowhere.
+      // Reporting it as "no matching row" would turn an outage into a claim
+      // about the data.
+      setFkError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (requestId === fkRequestRef.current) setFkLoading(false);
+    }
+  }
+
+  // Spec §8: the jump is a table switch plus a pinned `column = value` filter.
+  // A filter rather than an offset means it lands on the row under any sort or
+  // page size, with no positional query.
+  //
+  // The filter cannot simply be handed to setFilter: the table-switch effect
+  // clears filter, sort, page and limit on every table change, and would wipe
+  // it a render later. It is parked in pendingJumpRef and consumed there.
+  function handleJump(target: ForeignKeyRef, value: string) {
+    if (!activeConnectionId) return;
+    const targetTable: QualifiedTable = { schema: target.schema, name: target.table };
+    const targetKey = tableKey(targetTable);
+    const jumpFilter: FilterCondition[] = [
+      { column: target.column, op: "eq", value, enabled: true },
+    ];
+
+    // Pins and hidden columns describe a view of this table that the jump is
+    // not asking for — and a hidden column could hide the very column being
+    // jumped to. Widths and order are left alone: they say how wide a column
+    // is, not which rows you are looking at.
+    const targetLayoutKey = `${activeConnectionId}:${targetKey}`;
+    const targetLayout = readLayout(targetLayoutKey);
+    const clearedLayout = { ...targetLayout, pinned: [], hidden: [] };
+
+    closeFk();
+
+    if (table && targetKey === tableKey(table)) {
+      // A self-referencing key. `table` does not change, so the table-switch
+      // effect never runs — apply the jump here or the filter is parked and
+      // then dropped.
+      abandonEditForQueryChange();
+      updateLayout(clearedLayout);
+      setSort([]);
+      setPage(0);
+      setFilter(jumpFilter);
+      void fetchRows(table, activeConnectionId, jumpFilter, [], 0, limitRef.current);
+      return;
+    }
+
+    // Written before the switch: the next render recomputes layoutKey, sees it
+    // changed, and re-reads storage — which is where it will find this.
+    writeLayout(targetLayoutKey, clearedLayout);
+    pendingJumpRef.current = { key: targetKey, filter: jumpFilter };
+    onPatchState({ table: targetTable });
   }
 
   // Plain click replaces the sort; shift-click builds one up. Cycling a term
@@ -591,12 +691,20 @@ export function DbTab({
     // a column. Query results keep the plain numeric rule — they declare no key.
     const { className, kind } = cellDisplay(value);
     const alignClass = kind === "number" && column === tableRows?.pk_column ? "" : className;
-    return (
+
+    const target = fkTargetOf(columnMeta, column);
+    const followable = target !== null && canFollow(columnMeta, column, value);
+    const fkOpen =
+      fkCell !== null && fkCell.rowIndex === rowIndex && fkCell.columnIndex === columnIndex;
+
+    const valueButton = (
       <button
         type="button"
         disabled={!editable || anyEditPending}
         onClick={() => editable && startEdit(rowIndex, columnIndex, value)}
-        className={`group flex w-full min-w-0 items-center gap-1 text-left ${editable ? "hover:cursor-text hover:bg-surface-2" : ""}`}
+        className={`group flex min-w-0 items-center gap-1 text-left ${
+          followable ? "flex-1" : "w-full"
+        } ${editable ? "hover:cursor-text hover:bg-surface-2" : ""}`}
       >
         <span className={`min-w-0 flex-1 truncate ${alignClass}`}>
           <CellValue value={value} />
@@ -611,6 +719,28 @@ export function DbTab({
           </span>
         ) : null}
       </button>
+    );
+
+    if (!followable || target === null || value === null) return valueButton;
+
+    // The link is a SIBLING of the value button, never nested in it: a button
+    // inside a button is invalid HTML, and the click would bubble into the
+    // cell editor and open it underneath the popover.
+    return (
+      <div className="flex w-full min-w-0 items-center gap-1.5">
+        {valueButton}
+        <FkLinkButton target={target} onOpen={() => void openFk(rowIndex, columnIndex, column, value)} />
+        {fkOpen ? (
+          <FkPopover
+            target={target}
+            row={fkRow}
+            loading={fkLoading}
+            error={fkError}
+            onJump={() => handleJump(target, value)}
+            onClose={closeFk}
+          />
+        ) : null}
+      </div>
     );
   }
 

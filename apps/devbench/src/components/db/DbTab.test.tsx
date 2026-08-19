@@ -42,6 +42,7 @@ function DbTabHarness({ initialTable }: { initialTable: tauriLib.QualifiedTable 
 
 describe("DbTab", () => {
   beforeEach(() => {
+    localStorage.clear();
     vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(0);
@@ -545,6 +546,187 @@ describe("DbTab", () => {
 
     expect(screen.queryByText("STALE-status")).not.toBeInTheDocument();
     expect(screen.getByText("by-id")).toBeInTheDocument();
+  });
+
+  const FK_META = [
+    {
+      name: "id",
+      udt: "int4",
+      nullable: false,
+      default_expr: null,
+      is_identity: true,
+      references: null,
+    },
+    {
+      name: "user_id",
+      udt: "text",
+      nullable: false,
+      default_expr: null,
+      is_identity: false,
+      references: { schema: "public", table: "users", column: "id" },
+    },
+  ];
+
+  function mockFkTable(rows: (string | null)[][] = [["1", "usr_88"]]) {
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id", "user_id"], rows, pk_column: "id",
+    });
+    vi.spyOn(tauriLib, "invokeDescribeColumns").mockResolvedValue(FK_META);
+  }
+
+  // Spec §8: the icon marks a column with a target, and only such a column.
+  it("shows a link icon only on cells in a column with a foreign key", async () => {
+    mockFkTable();
+    renderDb(ORDERS);
+
+    const link = await screen.findByRole("button", { name: /public\.users\.id/ });
+    expect(link).toBeInTheDocument();
+    // One keyed column, one row: exactly one icon. `id` has no target.
+    expect(screen.getAllByRole("button", { name: /Show referenced row/ })).toHaveLength(1);
+  });
+
+  it("shows no link icon on a NULL foreign key", async () => {
+    mockFkTable([["1", null]]);
+    renderDb(ORDERS);
+
+    await screen.findByText("NULL");
+    expect(screen.queryByRole("button", { name: /Show referenced row/ })).not.toBeInTheDocument();
+  });
+
+  it("fetches and shows the referenced row when the icon is clicked", async () => {
+    mockFkTable();
+    const referenced = vi.spyOn(tauriLib, "invokeGetReferencedRow").mockResolvedValue({
+      columns: ["id", "email"],
+      rows: [["usr_88", "grace@example.com"]],
+      pk_column: "id",
+    });
+
+    renderDb(ORDERS);
+    fireEvent.click(await screen.findByRole("button", { name: /Show referenced row/ }));
+
+    // The referencing pair is what goes over the wire; the backend resolves
+    // the target from the catalog.
+    await waitFor(() =>
+      expect(referenced).toHaveBeenCalledWith("c1", ORDERS, "user_id", "usr_88"),
+    );
+    expect(await screen.findByRole("dialog", { name: /public\.users/ })).toBeInTheDocument();
+    expect(await screen.findByText("grace@example.com")).toBeInTheDocument();
+  });
+
+  // Spec §8: an unenforced or broken key states where the row is missing from.
+  it("says no matching row when the key points nowhere", async () => {
+    mockFkTable();
+    vi.spyOn(tauriLib, "invokeGetReferencedRow").mockResolvedValue(null);
+
+    renderDb(ORDERS);
+    fireEvent.click(await screen.findByRole("button", { name: /Show referenced row/ }));
+
+    expect(await screen.findByText("No matching row in public.users.")).toBeInTheDocument();
+  });
+
+  // Spec §8: "switches the grid to public.users with a pinned id = usr_88
+  // filter, clearing sort, pins and hidden columns."
+  it("jumps to the referenced table with a pinned filter on that row", async () => {
+    mockFkTable();
+    vi.spyOn(tauriLib, "invokeGetReferencedRow").mockResolvedValue({
+      columns: ["id", "email"], rows: [["usr_88", "grace@example.com"]], pk_column: "id",
+    });
+    const listRows = vi.spyOn(tauriLib, "invokeListTableRows");
+
+    render(<DbTabHarness initialTable={ORDERS} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Show referenced row/ }));
+    await screen.findByRole("dialog", { name: /public\.users/ });
+    fireEvent.click(screen.getByRole("button", { name: /open public\.users at this row/i }));
+
+    await waitFor(() =>
+      expect(listRows).toHaveBeenCalledWith(
+        "c1",
+        { schema: "public", name: "users" },
+        expect.objectContaining({
+          filter: [{ column: "id", op: "eq", value: "usr_88", enabled: true }],
+          orderBy: [],
+          offset: 0,
+        }),
+      ),
+    );
+  });
+
+  it("clears pins and hidden columns on the table it jumps to", async () => {
+    localStorage.setItem(
+      "devbench.grid-layout.c1:public.users",
+      JSON.stringify({ widths: { id: 200 }, order: ["email", "id"], pinned: ["id"], hidden: ["email"] }),
+    );
+    mockFkTable();
+    vi.spyOn(tauriLib, "invokeGetReferencedRow").mockResolvedValue({
+      columns: ["id", "email"], rows: [["usr_88", "grace@example.com"]], pk_column: "id",
+    });
+
+    render(<DbTabHarness initialTable={ORDERS} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Show referenced row/ }));
+    await screen.findByRole("dialog", { name: /public\.users/ });
+    fireEvent.click(screen.getByRole("button", { name: /open public\.users at this row/i }));
+
+    await waitFor(() => {
+      const saved = JSON.parse(localStorage.getItem("devbench.grid-layout.c1:public.users")!);
+      // A hidden column could hide the very column you jumped to see.
+      expect(saved.hidden).toEqual([]);
+      expect(saved.pinned).toEqual([]);
+      // Widths and order describe how wide a column is, not which rows you are
+      // looking at — no reason for a jump to throw them away.
+      expect(saved.widths).toEqual({ id: 200 });
+      expect(saved.order).toEqual(["email", "id"]);
+    });
+  });
+
+  // A self-referencing key does not change `table`, so the table-switch effect
+  // never fires. Without the same-table branch the pinned filter is set on a
+  // ref and then silently dropped.
+  it("applies the pinned filter when the key points at the table already open", async () => {
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id", "manager_id"], rows: [["e2", "e1"]], pk_column: "id",
+    });
+    vi.spyOn(tauriLib, "invokeDescribeColumns").mockResolvedValue([
+      { name: "id", udt: "text", nullable: false, default_expr: null, is_identity: false, references: null },
+      {
+        name: "manager_id", udt: "text", nullable: true, default_expr: null, is_identity: false,
+        references: { schema: "public", table: "orders", column: "id" },
+      },
+    ]);
+    vi.spyOn(tauriLib, "invokeGetReferencedRow").mockResolvedValue({
+      columns: ["id"], rows: [["e1"]], pk_column: "id",
+    });
+    const listRows = vi.spyOn(tauriLib, "invokeListTableRows");
+
+    render(<DbTabHarness initialTable={ORDERS} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Show referenced row/ }));
+    await screen.findByRole("dialog", { name: /public\.orders/ });
+    fireEvent.click(screen.getByRole("button", { name: /open public\.orders at this row/i }));
+
+    await waitFor(() =>
+      expect(listRows).toHaveBeenCalledWith(
+        "c1",
+        ORDERS,
+        expect.objectContaining({
+          filter: [{ column: "id", op: "eq", value: "e1", enabled: true }],
+        }),
+      ),
+    );
+  });
+
+  it("closes the popover when the jump lands", async () => {
+    mockFkTable();
+    vi.spyOn(tauriLib, "invokeGetReferencedRow").mockResolvedValue({
+      columns: ["id"], rows: [["usr_88"]], pk_column: "id",
+    });
+
+    render(<DbTabHarness initialTable={ORDERS} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Show referenced row/ }));
+    await screen.findByRole("dialog", { name: /public\.users/ });
+    fireEvent.click(screen.getByRole("button", { name: /open public\.users at this row/i }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /public\.users/ })).not.toBeInTheDocument(),
+    );
   });
 
   describe("query console", () => {
