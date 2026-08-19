@@ -265,4 +265,34 @@ describe("useAppStore", () => {
     expect(useAppStore.getState().route).toBe("settings");
     useAppStore.getState().setRoute("workspace");
   });
+
+  it("merges a connection's saved queries without dropping another connection's", () => {
+    useAppStore.setState({
+      savedQueries: [{ id: "b", connection_id: "c2", name: "staging", sql: "", created_at: 1 }],
+    });
+    useAppStore.getState().mergeSavedQueriesIntoStore([
+      { id: "a", connection_id: "c1", name: "dev", sql: "", created_at: 1 },
+    ]);
+    expect(useAppStore.getState().savedQueries.map((q) => q.id).sort()).toEqual(["a", "b"]);
+  });
+
+  it("patches a saved query in place, leaving its other fields alone", () => {
+    useAppStore.setState({
+      savedQueries: [{ id: "a", connection_id: "c1", name: "old", sql: "SELECT 1;", created_at: 7 }],
+    });
+    useAppStore.getState().patchSavedQuery("a", { name: "new" });
+    const [only] = useAppStore.getState().savedQueries;
+    expect(only).toEqual({ id: "a", connection_id: "c1", name: "new", sql: "SELECT 1;", created_at: 7 });
+  });
+
+  it("removes a saved query by id", () => {
+    useAppStore.setState({
+      savedQueries: [
+        { id: "a", connection_id: "c1", name: "keep", sql: "", created_at: 1 },
+        { id: "b", connection_id: "c1", name: "drop", sql: "", created_at: 2 },
+      ],
+    });
+    useAppStore.getState().removeSavedQuery("b");
+    expect(useAppStore.getState().savedQueries.map((q) => q.id)).toEqual(["a"]);
+  });
 });

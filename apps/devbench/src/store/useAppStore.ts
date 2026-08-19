@@ -10,6 +10,7 @@ import {
   type PendingChange,
   type UpdateChange,
 } from "../lib/pendingChanges";
+import { mergeSavedQueries, type SavedQuery } from "../lib/savedQueries";
 
 export type ToolKind = "api" | "db" | "log" | "email";
 export type Pane = "left" | "right";
@@ -119,6 +120,14 @@ interface AppState {
    *  trip is not thrown away with the ones that were actually written. */
   removePendingEntries: (entries: PendingChange[]) => void;
   discardAllPending: () => void;
+  /** Every saved query this session has loaded, across connections — the
+   *  same global-list-with-connection-on-each-entry shape as `pending`, and
+   *  for the same reason: a query tab pins its connection, so it must be able
+   *  to resolve its own name while the rail is showing another one. */
+  savedQueries: SavedQuery[];
+  mergeSavedQueriesIntoStore: (list: SavedQuery[]) => void;
+  patchSavedQuery: (id: string, patch: { name?: string; sql?: string }) => void;
+  removeSavedQuery: (id: string) => void;
   route: AppRoute;
   setRoute: (route: AppRoute) => void;
   /** Which section Settings opens on. Lives here rather than inside
@@ -239,6 +248,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   removePendingEntries: (entries) =>
     set((s) => ({ pending: removeEntries(s.pending, entries) })),
   discardAllPending: () => set({ pending: [] }),
+  savedQueries: [],
+  mergeSavedQueriesIntoStore: (list) =>
+    set((s) => ({ savedQueries: mergeSavedQueries(s.savedQueries, list) })),
+  patchSavedQuery: (id, patch) =>
+    set((s) => ({ savedQueries: s.savedQueries.map((q) => (q.id === id ? { ...q, ...patch } : q)) })),
+  removeSavedQuery: (id) => set((s) => ({ savedQueries: s.savedQueries.filter((q) => q.id !== id) })),
   route: "workspace",
   // Settings replaces the entire workspace, dock included — a third way to
   // unmount the panel an Apply's outcome is coming back to, alongside the

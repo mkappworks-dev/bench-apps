@@ -267,6 +267,29 @@ export function invokeGetReferencedRow(
   return invoke("get_referenced_row", { connectionId, table, column, value });
 }
 
+export type { SavedQuery } from "./savedQueries";
+import type { SavedQuery } from "./savedQueries";
+
+export function invokeListSavedQueries(connectionId: string): Promise<SavedQuery[]> {
+  return invoke("list_saved_queries", { connectionId });
+}
+
+export function invokeCreateSavedQuery(connectionId: string, name: string, sql: string): Promise<SavedQuery> {
+  return invoke("create_saved_query", { connectionId, name, sql });
+}
+
+export function invokeRenameSavedQuery(id: string, name: string): Promise<void> {
+  return invoke("rename_saved_query", { id, name });
+}
+
+export function invokeSetSavedQuerySql(id: string, sql: string): Promise<void> {
+  return invoke("set_saved_query_sql", { id, sql });
+}
+
+export function invokeDeleteSavedQuery(id: string): Promise<void> {
+  return invoke("delete_saved_query", { id });
+}
+
 export function invokeListWatchedTables(connectionId: string): Promise<QualifiedTable[]> {
   return invoke("list_watched_tables", { connectionId });
 }
