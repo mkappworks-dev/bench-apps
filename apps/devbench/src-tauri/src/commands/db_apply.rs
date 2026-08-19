@@ -338,6 +338,95 @@ mod tests {
         sqlx::query("DROP TABLE apply_mixed").execute(&pool).await.unwrap();
     }
 
+    // The Sql arm shipped in Slice 3 with no test because nothing could stage
+    // one. Slice 4's query tab can, so this is the first proof that a staged
+    // statement actually runs — and runs in the SAME transaction as the
+    // structured entries beside it, which is what makes Apply one changeset
+    // rather than a batch of separate writes.
+    #[tokio::test]
+    async fn a_staged_statement_runs_in_the_changeset_transaction() {
+        let pool = test_pool().await;
+        fixture(&pool, "apply_sql_runs", "id serial PRIMARY KEY, status text").await;
+        sqlx::query("INSERT INTO apply_sql_runs (status) VALUES ('pending'), ('pending')")
+            .execute(&pool).await.unwrap();
+
+        let outcome = apply_changes_impl(&pool, &[
+            update("apply_sql_runs", "1", "status", Some("pending"), Some("shipped")),
+            PendingChange::Sql {
+                table: None,
+                statement: "UPDATE apply_sql_runs SET status = 'bulk' WHERE id = 2".into(),
+                previewed_effect: "1 row affected when run".into(),
+            },
+        ]).await.unwrap();
+
+        assert_eq!(outcome, ApplyOutcome { applied: 2, conflict: None });
+
+        let rows: Vec<(i32, Option<String>)> =
+            sqlx::query_as("SELECT id, status FROM apply_sql_runs ORDER BY id")
+                .fetch_all(&pool).await.unwrap();
+        assert_eq!(rows, vec![(1, Some("shipped".into())), (2, Some("bulk".into()))]);
+
+        sqlx::query("DROP TABLE apply_sql_runs").execute(&pool).await.unwrap();
+    }
+
+    // Atomicity has to hold when the failure comes from the free-text arm too.
+    // A staged statement is the one entry whose text the app never validated,
+    // so it is the likeliest thing in any changeset to fail at Apply.
+    #[tokio::test]
+    async fn a_failing_staged_statement_rolls_back_the_entries_beside_it() {
+        let pool = test_pool().await;
+        fixture(&pool, "apply_sql_atomic", "id serial PRIMARY KEY, status text").await;
+        sqlx::query("INSERT INTO apply_sql_atomic (status) VALUES ('before')")
+            .execute(&pool).await.unwrap();
+
+        let result = apply_changes_impl(&pool, &[
+            update("apply_sql_atomic", "1", "status", Some("before"), Some("after")),
+            PendingChange::Sql {
+                table: None,
+                statement: "UPDATE apply_sql_atomic SET status = 'x' WHERE no_such_column = 1".into(),
+                previewed_effect: "1 row affected when run".into(),
+            },
+        ]).await;
+
+        let message = result.expect_err("a broken statement must fail the apply, not be skipped");
+        assert!(
+            message.contains("staged statement failed"),
+            "the error must name the staged statement as the cause, got: {message}",
+        );
+
+        let status: String = sqlx::query_scalar("SELECT status FROM apply_sql_atomic WHERE id = 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(status, "before", "the update staged beside it must have rolled back");
+
+        sqlx::query("DROP TABLE apply_sql_atomic").execute(&pool).await.unwrap();
+    }
+
+    // §12: the effect is re-derived at Apply, not replayed from what the run
+    // reported. previewed_effect is carried for DISPLAY so a divergence is
+    // visible; it must never gate or alter what actually runs.
+    #[tokio::test]
+    async fn previewed_effect_is_display_only_and_does_not_constrain_the_rerun() {
+        let pool = test_pool().await;
+        fixture(&pool, "apply_sql_effect", "id serial PRIMARY KEY, status text").await;
+        sqlx::query("INSERT INTO apply_sql_effect (status) VALUES ('a'), ('a'), ('a')")
+            .execute(&pool).await.unwrap();
+
+        // Staged when one row matched; three match by the time Apply runs.
+        let outcome = apply_changes_impl(&pool, &[PendingChange::Sql {
+            table: None,
+            statement: "UPDATE apply_sql_effect SET status = 'b' WHERE status = 'a'".into(),
+            previewed_effect: "1 row affected when run".into(),
+        }]).await.unwrap();
+
+        assert_eq!(outcome.applied, 1, "applied counts ENTRIES, not rows touched");
+
+        let changed: i64 = sqlx::query_scalar("SELECT count(*) FROM apply_sql_effect WHERE status = 'b'")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(changed, 3, "the rerun writes what it matches now, not what the run reported");
+
+        sqlx::query("DROP TABLE apply_sql_effect").execute(&pool).await.unwrap();
+    }
+
     // The regression that motivated casting at all: sqlx binds every value as
     // TEXT, and Postgres has no assignment cast from text to integer or
     // boolean, so an uncast `SET "n" = $1` is a hard error on any column that
