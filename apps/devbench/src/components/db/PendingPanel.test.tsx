@@ -306,4 +306,41 @@ describe("PendingPanel", () => {
     renderPanel();
     expect(screen.getByText(/no values/i)).toBeTruthy();
   });
+
+  // The cleanup lives in a `finally` for these two cases specifically. Without
+  // them, moving it to the success branch — which would leave the dock and
+  // Settings locked forever after any failed Apply — passes the whole suite.
+  it("releases the in-flight lock when the transaction rolls back", async () => {
+    seed([UPDATE]);
+    vi.spyOn(tauriLib, "invokeApplyChanges").mockResolvedValue({
+      applied: 0,
+      conflict: {
+        index: 0, table: "public.orders", description: "id = 1", column: "status",
+        expected: "pending", found: "cancelled", row_missing: false,
+      },
+    });
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
+
+    await screen.findByRole("alert");
+    expect(useAppStore.getState().applyInFlight).toBe(false);
+    expect(
+      (screen.getByRole("button", { name: "Close pending changes" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+
+  it("releases the in-flight lock when the call itself fails", async () => {
+    seed([UPDATE]);
+    vi.spyOn(tauriLib, "invokeApplyChanges").mockRejectedValue(new Error("connection refused"));
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
+
+    await screen.findByRole("alert");
+    expect(useAppStore.getState().applyInFlight).toBe(false);
+    expect(
+      (screen.getByRole("button", { name: "Close pending changes" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
 });
