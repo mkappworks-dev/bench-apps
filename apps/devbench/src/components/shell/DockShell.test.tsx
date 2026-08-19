@@ -24,6 +24,27 @@ describe("DockShell", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  // The Pending panel is the only place an Apply's conflict can be reported.
+  // Dismissing it mid-flight rolls the transaction back with nobody to tell.
+  it("refuses to close while the occupant says it is mid-flight", () => {
+    const onClose = vi.fn();
+    render(
+      <DockShell
+        label="Pending changes"
+        closeLabel="Close pending changes"
+        title="Pending changes"
+        onClose={onClose}
+        closeDisabled
+      >
+        <div>body</div>
+      </DockShell>,
+    );
+    const close = screen.getByRole("button", { name: "Close pending changes" }) as HTMLButtonElement;
+    expect(close.disabled).toBe(true);
+    fireEvent.click(close);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   // A footer is a slot, not a fixture: the Pending panel hides its Apply row
   // entirely when nothing is staged, and the shell must not leave a stray
   // divider behind when it does.

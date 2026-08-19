@@ -3,6 +3,8 @@ import {
   discardAt,
   groupByTable,
   hasStagedDelete,
+  indexChanges,
+  removeEntries,
   sameStoredValue,
   stageUpdate,
   stagedUpdateFor,
@@ -13,10 +15,19 @@ import {
 
 const ORDERS = { schema: "public", name: "orders" };
 const USERS = { schema: "public", name: "users" };
+const DEV = "conn-dev";
+const STAGING = "conn-staging";
 
-function edit(pkValue: string, column: string, oldValue: string | null, newValue: string | null): UpdateChange {
+function edit(
+  pkValue: string,
+  column: string,
+  oldValue: string | null,
+  newValue: string | null,
+  connectionId: string = DEV,
+): UpdateChange {
   return {
     kind: "update",
+    connection_id: connectionId,
     table: ORDERS,
     pk_column: "id",
     pk_value: pkValue,
@@ -72,33 +83,99 @@ describe("pendingChanges", () => {
 
   it("distinguishes a staged NULL from nothing staged", () => {
     const pending = stageUpdate([], edit("1", "notes", "something", null));
-    expect(stagedUpdateFor(pending, ORDERS, "1", "notes")).toEqual({ staged: true, value: null });
-    expect(stagedUpdateFor(pending, ORDERS, "1", "status")).toEqual({ staged: false });
+    expect(stagedUpdateFor(pending, DEV, ORDERS, "1", "notes")).toEqual({ staged: true, value: null });
+    expect(stagedUpdateFor(pending, DEV, ORDERS, "1", "status")).toEqual({ staged: false });
   });
 
   it("does not confuse the same primary key in two different tables", () => {
     const pending = stageUpdate([], edit("1", "status", "pending", "shipped"));
-    expect(stagedUpdateFor(pending, USERS, "1", "status")).toEqual({ staged: false });
+    expect(stagedUpdateFor(pending, DEV, USERS, "1", "status")).toEqual({ staged: false });
+  });
+
+  // The set is global; a connection is not. Same table, same key, same column
+  // on a different database is a DIFFERENT cell — rendering dev's staged value
+  // over staging's row is how a change gets applied to the wrong database.
+  it("does not report a change staged on one connection as staged on another", () => {
+    const pending = stageUpdate([], edit("1", "status", "pending", "shipped", DEV));
+    expect(stagedUpdateFor(pending, DEV, ORDERS, "1", "status")).toEqual({
+      staged: true,
+      value: "shipped",
+    });
+    expect(stagedUpdateFor(pending, STAGING, ORDERS, "1", "status")).toEqual({ staged: false });
+  });
+
+  // Same cell on two connections is two entries, not an upsert over one.
+  it("keeps one entry per connection for the same cell", () => {
+    let pending: PendingChange[] = [];
+    pending = stageUpdate(pending, edit("1", "status", "pending", "shipped", DEV));
+    pending = stageUpdate(pending, edit("1", "status", "pending", "cancelled", STAGING));
+    expect(pending).toHaveLength(2);
+    expect(stagedUpdateFor(pending, DEV, ORDERS, "1", "status")).toEqual({
+      staged: true,
+      value: "shipped",
+    });
   });
 
   it("toggles a row delete on and back off", () => {
-    const staged = toggleDelete([], ORDERS, "id", "7");
+    const staged = toggleDelete([], DEV, ORDERS, "id", "7");
     expect(staged).toHaveLength(1);
-    expect(hasStagedDelete(staged, ORDERS, "7")).toBe(true);
-    expect(toggleDelete(staged, ORDERS, "id", "7")).toEqual([]);
+    expect(hasStagedDelete(staged, DEV, ORDERS, "7")).toBe(true);
+    expect(toggleDelete(staged, DEV, ORDERS, "id", "7")).toEqual([]);
+  });
+
+  it("does not report a delete staged on one connection as staged on another", () => {
+    const staged = toggleDelete([], DEV, ORDERS, "id", "7");
+    expect(hasStagedDelete(staged, STAGING, ORDERS, "7")).toBe(false);
+    // And toggling on the other connection stages a second delete rather than
+    // cancelling the first.
+    expect(toggleDelete(staged, STAGING, ORDERS, "id", "7")).toHaveLength(2);
+  });
+
+  // Apply removes what it SENT. The grid stays live during the round trip, so
+  // the set it clears against may have grown — a positional or wholesale
+  // removal would take the newcomer with it.
+  it("removes exactly the entries given, leaving ones staged since", () => {
+    const sent = edit("1", "status", "pending", "shipped");
+    const later = edit("2", "paid", "false", "true");
+    expect(removeEntries([sent, later], [sent])).toEqual([later]);
+  });
+
+  // Equal-by-value is not the same entry: a cell re-staged to the same value
+  // during the round trip is a new intent the commit did not cover.
+  it("removes by identity, not by value", () => {
+    const sent = edit("1", "status", "pending", "shipped");
+    const restaged = edit("1", "status", "pending", "shipped");
+    expect(removeEntries([restaged], [sent])).toEqual([restaged]);
   });
 
   it("groups by table in first-appearance order, keeping each entry's index in the whole set", () => {
     const pending: PendingChange[] = [
       edit("1", "status", "pending", "shipped"),
-      { kind: "delete", table: USERS, pk_column: "id", pk_value: "9" },
+      { kind: "delete", connection_id: DEV, table: USERS, pk_column: "id", pk_value: "9" },
       edit("2", "status", "pending", "failed"),
-      { kind: "sql", table: null, statement: "DELETE FROM audit", previewed_effect: "3 rows affected" },
+      {
+        kind: "sql",
+        connection_id: DEV,
+        table: null,
+        statement: "DELETE FROM audit",
+        previewed_effect: "3 rows affected",
+      },
     ];
-    const groups = groupByTable(pending);
+    const groups = groupByTable(indexChanges(pending));
     expect(groups.map((g) => g.label)).toEqual(["public.orders", "public.users", "SQL"]);
     expect(groups[0].entries.map((e) => e.index)).toEqual([0, 2]);
     expect(groups[2].entries[0].index).toBe(3);
+  });
+
+  // Filtering the set by connection must not renumber it: the discard button
+  // and a ConflictReport both address the position in the WHOLE set.
+  it("keeps whole-set indices when only part of the set is grouped", () => {
+    const pending: PendingChange[] = [
+      edit("1", "status", "pending", "shipped", STAGING),
+      edit("2", "status", "pending", "failed", DEV),
+    ];
+    const mine = indexChanges(pending).filter((e) => e.entry.connection_id === DEV);
+    expect(groupByTable(mine)[0].entries.map((e) => e.index)).toEqual([1]);
   });
 
   it("discards one entry by its index in the whole set", () => {

@@ -16,6 +16,7 @@ export function AppStrip({
   onToggleSplit,
   onCloseSplitPane,
   onToggleChat,
+  chatToggleDisabled = false,
 }: {
   tabs: Tab[];
   activeTabId: { left: string | null; right: string | null };
@@ -26,6 +27,10 @@ export function AppStrip({
   onToggleSplit: () => boolean;
   onCloseSplitPane: () => void;
   onToggleChat: () => void;
+  /** This toggle UNMOUNTS the dock, whichever panel is in it. While Pending is
+   *  mid-Apply that would discard the only place the outcome can be reported,
+   *  so the button says so rather than silently doing nothing. */
+  chatToggleDisabled?: boolean;
 }) {
   const splitOpen = isSplitOpen(tabs);
   // Split, declined: no right-pane tab exists to anchor a menu near, so the
@@ -108,7 +113,13 @@ export function AppStrip({
           <span>Split</span>
         </button>
         <span aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-border" />
-        <button aria-label="Toggle AI chat" aria-pressed={chatOpen} onClick={onToggleChat} className={ACTION_CLASS}>
+        <button
+          aria-label="Toggle AI chat"
+          aria-pressed={chatOpen}
+          disabled={chatToggleDisabled}
+          onClick={onToggleChat}
+          className={`${ACTION_CLASS} disabled:pointer-events-none disabled:opacity-40`}
+        >
           <ChatIcon />
           <span>Chat</span>
         </button>

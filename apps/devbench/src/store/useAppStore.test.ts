@@ -209,6 +209,7 @@ describe("useAppStore", () => {
     useAppStore.getState().discardAllPending();
     useAppStore.getState().stagePendingUpdate({
       kind: "update",
+      connection_id: "c1",
       table: { schema: "public", name: "orders" },
       pk_column: "id",
       pk_value: "1",
@@ -216,9 +217,52 @@ describe("useAppStore", () => {
       old_value: "pending",
       new_value: "shipped",
     });
-    useAppStore.getState().togglePendingDelete({ schema: "public", name: "users" }, "id", "9");
+    useAppStore.getState().togglePendingDelete("c1", { schema: "public", name: "users" }, "id", "9");
     expect(useAppStore.getState().pending).toHaveLength(2);
     useAppStore.getState().discardAllPending();
     expect(useAppStore.getState().pending).toEqual([]);
+  });
+
+  it("stamps every staged entry with the connection it was staged against", () => {
+    useAppStore.getState().discardAllPending();
+    useAppStore.getState().togglePendingDelete("dev", { schema: "public", name: "users" }, "id", "9");
+    useAppStore.getState().addPendingInsert("staging", { schema: "public", name: "orders" }, { status: "new" });
+    expect(useAppStore.getState().pending.map((p) => p.connection_id)).toEqual(["dev", "staging"]);
+    useAppStore.getState().discardAllPending();
+  });
+
+  it("removes exactly the entries handed to it, by identity", () => {
+    useAppStore.getState().discardAllPending();
+    useAppStore.getState().togglePendingDelete("c1", { schema: "public", name: "users" }, "id", "9");
+    useAppStore.getState().togglePendingDelete("c1", { schema: "public", name: "users" }, "id", "10");
+    const [first, second] = useAppStore.getState().pending;
+    useAppStore.getState().removePendingEntries([first]);
+    expect(useAppStore.getState().pending).toEqual([second]);
+    useAppStore.getState().discardAllPending();
+  });
+
+  // Finding 3: Apply's outcome has exactly one place to be reported, and every
+  // route that unmounts the dock has to be shut while it is coming.
+  it("refuses to close the dock or leave the pending panel while an Apply is in flight", () => {
+    useAppStore.getState().setChatOpen(true);
+    useAppStore.getState().setDockPanel("pending");
+    useAppStore.getState().setApplyInFlight(true);
+
+    useAppStore.getState().setChatOpen(false);
+    useAppStore.getState().setDockPanel("chat");
+    useAppStore.getState().setDockPanel("insert");
+    expect(useAppStore.getState().chatOpen).toBe(true);
+    expect(useAppStore.getState().dockPanel).toBe("pending");
+
+    // Settings replaces the whole workspace, so it unmounts the dock too.
+    useAppStore.getState().setRoute("settings");
+    expect(useAppStore.getState().route).toBe("workspace");
+
+    useAppStore.getState().setApplyInFlight(false);
+    useAppStore.getState().setDockPanel("chat");
+    useAppStore.getState().setRoute("settings");
+    expect(useAppStore.getState().dockPanel).toBe("chat");
+    expect(useAppStore.getState().route).toBe("settings");
+    useAppStore.getState().setRoute("workspace");
   });
 });

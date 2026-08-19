@@ -199,4 +199,16 @@ describe("AppStrip", () => {
     rerender(<AppStrip {...BASE} chatOpen={false} onToggleChat={onToggleChat} />);
     expect(screen.getByRole("button", { name: /toggle ai chat/i })).toHaveAttribute("aria-pressed", "false");
   });
+
+  // This toggle unmounts the whole dock, Pending panel included. Mid-Apply
+  // that would throw away the only place the outcome can be reported, so it
+  // says it is unavailable rather than silently refusing.
+  it("cannot toggle the dock away while its occupant is mid-flight", () => {
+    const onToggleChat = vi.fn();
+    render(<AppStrip {...BASE} onToggleChat={onToggleChat} chatToggleDisabled />);
+    const button = screen.getByRole("button", { name: /toggle ai chat/i }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(onToggleChat).not.toHaveBeenCalled();
+  });
 });

@@ -23,12 +23,21 @@ export function InsertPanel({ target, onClose }: { target: InsertTarget; onClose
   const setDockPanel = useAppStore((s) => s.setDockPanel);
 
   const editable = target.columns.filter((c) => !isAssigned(c));
-  // A form with no fields has nothing to stage. Reachable in the window where
-  // the grid's rows have landed but describe_columns has not: `some` over an
-  // empty list is false, so without this Save would be enabled and would stage
-  // an empty insert — which fails the whole Apply transaction, taking every
-  // other staged change down with it.
-  const missing = editable.length === 0 || editable.some((c) => isRequired(c) && !(draft[c.name] ?? "").trim());
+  const filled = editable.filter((c) => (draft[c.name] ?? "").trim() !== "");
+  // Two ways to end up staging an empty insert, and both fail the whole Apply
+  // transaction with `has no values`, taking every other staged change down
+  // with it:
+  //   - no fields at all, the window where the grid's rows have landed but
+  //     describe_columns has not (`some` over an empty list is false);
+  //   - every column optional and none of them typed into, e.g.
+  //     `notes(id serial pk, body text, created_at timestamptz default now())`,
+  //     where nothing is required so the required-field check passes trivially.
+  // Supporting `INSERT ... DEFAULT VALUES` would make the second case legal,
+  // but that is a new backend error contract and is deliberately deferred.
+  const missing =
+    editable.length === 0 ||
+    filled.length === 0 ||
+    editable.some((c) => isRequired(c) && !(draft[c.name] ?? "").trim());
 
   function stage() {
     if (missing) return;
@@ -41,7 +50,10 @@ export function InsertPanel({ target, onClose }: { target: InsertTarget; onClose
       const typed = (draft[column.name] ?? "").trim();
       if (typed !== "") values[column.name] = typed;
     }
-    addPendingInsert(target.table, values);
+    // The panel's own target, not whatever the picker points at now: the form
+    // was built from THIS connection's column metadata, and switching
+    // connections while it is open must not re-aim the insert.
+    addPendingInsert(target.connectionId, target.table, values);
     // Straight to Pending rather than closing: the whole point of Save is that
     // it did NOT write, and showing the entry it produced is what makes that
     // legible instead of looking like nothing happened.

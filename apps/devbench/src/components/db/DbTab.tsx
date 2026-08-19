@@ -28,12 +28,42 @@ import { useAppStore } from "../../store/useAppStore";
 // no transaction whose fate a response has to decide.
 type CellEdit = { rowIndex: number; columnIndex: number; draft: string | null };
 
-function isEditableCell(pkColumn: string | null, column: string, value: string | null): boolean {
-  // A cell the grid can't even faithfully display (pk_column === null means
-  // no safe WHERE target at all; "<unsupported type>" means the value shown
-  // isn't really the value — editing it would mean overwriting something the
-  // user never actually saw) must not be editable.
-  return pkColumn !== null && column !== pkColumn && value !== "<unsupported type>";
+/** The backend's placeholder for a value `cell_to_string` cannot decode (see
+ *  its own comment in `commands/db.rs`). It is a marker, never a value: it is
+ *  not what the column holds, and it is not what a WHERE could match. */
+const UNSUPPORTED = "<unsupported type>";
+
+function isEditableCell({
+  pkColumn,
+  pkValue,
+  column,
+  value,
+  stagedDelete,
+}: {
+  pkColumn: string | null;
+  /** The row's key, already refused (`null`) when it is NULL or undecodable. */
+  pkValue: string | null;
+  column: string;
+  value: string | null;
+  stagedDelete: boolean;
+}): boolean {
+  // A cell the grid can't even faithfully display (pk_column === null means no
+  // safe WHERE target on the table at all; pkValue === null means no usable
+  // key for THIS row; UNSUPPORTED means the value shown isn't really the value
+  // — editing it would mean overwriting something the user never actually saw)
+  // must not be editable.
+  //
+  // A row already staged for deletion is refused for a different reason: the
+  // update would be appended AFTER the delete, match zero rows at Apply, and
+  // be reported as "someone deleted it after this change was staged" — blaming
+  // a stranger for the user's own staged delete.
+  return (
+    pkColumn !== null &&
+    pkValue !== null &&
+    column !== pkColumn &&
+    value !== UNSUPPORTED &&
+    !stagedDelete
+  );
 }
 
 function CheckIcon() {
@@ -288,20 +318,21 @@ export function DbTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [table ? tableKey(table) : null, activeConnectionId]);
 
-  // Apply commits in the dock, which cannot reach this grid. When the set goes
-  // from non-empty to empty by anything other than Discard, the rows on screen
-  // are stale AND their staged overlay has just been cleared — so an applied
-  // cell would visibly snap back to its pre-Apply value. Refetching is what
-  // makes the grid agree with the database again.
+  // Apply commits in the dock, which cannot reach this grid. Whenever the set
+  // SHRINKS, the rows on screen are stale AND some staged overlay has just
+  // been cleared — so an applied cell would visibly snap back to its pre-Apply
+  // value. Refetching is what makes the grid agree with the database again.
   //
-  // Discard all also empties the set, and also needs this: the staged overlay
-  // disappearing is exactly the same repaint, and a refetch of unchanged rows
-  // is cheap and always correct.
-  const hadPendingRef = useRef(pending.length > 0);
+  // Shrinking, not emptying: Apply removes only the entries it sent (its own
+  // connection's, minus anything staged during the round trip), so a
+  // successful commit routinely leaves the set non-empty. Discard, single or
+  // all, shrinks it too and needs the same repaint — a refetch of unchanged
+  // rows is cheap and always correct.
+  const pendingCountRef = useRef(pending.length);
   useEffect(() => {
-    const had = hadPendingRef.current;
-    hadPendingRef.current = pending.length > 0;
-    if (!had || pending.length > 0) return;
+    const before = pendingCountRef.current;
+    pendingCountRef.current = pending.length;
+    if (pending.length >= before) return;
     if (!table || !activeConnectionId) return;
     // An open editor cannot survive this refetch: the rows underneath it are
     // about to be replaced while editing.rowIndex stays put, so accepting
@@ -430,23 +461,31 @@ export function DbTab({
 
   /** The row's primary key value, or null when there is nothing safe to key a
    *  change by. Read from the CURRENT rows, so it is the stored value even
-   *  when the cell beside it is showing a staged one. */
+   *  when the cell beside it is showing a staged one.
+   *
+   *  UNSUPPORTED is refused exactly as a NULL key is: it is the grid's
+   *  placeholder for a type `cell_to_string` could not decode (numeric, bytea,
+   *  an enum), not the key. Staging against it would build
+   *  `WHERE "id" = $2::numeric` with the literal marker as the parameter —
+   *  `invalid input syntax`, failing the whole set, naming nothing. */
   function pkValueForRow(rowIndex: number): string | null {
     if (!tableRows?.pk_column) return null;
     const pkIndex = tableRows.columns.indexOf(tableRows.pk_column);
-    return tableRows.rows[rowIndex]?.[pkIndex] ?? null;
+    const value = tableRows.rows[rowIndex]?.[pkIndex] ?? null;
+    return value === UNSUPPORTED ? null : value;
   }
 
   function stageCell(rowIndex: number, columnIndex: number, next: string | null) {
-    if (!table || !tableRows?.pk_column) return;
+    if (!table || !tableRows?.pk_column || !activeConnectionId) return;
     const pkValue = pkValueForRow(rowIndex);
     if (pkValue === null) {
-      setEditError("Can't stage a change to this row — its primary key value is NULL.");
+      setEditError("Can't stage a change to this row — its primary key has no usable value.");
       return;
     }
     setEditError(null);
     stagePendingUpdate({
       kind: "update",
+      connection_id: activeConnectionId,
       table,
       pk_column: tableRows.pk_column,
       pk_value: pkValue,
@@ -487,15 +526,24 @@ export function DbTab({
 
   function renderCell(rowIndex: number, columnIndex: number, value: string | null) {
     const column = tableRows?.columns[columnIndex] ?? "";
-    const editable = isEditableCell(tableRows?.pk_column ?? null, column, value);
     const isEditingThisCell =
       editing !== null && editing.rowIndex === rowIndex && editing.columnIndex === columnIndex;
 
     const pkValue = pkValueForRow(rowIndex);
-    const staged =
-      table && pkValue !== null
-        ? stagedUpdateFor(pending, table, pkValue, column)
-        : ({ staged: false } as const);
+    const addressable = table !== null && pkValue !== null && activeConnectionId !== null;
+    const stagedDelete = addressable
+      ? hasStagedDelete(pending, activeConnectionId, table, pkValue)
+      : false;
+    const editable = isEditableCell({
+      pkColumn: tableRows?.pk_column ?? null,
+      pkValue,
+      column,
+      value,
+      stagedDelete,
+    });
+    const staged = addressable
+      ? stagedUpdateFor(pending, activeConnectionId, table, pkValue, column)
+      : ({ staged: false } as const);
     // The staged value is what the cell shows and what an edit of it starts
     // from — spec §10 requires it, and a checkbox that snapped back to its
     // stored value would look like the click did nothing.
@@ -761,10 +809,10 @@ export function DbTab({
                       // Spec §11: a delete needs a single-column primary key,
                       // the same rule that governs whether a cell is editable.
                       const pkColumn = tableRows?.pk_column;
-                      if (!table || !pkColumn) return null;
+                      if (!table || !pkColumn || !activeConnectionId) return null;
                       const pkValue = pkValueForRow(rowIndex);
                       if (pkValue === null) return null;
-                      const staged = hasStagedDelete(pending, table, pkValue);
+                      const staged = hasStagedDelete(pending, activeConnectionId, table, pkValue);
                       return (
                         <button
                           type="button"
@@ -777,7 +825,9 @@ export function DbTab({
                               : `Stage delete of row ${pkValue}`
                           }
                           aria-pressed={staged}
-                          onClick={() => togglePendingDelete(table, pkColumn, pkValue)}
+                          onClick={() =>
+                            togglePendingDelete(activeConnectionId, table, pkColumn, pkValue)
+                          }
                           className={`px-1 ${
                             staged ? "text-danger" : "text-text-faint hover:text-danger"
                           }`}

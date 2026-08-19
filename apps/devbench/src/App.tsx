@@ -27,6 +27,7 @@ export default function App() {
   const dockPanel = useAppStore((s) => s.dockPanel);
   const setDockPanel = useAppStore((s) => s.setDockPanel);
   const insertTarget = useAppStore((s) => s.insertTarget);
+  const applyInFlight = useAppStore((s) => s.applyInFlight);
   const route = useAppStore((s) => s.route);
   const setRoute = useAppStore((s) => s.setRoute);
   const theme = useAppStore((s) => s.theme);
@@ -135,6 +136,9 @@ export default function App() {
         onToggleSplit={onToggleSplit}
         onCloseSplitPane={tabController.closeSplit}
         onToggleChat={() => setChatOpen(!chatOpen)}
+        // The store refuses the close anyway (see setChatOpen); this is what
+        // stops the button from looking broken while it does.
+        chatToggleDisabled={applyInFlight && chatOpen}
       />
       {/* Three columns. The chat dock RESIZES this row rather than overlaying
           it — it is a grid track, not a fixed-position panel (DESIGN.md). */}

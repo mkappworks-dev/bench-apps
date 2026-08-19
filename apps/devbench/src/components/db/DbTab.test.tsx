@@ -899,7 +899,7 @@ describe("DbTab", () => {
 
       expect(useAppStore.getState().pending).toEqual([
         {
-          kind: "update", table: ORDERS, pk_column: "id", pk_value: "1",
+          kind: "update", connection_id: "c1", table: ORDERS, pk_column: "id", pk_value: "1",
           column: "status", old_value: "pending", new_value: "shipped",
         },
       ]);
@@ -918,7 +918,7 @@ describe("DbTab", () => {
 
       act(() => {
         useAppStore.getState().stagePendingUpdate({
-          kind: "update", table: ORDERS, pk_column: "id", pk_value: "1",
+          kind: "update", connection_id: "c1", table: ORDERS, pk_column: "id", pk_value: "1",
           column: "status", old_value: "pending", new_value: "shipped",
         });
       });
@@ -998,7 +998,7 @@ describe("DbTab", () => {
 
       expect(useAppStore.getState().pending).toEqual([
         {
-          kind: "update", table: ORDERS, pk_column: "id", pk_value: "1",
+          kind: "update", connection_id: "c1", table: ORDERS, pk_column: "id", pk_value: "1",
           column: "status", old_value: null, new_value: "shipped",
         },
       ]);
@@ -1063,7 +1063,7 @@ describe("DbTab", () => {
       // landing while this tab sits with an editor open.
       act(() => {
         useAppStore.getState().stagePendingUpdate({
-          kind: "update", table: ORDERS, pk_column: "id", pk_value: "9",
+          kind: "update", connection_id: "c1", table: ORDERS, pk_column: "id", pk_value: "9",
           column: "status", old_value: "a", new_value: "b",
         });
       });
@@ -1072,6 +1072,40 @@ describe("DbTab", () => {
       });
 
       await waitFor(() => expect(screen.queryByLabelText("Edit status")).toBeNull());
+    });
+
+    // Apply now removes only the entries it sent — its own connection's, minus
+    // anything staged during the round trip — so a successful commit routinely
+    // leaves the set non-empty. Waiting for empty would leave the applied cells
+    // painted with their pre-Apply values and no way back.
+    it("refetches when the pending set shrinks without emptying", async () => {
+      const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+        columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
+      });
+      useAppStore.getState().discardAllPending();
+
+      renderDb(ORDERS);
+      await screen.findByRole("table");
+
+      act(() => {
+        useAppStore.getState().stagePendingUpdate({
+          kind: "update", connection_id: "c1", table: ORDERS, pk_column: "id", pk_value: "1",
+          column: "status", old_value: "pending", new_value: "shipped",
+        });
+        useAppStore.getState().stagePendingUpdate({
+          kind: "update", connection_id: "c2", table: ORDERS, pk_column: "id", pk_value: "2",
+          column: "status", old_value: "pending", new_value: "failed",
+        });
+      });
+      const before = listRows.mock.calls.length;
+
+      // What a successful Apply on c1 leaves behind: c2's entry still staged.
+      act(() => {
+        useAppStore.getState().removePendingEntries([useAppStore.getState().pending[0]]);
+      });
+
+      await waitFor(() => expect(listRows.mock.calls.length).toBeGreaterThan(before));
+      expect(useAppStore.getState().pending).toHaveLength(1);
     });
 
     it("closes an open editor when the table changes underneath it", async () => {
@@ -1111,7 +1145,7 @@ describe("DbTab", () => {
 
       expect(useAppStore.getState().pending).toEqual([
         {
-          kind: "update", table: ORDERS, pk_column: "id", pk_value: "1",
+          kind: "update", connection_id: "c1", table: ORDERS, pk_column: "id", pk_value: "1",
           column: "paid", old_value: "false", new_value: "true",
         },
       ]);
@@ -1199,7 +1233,7 @@ describe("DbTab", () => {
 
     act(() => {
       useAppStore.getState().stagePendingUpdate({
-        kind: "update", table: ORDERS, pk_column: "id", pk_value: "1",
+        kind: "update", connection_id: "c1", table: ORDERS, pk_column: "id", pk_value: "1",
         column: "status", old_value: "pending", new_value: "shipped",
       });
     });
@@ -1218,7 +1252,7 @@ describe("DbTab", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Stage delete of row 42" }));
 
     expect(useAppStore.getState().pending).toEqual([
-      { kind: "delete", table: ORDERS, pk_column: "id", pk_value: "42" },
+      { kind: "delete", connection_id: "c1", table: ORDERS, pk_column: "id", pk_value: "42" },
     ]);
 
     fireEvent.click(await screen.findByRole("button", { name: "Undo staged delete of row 42" }));
@@ -1236,5 +1270,90 @@ describe("DbTab", () => {
     renderDb(ORDERS);
     await screen.findByText("pending");
     expect(screen.queryByRole("button", { name: /stage delete/i })).toBeNull();
+  });
+
+  // Finding 6: the update would be appended AFTER the delete, match zero rows
+  // at Apply, and be reported as "someone deleted it after this change was
+  // staged" — blaming a stranger for the user's own staged delete.
+  it("stops accepting cell edits on a row already staged for deletion", async () => {
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id", "status", "paid"], rows: [["42", "pending", "false"]], pk_column: "id",
+    });
+    useAppStore.getState().discardAllPending();
+
+    renderDb(ORDERS);
+    // Editable first, so the assertion below cannot pass because the row was
+    // never editable at all.
+    expect((await screen.findByText("pending")).closest("button")!.disabled).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Stage delete of row 42" }));
+
+    const cell = screen.getByText("pending").closest("button")!;
+    expect(cell.disabled).toBe(true);
+    fireEvent.click(cell);
+    expect(screen.queryByLabelText("Edit status")).toBeNull();
+    // The checkbox editor is the same rule by a different control.
+    expect((screen.getByRole("checkbox", { name: "paid" }) as HTMLInputElement).disabled).toBe(true);
+    // Only the delete is staged — no update crept in.
+    expect(useAppStore.getState().pending).toHaveLength(1);
+
+    // Undoing the delete gives the row back.
+    fireEvent.click(screen.getByRole("button", { name: "Undo staged delete of row 42" }));
+    expect(screen.getByText("pending").closest("button")!.disabled).toBe(false);
+  });
+
+  // Finding 5: `<unsupported type>` is the grid's placeholder for a type
+  // `cell_to_string` could not decode, not a key. Staged as one it becomes
+  // `WHERE "id" = $2::numeric` with the literal marker bound — invalid input
+  // syntax, failing the whole set and naming nothing.
+  it("refuses the whole row when the primary key itself is <unsupported type>", async () => {
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id", "status"],
+      rows: [["<unsupported type>", "pending"]],
+      pk_column: "id",
+    });
+    useAppStore.getState().discardAllPending();
+
+    renderDb(ORDERS);
+    await screen.findByText("<unsupported type>");
+
+    // No row action: there is no WHERE target to delete by.
+    expect(screen.queryByRole("button", { name: /stage delete/i })).toBeNull();
+    // And no editable cell beside it either.
+    const cell = screen.getByText("pending").closest("button")!;
+    expect(cell.disabled).toBe(true);
+    fireEvent.click(cell);
+    expect(screen.queryByLabelText("Edit status")).toBeNull();
+    expect(useAppStore.getState().pending).toEqual([]);
+  });
+
+  // Finding 1: the pending set is global, the connection is not. Repainting
+  // dev's staged value onto staging's identically-keyed row is how Apply ends
+  // up committing against the wrong database.
+  it("does not paint a value staged on another connection onto this connection's rows", async () => {
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
+    });
+    useAppStore.getState().discardAllPending();
+    useAppStore.getState().setActiveConnectionId("c1");
+
+    renderDb(ORDERS);
+    await screen.findByText("pending");
+
+    act(() => {
+      useAppStore.getState().stagePendingUpdate({
+        kind: "update", connection_id: "c2", table: ORDERS, pk_column: "id", pk_value: "1",
+        column: "status", old_value: "pending", new_value: "shipped",
+      });
+    });
+
+    expect(screen.getByText("pending")).toBeTruthy();
+    expect(screen.queryByText("shipped")).toBeNull();
+    expect(document.querySelector('[data-staged="true"]')).toBeNull();
+    // The delete action likewise reads as unstaged for this connection.
+    act(() => {
+      useAppStore.getState().togglePendingDelete("c2", ORDERS, "id", "1");
+    });
+    expect(screen.getByRole("button", { name: "Stage delete of row 1" })).toBeTruthy();
   });
 });

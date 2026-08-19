@@ -3,10 +3,18 @@ import type { QualifiedTable } from "./tauri";
 
 /** Wire-compatible with the Rust `PendingChange`. Field names are snake_case
  *  because serde reads them exactly as written, the same way `TableRows`
- *  already carries `pk_column`. */
+ *  already carries `pk_column`.
+ *
+ *  `connection_id` is the exception: it is frontend-only state that the Rust
+ *  side neither declares nor needs (`apply_changes` takes the connection as
+ *  its own argument, and serde ignores the extra field). It is here because
+ *  the set is GLOBAL while a connection is not — without it, a change staged
+ *  against dev would key, render and apply against staging the moment the
+ *  picker moved. */
 export type PendingChange =
   | {
       kind: "update";
+      connection_id: string;
       table: QualifiedTable;
       pk_column: string;
       pk_value: string;
@@ -17,9 +25,26 @@ export type PendingChange =
       old_value: string | null;
       new_value: string | null;
     }
-  | { kind: "insert"; table: QualifiedTable; values: Record<string, string | null> }
-  | { kind: "delete"; table: QualifiedTable; pk_column: string; pk_value: string }
-  | { kind: "sql"; table: QualifiedTable | null; statement: string; previewed_effect: string };
+  | {
+      kind: "insert";
+      connection_id: string;
+      table: QualifiedTable;
+      values: Record<string, string | null>;
+    }
+  | {
+      kind: "delete";
+      connection_id: string;
+      table: QualifiedTable;
+      pk_column: string;
+      pk_value: string;
+    }
+  | {
+      kind: "sql";
+      connection_id: string;
+      table: QualifiedTable | null;
+      statement: string;
+      previewed_effect: string;
+    };
 
 export type UpdateChange = Extract<PendingChange, { kind: "update" }>;
 
@@ -45,9 +70,15 @@ export interface ApplyOutcome {
 /** A NUL byte separates the parts, not a `:`. A colon can occur inside a
  *  primary-key value, which would let ("a:b", "c") and ("a", "b:c") key to the
  *  same string and cross two unrelated cells' entries. NUL cannot occur in a
- *  Postgres identifier, nor in a text value Postgres will store. */
-function updateKey(table: QualifiedTable, pkValue: string, column: string): string {
-  return `${tableKey(table)}\u0000${pkValue}\u0000${column}`;
+ *  Postgres identifier, in a connection id, nor in a text value Postgres will
+ *  store. */
+function updateKey(
+  connectionId: string,
+  table: QualifiedTable,
+  pkValue: string,
+  column: string,
+): string {
+  return `${connectionId}\u0000${tableKey(table)}\u0000${pkValue}\u0000${column}`;
 }
 
 /** Spec §10: comparison runs on typed values, not display strings.
@@ -64,7 +95,9 @@ export function sameStoredValue(a: string | null, b: string | null): boolean {
 
 function updateIndex(pending: PendingChange[], key: string): number {
   return pending.findIndex(
-    (p) => p.kind === "update" && updateKey(p.table, p.pk_value, p.column) === key,
+    (p) =>
+      p.kind === "update" &&
+      updateKey(p.connection_id, p.table, p.pk_value, p.column) === key,
   );
 }
 
@@ -72,12 +105,25 @@ export function discardAt(pending: PendingChange[], index: number): PendingChang
   return pending.filter((_, i) => i !== index);
 }
 
+/** Removes exactly the entries given, by identity. Used by Apply, which must
+ *  drop what it SENT and nothing else: the grid stays live during the round
+ *  trip, so the set it clears against may already have grown. */
+export function removeEntries(
+  pending: PendingChange[],
+  entries: PendingChange[],
+): PendingChange[] {
+  return pending.filter((p) => !entries.includes(p));
+}
+
 /** Spec §10: staging is an upsert-or-delete, not an append. A cell set back to
  *  its stored value removes its entry rather than adding a second one that
  *  cancels the first — otherwise toggling a checkbox twice would read
  *  "Pending 2" and Apply would write a value that is already there. */
 export function stageUpdate(pending: PendingChange[], entry: UpdateChange): PendingChange[] {
-  const at = updateIndex(pending, updateKey(entry.table, entry.pk_value, entry.column));
+  const at = updateIndex(
+    pending,
+    updateKey(entry.connection_id, entry.table, entry.pk_value, entry.column),
+  );
   if (sameStoredValue(entry.old_value, entry.new_value)) {
     return at >= 0 ? discardAt(pending, at) : pending;
   }
@@ -90,20 +136,30 @@ export function stageUpdate(pending: PendingChange[], entry: UpdateChange): Pend
  *  make a cell staged to NULL render its stored value instead. */
 export function stagedUpdateFor(
   pending: PendingChange[],
+  connectionId: string,
   table: QualifiedTable,
   pkValue: string,
   column: string,
 ): { staged: true; value: string | null } | { staged: false } {
-  const at = updateIndex(pending, updateKey(table, pkValue, column));
+  const at = updateIndex(pending, updateKey(connectionId, table, pkValue, column));
   if (at < 0) return { staged: false };
   const hit = pending[at];
   // Narrowing only — updateIndex matches no other kind.
   return hit.kind === "update" ? { staged: true, value: hit.new_value } : { staged: false };
 }
 
-function deleteIndex(pending: PendingChange[], table: QualifiedTable, pkValue: string): number {
+function deleteIndex(
+  pending: PendingChange[],
+  connectionId: string,
+  table: QualifiedTable,
+  pkValue: string,
+): number {
   return pending.findIndex(
-    (p) => p.kind === "delete" && tableKey(p.table) === tableKey(table) && p.pk_value === pkValue,
+    (p) =>
+      p.kind === "delete" &&
+      p.connection_id === connectionId &&
+      tableKey(p.table) === tableKey(table) &&
+      p.pk_value === pkValue,
   );
 }
 
@@ -111,35 +167,52 @@ function deleteIndex(pending: PendingChange[], table: QualifiedTable, pkValue: s
  *  row action is the only control for it, so it has to be its own undo. */
 export function toggleDelete(
   pending: PendingChange[],
+  connectionId: string,
   table: QualifiedTable,
   pkColumn: string,
   pkValue: string,
 ): PendingChange[] {
-  const at = deleteIndex(pending, table, pkValue);
+  const at = deleteIndex(pending, connectionId, table, pkValue);
   if (at >= 0) return discardAt(pending, at);
-  return [...pending, { kind: "delete", table, pk_column: pkColumn, pk_value: pkValue }];
+  return [
+    ...pending,
+    { kind: "delete", connection_id: connectionId, table, pk_column: pkColumn, pk_value: pkValue },
+  ];
 }
 
 export function hasStagedDelete(
   pending: PendingChange[],
+  connectionId: string,
   table: QualifiedTable,
   pkValue: string,
 ): boolean {
-  return deleteIndex(pending, table, pkValue) >= 0;
+  return deleteIndex(pending, connectionId, table, pkValue) >= 0;
+}
+
+/** An entry paired with its position in the WHOLE set. Filtering the set (by
+ *  connection, say) has to keep that position: a discard button and a
+ *  `ConflictReport` both address it. */
+export interface IndexedChange {
+  entry: PendingChange;
+  index: number;
+}
+
+export function indexChanges(pending: PendingChange[]): IndexedChange[] {
+  return pending.map((entry, index) => ({ entry, index }));
 }
 
 export interface PendingGroup {
   label: string;
   /** `index` is the position in the WHOLE set, not in this group — a discard
    *  button and a `ConflictReport` both address that same position. */
-  entries: { entry: PendingChange; index: number }[];
+  entries: IndexedChange[];
 }
 
 /** Spec §10: the panel groups by table. A `sql` entry has no table, so it
  *  files under its own heading rather than under one it might have touched. */
-export function groupByTable(pending: PendingChange[]): PendingGroup[] {
+export function groupByTable(entries: IndexedChange[]): PendingGroup[] {
   const groups: PendingGroup[] = [];
-  pending.forEach((entry, index) => {
+  entries.forEach(({ entry, index }) => {
     const label = entry.table ? tableKey(entry.table) : "SQL";
     let group = groups.find((g) => g.label === label);
     if (!group) {

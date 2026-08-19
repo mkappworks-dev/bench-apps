@@ -15,6 +15,7 @@ export function DockShell({
   closeLabel,
   title,
   onClose,
+  closeDisabled = false,
   footer,
   children,
 }: {
@@ -27,6 +28,10 @@ export function DockShell({
   closeLabel: string;
   title: ReactNode;
   onClose: () => void;
+  /** Blocks dismissal while the occupant has an answer still coming. Pending's
+   *  Apply is the only such round trip: closing mid-flight would leave a
+   *  rolled-back transaction with nobody to report the conflict to. */
+  closeDisabled?: boolean;
   /** Rendered below the body with no styling of its own — each occupant
    *  brings its own border and padding, and one that has nothing to act on
    *  passes none at all. */
@@ -94,8 +99,9 @@ export function DockShell({
           <span className="min-w-0 truncate text-xs font-bold text-text-muted">{title}</span>
           <button
             aria-label={closeLabel}
+            disabled={closeDisabled}
             onClick={onClose}
-            className="shrink-0 rounded-sm px-1.5 text-text-faint hover:bg-surface-2 hover:text-text"
+            className="shrink-0 rounded-sm px-1.5 text-text-faint hover:bg-surface-2 hover:text-text disabled:pointer-events-none disabled:opacity-40"
           >
             ✕
           </button>

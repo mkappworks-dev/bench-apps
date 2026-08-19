@@ -4,6 +4,7 @@ import type { ColumnInfo } from "../components/db/grid/columnMeta";
 import { tableKey } from "../lib/tableIdentity";
 import {
   discardAt,
+  removeEntries,
   stageUpdate,
   toggleDelete,
   type PendingChange,
@@ -83,13 +84,33 @@ interface AppState {
   setDockPanel: (panel: DockPanel) => void;
   insertTarget: InsertTarget | null;
   setInsertTarget: (target: InsertTarget | null) => void;
+  /** True from the moment Apply is sent until its outcome has been reported.
+   *  Apply is the one round trip left in the write path, so it is the one
+   *  place where the dock can be torn down out from under an answer that is
+   *  still coming — `setChatOpen` and `setDockPanel` refuse to do that while
+   *  this is set, so a conflict always has a panel to land in. */
+  applyInFlight: boolean;
+  setApplyInFlight: (inFlight: boolean) => void;
   /** Spec §10: global, not per-tab. It can hold changes to several tables from
    *  several tabs, and Apply commits them together. */
   pending: PendingChange[];
   stagePendingUpdate: (entry: UpdateChange) => void;
-  togglePendingDelete: (table: QualifiedTable, pkColumn: string, pkValue: string) => void;
-  addPendingInsert: (table: QualifiedTable, values: Record<string, string | null>) => void;
+  togglePendingDelete: (
+    connectionId: string,
+    table: QualifiedTable,
+    pkColumn: string,
+    pkValue: string,
+  ) => void;
+  addPendingInsert: (
+    connectionId: string,
+    table: QualifiedTable,
+    values: Record<string, string | null>,
+  ) => void;
   discardPendingAt: (index: number) => void;
+  /** Drops exactly these entries, by identity. Apply's successful path uses
+   *  it instead of `discardAllPending` so a change staged during the round
+   *  trip is not thrown away with the ones that were actually written. */
+  removePendingEntries: (entries: PendingChange[]) => void;
   discardAllPending: () => void;
   route: AppRoute;
   setRoute: (route: AppRoute) => void;
@@ -182,23 +203,38 @@ export const useAppStore = create<AppState>((set, get) => ({
       watchedTableList: tables,
     }),
   chatOpen: true,
-  setChatOpen: (open) => set({ chatOpen: open }),
+  // Both dock setters are no-ops while an Apply is in flight, so every route
+  // that could unmount the Pending panel — its own ✕, AppStrip's dock toggle,
+  // the grid's Insert button — is closed by one invariant rather than by each
+  // caller remembering to check. The panel's ✕ and the dock toggle also render
+  // themselves disabled, so this is the floor, not the whole story.
+  setChatOpen: (open) => set((s) => (s.applyInFlight && !open ? {} : { chatOpen: open })),
   dockPanel: "chat",
-  setDockPanel: (dockPanel) => set({ dockPanel }),
+  setDockPanel: (dockPanel) =>
+    set((s) => (s.applyInFlight && dockPanel !== "pending" ? {} : { dockPanel })),
   insertTarget: null,
   setInsertTarget: (insertTarget) => set({ insertTarget }),
+  applyInFlight: false,
+  setApplyInFlight: (applyInFlight) => set({ applyInFlight }),
   pending: [],
   stagePendingUpdate: (entry) => set((s) => ({ pending: stageUpdate(s.pending, entry) })),
-  togglePendingDelete: (table, pkColumn, pkValue) =>
-    set((s) => ({ pending: toggleDelete(s.pending, table, pkColumn, pkValue) })),
+  togglePendingDelete: (connectionId, table, pkColumn, pkValue) =>
+    set((s) => ({ pending: toggleDelete(s.pending, connectionId, table, pkColumn, pkValue) })),
   // Inserts are always appended: two inserts into one table are two rows, so
   // there is nothing here to upsert against.
-  addPendingInsert: (table, values) =>
-    set((s) => ({ pending: [...s.pending, { kind: "insert", table, values }] })),
+  addPendingInsert: (connectionId, table, values) =>
+    set((s) => ({
+      pending: [...s.pending, { kind: "insert", connection_id: connectionId, table, values }],
+    })),
   discardPendingAt: (index) => set((s) => ({ pending: discardAt(s.pending, index) })),
+  removePendingEntries: (entries) =>
+    set((s) => ({ pending: removeEntries(s.pending, entries) })),
   discardAllPending: () => set({ pending: [] }),
   route: "workspace",
-  setRoute: (route) => set({ route }),
+  // Settings replaces the entire workspace, dock included — a third way to
+  // unmount the panel an Apply's outcome is coming back to, alongside the
+  // dock toggle and the panel's own ✕. Same invariant, same reason.
+  setRoute: (route) => set((s) => (s.applyInFlight && route !== "workspace" ? {} : { route })),
   settingsPane: "general",
   setSettingsPane: (settingsPane) => set({ settingsPane }),
   activeSessionId: null,
