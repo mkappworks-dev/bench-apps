@@ -50,7 +50,7 @@ pub struct ColumnInfo {
 // `confkey[i]` pairs by position exactly. `DISTINCT ON` picks one target when a
 // column carries more than one FK constraint (legal in Postgres), so a column
 // can never duplicate its own row.
-pub(crate) const FK_TARGET_SQL: &str = "\
+const DESCRIBE_COLUMNS_SQL: &str = "\
 SELECT
   c.column_name::text    AS column_name,
   c.udt_name::text       AS udt_name,
@@ -90,7 +90,7 @@ pub async fn describe_columns_impl(
     pool: &PgPool,
     table: &QualifiedTable,
 ) -> Result<Vec<ColumnInfo>, String> {
-    let rows = sqlx::query(FK_TARGET_SQL)
+    let rows = sqlx::query(DESCRIBE_COLUMNS_SQL)
         .bind(table.schema())
         .bind(table.name())
         .fetch_all(pool)
