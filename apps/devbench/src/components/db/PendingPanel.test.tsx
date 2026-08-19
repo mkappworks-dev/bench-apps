@@ -25,10 +25,18 @@ function seed(pending: PendingChange[]) {
   useAppStore.setState({ pending });
 }
 
-function renderPanel(onApplied = vi.fn(), connectionId: string | null = "c1") {
+function renderPanel(onApplied = vi.fn(), connectionId: string | null = "c1", onConflictIndex = vi.fn()) {
   return {
     onApplied,
-    ...render(<PendingPanel connectionId={connectionId} onClose={() => {}} onApplied={onApplied} />),
+    onConflictIndex,
+    ...render(
+      <PendingPanel
+        connectionId={connectionId}
+        onClose={() => {}}
+        onApplied={onApplied}
+        onConflictIndex={onConflictIndex}
+      />,
+    ),
   };
 }
 
@@ -112,6 +120,27 @@ describe("PendingPanel", () => {
     expect(screen.getByRole("alert").textContent).toContain("cancelled");
     expect(useAppStore.getState().pending).toEqual([UPDATE]);
     expect(onApplied).not.toHaveBeenCalled();
+  });
+
+  // The backend enumerates the array it was SENT, which is only this
+  // connection's subset. Without mapping, a conflict on the first sent entry
+  // reports index 0 — which addresses a different connection's entry.
+  it("reports a conflict against the entry's position in the whole set, not the sent subset", async () => {
+    // UPDATE is connection c1; it sits at whole-set index 1, sent index 0.
+    seed([OTHER_CONNECTION, UPDATE]);
+    vi.spyOn(tauriLib, "invokeApplyChanges").mockResolvedValue({
+      applied: 0,
+      conflict: {
+        index: 0, table: "public.orders", description: "id = 1", column: "status",
+        expected: "pending", found: "cancelled", row_missing: false,
+      },
+    });
+    const { onConflictIndex } = renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
+
+    await screen.findByRole("alert");
+    expect(onConflictIndex).toHaveBeenCalledWith(1);
   });
 
   it("says the row is gone rather than reporting a NULL it did not find", async () => {

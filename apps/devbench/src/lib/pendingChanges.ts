@@ -190,8 +190,9 @@ export function hasStagedDelete(
 }
 
 /** An entry paired with its position in the WHOLE set. Filtering the set (by
- *  connection, say) has to keep that position: a discard button and a
- *  `ConflictReport` both address it. */
+ *  connection, say) has to keep that position: a discard button addresses it
+ *  directly, and a `ConflictReport`'s index is translated back to it by
+ *  `PendingPanel` — the backend counts only the entries it was sent. */
 export interface IndexedChange {
   entry: PendingChange;
   index: number;
@@ -204,7 +205,8 @@ export function indexChanges(pending: PendingChange[]): IndexedChange[] {
 export interface PendingGroup {
   label: string;
   /** `index` is the position in the WHOLE set, not in this group — a discard
-   *  button and a `ConflictReport` both address that same position. */
+   *  button addresses that position directly, and a `ConflictReport`'s index
+   *  is translated back to it by `PendingPanel` before anyone else sees it. */
   entries: IndexedChange[];
 }
 

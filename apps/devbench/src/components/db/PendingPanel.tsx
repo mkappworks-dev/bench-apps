@@ -195,6 +195,7 @@ export function PendingPanel({
   connectionId,
   onClose,
   onApplied,
+  onConflictIndex,
 }: {
   connectionId: string | null;
   onClose: () => void;
@@ -203,6 +204,11 @@ export function PendingPanel({
    *  succeeds — without a refetch every applied cell would visibly snap back
    *  to its pre-Apply value as the staged overlay clears. */
   onApplied: () => void;
+  /** The offending entry's position in the WHOLE pending set, raised when a
+   *  conflict comes back. The backend indexes the array it was sent — this
+   *  connection's subset — so the index it returns is translated here before
+   *  anyone outside this panel sees it. */
+  onConflictIndex?: (index: number) => void;
 }) {
   const pending = useAppStore((s) => s.pending);
   const discardPendingAt = useAppStore((s) => s.discardPendingAt);
@@ -234,6 +240,13 @@ export function PendingPanel({
         // The transaction rolled back whole, so the set is still exactly what
         // the user staged. Clearing it here would cost them their work over a
         // failure that wrote nothing.
+        //
+        // `conflict.index` counts the array we SENT (this connection's subset).
+        // `mine` holds the same entries paired with their whole-set positions,
+        // so this is the exact translation back to the index every other
+        // consumer — discardPendingAt included — expects.
+        const whole = mine[outcome.conflict.index]?.index;
+        if (whole !== undefined) onConflictIndex?.(whole);
         setProblem(conflictMessage(outcome.conflict));
         return;
       }
