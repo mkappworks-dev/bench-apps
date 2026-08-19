@@ -118,11 +118,44 @@ this connection contains, and both open into the main pane. The Queries segment
 adds a `+ New query` footer; the Tables segment does not (tables are not created
 from here).
 
+The segment is **local view state**, initialised from the host tab's kind — a
+query tab's rail opens on Queries, a table tab's on Tables. It is deliberately
+not in `tab.state`: the shell spec restricts that to identifying selection, and
+which list you are looking at is neither identifying nor worth persisting.
+
+A saved query is **stored, not session state** (§3b calls it a document you
+return to, which is only true if it survives a restart). `saved_queries` is a
+SQLite table scoped to a connection, exactly as `watched_tables` is:
+
+```sql
+CREATE TABLE saved_queries (
+  id            TEXT PRIMARY KEY,
+  connection_id TEXT NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,
+  sql           TEXT NOT NULL,
+  created_at    INTEGER NOT NULL
+);
+```
+
+`created_at` orders the rail, so renaming a query does not make it jump.
+`ON DELETE CASCADE` means removing a connection removes the queries written
+against it — a query naming that database's tables is meaningless without it.
+
+The rail also **deletes** a saved query. This is not in the mockup, and is
+included because `+ New query` creating an `untitled query` with no way to
+remove it is a one-way ratchet: the list can only ever grow.
+
 ## 3b. Query tabs
 
 Selecting a query opens it as **its own tab** beside the DB tab, and selecting
 the same query again focuses that tab rather than stacking a duplicate — one
 saved query is one document.
+
+A query tab's identity is `{ queryId, connectionId }`, and the connection is
+**pinned** at open: moving the rail's picker afterwards does not retarget an
+open query tab, the same rule §9's insert panel already follows. Focusing the
+existing tab therefore has to match on `queryId`, not on tab kind — two saved
+queries are two tabs.
 
 A query tab is visually distinct from a table tab: a `--query-tint` ground
 (`rgba(255,255,255,.035)` dark, `rgba(16,21,31,.03)` light) on the tab and the
@@ -141,7 +174,7 @@ FROM orders                                                       on --bg
 WHERE status = 'failed';
                         ▂▂▂▂                                    ← resize grip, bottom centre
 ──────────────────────────────────────────────────────────────  ← divider
-RAN · in an open transaction — rolled back unless staged         ← results, on --bg
+RAN · rolled back — nothing written unless staged and applied   ← results, on --bg
 ┌──────┬──────────┬───────────┐
 │ ID   │ STATUS   │ AMOUNT    │
 └──────┴──────────┴───────────┘
@@ -152,8 +185,12 @@ RAN · in an open transaction — rolled back unless staged         ← results,
   the action is the subject and the name is what you are acting on. A 10px gap
   separates them.
 - **The name is editable in place.** Renaming updates the saved query and its
-  tab label together; the tab label is patched directly rather than by
-  re-rendering, so the caret stays in the field while typing.
+  tab label together. The mockup patches the tab label's DOM directly to keep
+  the caret from jumping, which is a workaround for re-rendering the page from
+  a template string. React preserves selection in a controlled input whose
+  value round-trips through state unchanged, so the implementation keeps the
+  caret by keeping the *write* off the keystroke path instead: store on every
+  keystroke, SQLite write debounced — the shape `patchTabState` already uses.
 - **The editor runs edge to edge**, with no gutter of its own — it is the
   content of the pane, not a field inside it.
 - **The resize grip is a small centred pill** in a full-width hit zone at the
@@ -413,6 +450,20 @@ interpolation.
 The pending set is global, not per-tab: it can hold changes to several tables
 from several tabs, and Apply commits them together.
 
+It is **not** global across connections in the sense that matters for acting on
+it. Apply sends only the entries staged against the active connection, and the
+panel renders the rest dimmed under a "switch to it to apply" note. **Discard
+all is scoped the same way** (Slice 4): it drops this connection's entries and
+leaves the others standing, making it the exact inverse of Apply. Left global it
+was the one control in the panel that could destroy work the panel itself had
+just declared unreachable.
+
+The pane strip's `Pending N` badge stays **globally** counted, and this is not
+an inconsistency: on a connection with nothing staged, that badge and the panel
+it opens are the only route to the entries staged elsewhere. Counting it per
+connection would hide them behind no affordance at all. The distinction is
+destructive versus informative, not scoped versus unscoped.
+
 ## 11. Row delete
 
 A row action in the actions column stages a delete. It requires a
@@ -424,22 +475,38 @@ is editable.
 The bottom drawer is gone (§3b). What was the query console is now a query tab,
 and its Preview/Commit pair becomes Run query / Add to pending.
 
-**Run query** opens a transaction, runs the statement, shows the effect, then
-rolls back. The result is labelled `RAN — in an open transaction, rolled back
-unless you add it to Pending`, so nothing about it reads as written.
+**Run query** opens a transaction, runs the statement, captures the effect and
+rolls back — all within the one user action. The rollback is fired in the same
+continuation the result arrives in, not deferred to a later click and not tied
+to a React lifecycle, so an abandoned tab or a mid-flight unmount still releases
+the transaction. **No lock is held while the user decides.** That is the Slice 3
+principle ("staged intent holds no transaction") applied to this path; the
+earlier wording, which implied the transaction stayed open until Discard or Add
+to pending, would have reinstated exactly the hazard §15 retired.
+
+The result is labelled `RAN — ran in a transaction that was rolled back;
+nothing is written unless you add it to Pending and Apply`.
 
 **Add to pending** records the statement together with the effect the run
 reported. At Apply the statement is **re-run** inside the changeset transaction.
 **Discard** drops the result and stages nothing.
+
+**Add to pending is available only for a statement that reported an affected
+count**, never for one that returned rows. Re-running a `SELECT` at Apply writes
+nothing, so staging one would occupy a slot in the pending count without being
+able to change anything — the same reasoning §10 uses to make the set a diff
+rather than a log, and the same thing that makes "Apply 3" honest.
 
 Re-running means the effect can differ from what the run showed if the data
 moved in between. The panel therefore stores and displays the reported effect
 ("1 row affected when run") so a divergence is visible after Apply rather than
 silent.
 
-`preview_state` and its sweep **stay** for this path — running a statement to
-show its effect genuinely needs an open transaction. Only the *cell-edit* use of
-that machinery is retired (§15).
+`preview_state`, its sweep, `preview_query` and `rollback_preview` **stay** —
+running a statement to show its effect genuinely needs a transaction, even one
+this short-lived. `commit_preview` does **not**: no path in this design ever
+commits a held preview, because Add to pending re-runs the statement at Apply
+instead. It is retired with the console (§15).
 
 Naming: the button says "Run query" rather than "Preview" because it does run,
 for real, against the database. Calling that a preview understated it. What is
@@ -477,6 +544,17 @@ count_table_rows(connection_id, table, filter) -> i64
 list_table_rows(connection_id, table, filter, order_by, limit, offset) -> TableRows
 get_referenced_row(connection_id, table, column, value) -> Option<TableRows>
 apply_changes(connection_id, changes: Vec<PendingChange>) -> ApplyOutcome
+
+// Saved queries (§3a). Stored in the app's own SQLite, not the user's
+// Postgres — a saved query is DevBench state about a connection, not data
+// inside it.
+list_saved_queries(connection_id) -> Vec<SavedQuery>
+create_saved_query(connection_id, name, sql) -> SavedQuery
+rename_saved_query(id, name) -> ()
+set_saved_query_sql(id, sql) -> ()
+delete_saved_query(id) -> ()
+
+struct SavedQuery { id: String, connection_id: String, name: String, sql: String, created_at: i64 }
 
 struct ApplyOutcome {
   applied: usize,
@@ -565,8 +643,15 @@ Also removed: the client-side filter bar, its state and counter; the bottom
 pager strip; the boolean pills; and the query console drawer entirely — its
 toggle button, resize handle, height state and open/closed flag.
 
-**Kept:** `preview_state`, the sweep and the preview/rollback commands — the
-query console still uses them (§12).
+**Kept:** `preview_state`, the sweep, `preview_query` and `rollback_preview` —
+the query tab's Run still uses them (§12).
+
+**Also removed in Slice 4:** `commit_preview`, `commit_preview_impl` and
+`invokeCommitPreview`. `QueryConsole.tsx` was their only caller anywhere, and
+the path that replaces it never commits a held preview — Add to pending re-runs
+the statement inside the changeset transaction instead. Retiring it is what
+makes "no transaction outlives the action that opened it" true of the whole
+application rather than of the grid alone.
 
 ## 16. Testing
 
@@ -580,6 +665,12 @@ query console still uses them (§12).
   nothing is written.
 - `describe_columns` reports identity, nullability, defaults and an FK target on
   a table that has one.
+- A staged `sql` entry re-runs inside the changeset transaction and its effect
+  is visible after the commit; a failing one rolls back the structured entries
+  staged beside it. (The `Sql` variant shipped in Slice 3 with no test, because
+  nothing could stage one until Slice 4 built the UI.)
+- `saved_queries` round-trips create/list/rename/set-sql/delete, and deleting a
+  connection cascades its queries away.
 
 **Vitest**
 - Popover edits do not change the query until Apply; Cancel discards the draft.
@@ -594,6 +685,15 @@ query console still uses them (§12).
   required, defaults as placeholders.
 - FK link icon appears only on columns with a target.
 - Booleans render as a checkbox; `NULL` stays distinct from `false`.
+- The rail's segment swaps the list, and the `+ New query` footer shows on
+  Queries only.
+- Selecting an already-open query focuses its tab instead of stacking a second.
+- Renaming updates the saved query and the tab label from one keystroke.
+- Add to pending is disabled for a row-returning result, and stages exactly one
+  `sql` entry for a statement that reported an affected count.
+- Run rolls its transaction back without being asked to.
+- Discard all drops this connection's entries and leaves another connection's
+  standing.
 
 **Browser (Playwright, measured)**
 - The toolbar stays one row and collapses to icons below a 620px pane.
@@ -601,6 +701,12 @@ query console still uses them (§12).
 - Header/body alignment holds under horizontal scroll.
 - The dock swaps occupants without changing width.
 - Popovers sit above cells and below the sticky header.
+- The query editor reaches both pane edges; the tint covers head and tab but
+  not the editor or results.
+- The resize grip is the element at its own centre point, and drags within
+  90-560px.
+- The query head stays one row; its three buttons measure 28px.
+- The rail keeps its width across a switch between a table tab and a query tab.
 
 jsdom has no layout engine; anything positional is verified in a real browser
 with `getComputedStyle` / `getBoundingClientRect`, never asserted in vitest.
@@ -638,7 +744,7 @@ deliberate temporary duplication, not an oversight.
 contact.** Slice 1: `docs/superpowers/plans/2026-08-02-table-view-slice-1-toolbar.md`.
 Slice 2: `docs/superpowers/plans/2026-08-02-table-view-slice-2-foreign-keys.md`.
 Slice 3: `docs/superpowers/plans/2026-08-02-table-view-slice-3-writes.md`.
-Slice 4 is not planned yet.
+Slice 4: `docs/superpowers/plans/2026-08-19-table-view-slice-4-queries.md`.
 
 ## 18. Risks and known gaps
 
