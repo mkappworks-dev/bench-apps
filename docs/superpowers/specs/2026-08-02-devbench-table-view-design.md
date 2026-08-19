@@ -543,12 +543,23 @@ re-check concluded:
 
 > The bug those guards fixed was a **committed write reported as failed, and a
 > leaked transaction**. Both were possible only because a preview opened a real
-> transaction that outlived the UI that owned it. After this task, clicking ✓
-> mutates local state and returns synchronously — there is no request, no
-> transaction, no id, and therefore no window in which a response can land
-> against a component that has moved on. The failure mode is not merely
-> unguarded; it is unreachable. The one remaining round trip is Apply, which is
-> a single call the panel awaits and whose outcome it reports in full.
+> transaction that outlived the UI that owned it. Clicking ✓ now mutates local
+> state and returns synchronously — no request, no transaction, no id, and so
+> no window in which a response can land against state that has moved on. For
+> **cell staging**, the failure mode is not merely unguarded; it is unreachable
+> by construction.
+
+That reasoning covers cell staging and stops there. **Apply is a genuine round
+trip**, and it has exactly the windows the retired guards existed for. They are
+closed explicitly rather than by construction:
+
+- The grid stays live while Apply is out, so the set can grow mid-flight. On
+  success the panel removes **only the entries it sent**, by identity — never
+  the whole set, which would silently destroy anything staged since.
+- The panel is the only place a conflict can be reported, so it **refuses to be
+  dismissed** while a call is in flight: its ✕ is disabled, and the store's dock
+  setters decline to unmount it, which closes the AppStrip toggle and every
+  other route at once.
 
 Also removed: the client-side filter bar, its state and counter; the bottom
 pager strip; the boolean pills; and the query console drawer entirely — its
