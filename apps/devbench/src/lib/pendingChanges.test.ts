@@ -197,9 +197,12 @@ describe("entriesForOtherConnections", () => {
     expect(entriesForOtherConnections([mine, theirs], "c1")).toEqual([theirs]);
   });
 
-  // With no connection selected there is no "mine" to discard, so discarding
-  // must be a no-op rather than a wipe.
   it("keeps everything when no connection is selected", () => {
-    expect(entriesForOtherConnections([mine, theirs], null)).toEqual([mine, theirs]);
+    // Reference identity, not deep equality: `connection_id` is a required
+    // string in every variant, so `filter(p => p.connection_id !== null)` —
+    // the function with its guard deleted — returns a NEW array holding the
+    // same elements. Only `toBe` can tell the two apart.
+    const pending = [mine, theirs];
+    expect(entriesForOtherConnections(pending, null)).toBe(pending);
   });
 });
