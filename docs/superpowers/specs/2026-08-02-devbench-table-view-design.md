@@ -115,8 +115,9 @@ Every tab kind shares one rail, in three stacked parts:
 
 Queries are a **peer of tables**, not a drawer beneath them: both are things
 this connection contains, and both open into the main pane. The Queries segment
-adds a `+ New query` footer; the Tables segment does not (tables are not created
-from here).
+adds a `New query` footer — a full-width secondary button pinned to the bottom
+of the rail — and an empty state (`No saved queries yet.`) in place of the list.
+The Tables segment has neither (tables are not created from here).
 
 The segment is **local view state**, initialised from the host tab's kind — a
 query tab's rail opens on Queries, a table tab's on Tables. It is deliberately
@@ -484,8 +485,10 @@ principle ("staged intent holds no transaction") applied to this path; the
 earlier wording, which implied the transaction stayed open until Discard or Add
 to pending, would have reinstated exactly the hazard §15 retired.
 
-The result is labelled `RAN — ran in a transaction that was rolled back;
-nothing is written unless you add it to Pending and Apply`.
+The result is labelled with a `RAN` pill followed by `ran in a transaction that
+was rolled back — nothing is written unless you add it to Pending and Apply`.
+A statement that reported a count renders that count instead of a grid
+(`3 rows affected — no rows returned`); one that returned rows renders the grid.
 
 **Add to pending** records the statement together with the effect the run
 reported. At Apply the statement is **re-run** inside the changeset transaction.
@@ -669,8 +672,13 @@ application rather than of the grid alone.
   is visible after the commit; a failing one rolls back the structured entries
   staged beside it. (The `Sql` variant shipped in Slice 3 with no test, because
   nothing could stage one until Slice 4 built the UI.)
+- The previewed effect is display-only: a re-run whose count differs from the
+  staged one is not treated as a conflict.
 - `saved_queries` round-trips create/list/rename/set-sql/delete, and deleting a
   connection cascades its queries away.
+- The saved-query list is scoped per connection and orders deterministically
+  when two rows share a `created_at`, so the rail never reshuffles.
+- A hostile query name is stored verbatim, because nothing interpolates it.
 
 **Vitest**
 - Popover edits do not change the query until Apply; Cancel discards the draft.
@@ -685,13 +693,23 @@ application rather than of the grid alone.
   required, defaults as placeholders.
 - FK link icon appears only on columns with a target.
 - Booleans render as a checkbox; `NULL` stays distinct from `false`.
-- The rail's segment swaps the list, and the `+ New query` footer shows on
-  Queries only.
-- Selecting an already-open query focuses its tab instead of stacking a second.
-- Renaming updates the saved query and the tab label from one keystroke.
+- The rail's segment swaps the list, and the `New query` footer shows on
+  Queries only. The rail creates a query into the store and opens it, and
+  deletes one from both the store and the database.
+- Selecting an already-open query focuses its tab instead of stacking a second,
+  matched on `queryId` rather than on tab kind.
+- Renaming updates the saved query and the tab label from one keystroke; the
+  SQLite write is debounced and keyed per field, so a SQL edit does not cancel
+  a pending rename.
+- A query tab runs and stages against its **pinned** connection while its rail
+  browses the store's active one.
 - Add to pending is disabled for a row-returning result, and stages exactly one
   `sql` entry for a statement that reported an affected count.
-- Run rolls its transaction back without being asked to.
+- Add to pending stages the statement that actually ran, even if the editor has
+  moved since; editing the SQL clears a standing result.
+- Run rolls its transaction back without being asked to, runs on `Cmd+Enter`
+  from inside the editor, and surfaces a failure as an error that stages
+  nothing.
 - Discard all drops this connection's entries and leaves another connection's
   standing.
 
@@ -701,15 +719,29 @@ application rather than of the grid alone.
 - Header/body alignment holds under horizontal scroll.
 - The dock swaps occupants without changing width.
 - Popovers sit above cells and below the sticky header.
-- The query editor reaches both pane edges; the tint covers head and tab but
-  not the editor or results.
-- The resize grip is the element at its own centre point, and drags within
-  90-560px.
-- The query head stays one row; its three buttons measure 28px.
+- The query editor reaches both pane edges; the selected tab's computed
+  background is the tint rather than `--surface-2`, the pane carries the tint
+  under a transparent head, and the editor and results re-assert `--bg`.
+- The resize grip is the element at its own centre point, its hit zone spans
+  the pane while its pill is 36px and centred, and a real mouse drag clamps at
+  `MIN_EDITOR_PX` / `MAX_EDITOR_PX` (90 / 560), read from the module rather
+  than hardcoded.
+- The query head stays one row at 44px; Run, the name field, Pending, Discard
+  and Add to pending all measure 28px, and Discard and Add share a top edge.
 - The rail keeps its width across a switch between a table tab and a query tab.
 
 jsdom has no layout engine; anything positional is verified in a real browser
 with `getComputedStyle` / `getBoundingClientRect`, never asserted in vitest.
+
+Every "is this clickable" question is answered with `document.elementFromPoint`
+at the element's own centre, never by comparing z-index: a virtualized row's
+`transform` creates a stacking context, so a correct z-index and an unhittable
+element look identical.
+
+One §14 property cannot be read from `getComputedStyle` at all. CSS Display 3
+blockifies a flex item, so the query head's `inline-flex` children compute to
+`flex`; the check that the icon sits beside its label rather than above it is
+made on `flexDirection` and on the icon's and label's centre-Y instead.
 
 ## 17. Slices
 
@@ -726,10 +758,13 @@ the jump, and supplies the real column types Slice 1's operators want.
 **Slice 3 — writes.** Insert panel, row delete, pending changes panel, boolean
 toggling, `apply_changes`. Retires the single-preview machinery.
 
-**Slice 4 — queries as tabs.** Rail segmented control, saved-query list, query
-tab kind and its tint, the query pane (Run query, editable name, full-bleed
-editor, resize grip, results), Add to pending. Removes the console drawer.
-Depends on Slice 3 for the pending set that Add to pending writes into.
+**Slice 4 — queries as tabs. Built.** Rail segmented control, saved-query list,
+query tab kind and its tint, the query pane (Run query, editable name,
+full-bleed editor, resize grip, results), Add to pending. Removes the console
+drawer and `commit_preview`. Depends on Slice 3 for the pending set that Add to
+pending writes into. Its layout claims were measured in a real browser rather
+than asserted; the numbers are in the plan's `## Measured results`, and none of
+them forced a change to §3b.
 
 Slice 3 depends on Slice 2's `describe_columns` for the insert panel's field
 types.
@@ -765,6 +800,21 @@ Slice 4: `docs/superpowers/plans/2026-08-19-table-view-slice-4-queries.md`.
   longer matches. Accepted: re-sorting rows as you edit them would be worse.
 - **SQL entries group alone.** A staged statement has no table, so it files
   under its own heading rather than under the table it touches.
+- **A run in flight outlives an edit to its statement.** Editing the SQL clears
+  a standing result (§12), but a run already in flight still sets one when its
+  response lands, so the result block reappears showing the *pre-edit* run's
+  effect against an editor that has since moved. What Add to pending stages is
+  the statement captured at Run, not the field's current contents, so the
+  staged entry stays truthful — this is confusing, not incorrect. Guarding it
+  would mean reintroducing the generation-counter machinery §15 retired, for a
+  window that cannot produce a wrong write. Left as is, deliberately.
+- **The query editor's resize grip is mouse-only.** It carries
+  `role="separator"` and `aria-orientation`, but no `tabindex`, no
+  `aria-valuenow`/`aria-valuemin`/`aria-valuemax`, and no key handling: arrow
+  keys do nothing and it cannot take focus. A keyboard user cannot resize the
+  editor. The pane is still fully usable — the editor and results both scroll —
+  so this is a missing affordance rather than a block, but the separator role
+  currently promises an interaction that is not implemented.
 - **Popover and jump can disagree on a match.** `get_referenced_row` binds the
   lookup value cast to the referenced column's real type (`= $1::timestamptz`,
   say). The jump's pinned filter compiles through the filter compiler to

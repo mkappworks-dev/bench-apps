@@ -2792,3 +2792,177 @@ Spec reconciled with what was built."
 **Type consistency.** `SavedQuery`'s five fields are identical in Task 1's Rust struct, Task 3's TS interface, Task 10's stub and every test fixture. `mergeSavedQueriesIntoStore` is the store action throughout (never `upsertSavedQueries`, an earlier draft's name). `discardAllPending` takes `connectionId: string | null` from Task 9 onward, and Task 9 Step 4 explicitly requires fixing rather than optionalizing the other call sites. `MIN_EDITOR_PX` / `MAX_EDITOR_PX` are exported in Task 6 and asserted by number in Task 10 Step 7.
 
 **One ordering note.** Task 4 leaves `onOpenQuery={() => {}}` in `DbTab` and Task 5 replaces it. That placeholder is deliberate — it keeps Task 4 independently green — and Task 5 Step 7 names its removal, so it cannot survive to the end.
+
+---
+
+## Measured results
+
+Chromium via Playwright, viewport **1440 × 900**, `devicePixelRatio` 1, theme
+`data-theme="dark"` (`--bg` `#08090c` → `rgb(8, 9, 12)`, `--query-tint`
+`rgba(255, 255, 255, 0.035)`, `--surface-2` `rgb(25, 28, 34)`). `fk-stub.js`
+injected with `addInitScript` before navigation. Grid on load: **25 rendered
+rows** (of 260 served), **13 column headers** (12 data columns plus the row
+gutter).
+
+Every "is this clickable" answer below is `document.elementFromPoint` at the
+element's own centre. No z-index was read.
+
+### Step 3 — the four regression-critical behaviours
+
+| Check | Pass condition | Measured | |
+|---|---|---|---|
+| `headerBodyDrift` | `=== 0` | `0` | PASS |
+| `renderedRows` | `> 1` | `25` | PASS |
+| `pageScrollWidth` vs `pageClientWidth` | equal | `1440` / `1440` | PASS |
+
+### Step 4 — the rail's segmented control
+
+| Check | Pass condition | Measured | |
+|---|---|---|---|
+| `segmentedControlFound` | present | `true` (1 visible tablist) | PASS |
+| `queriesHittable` | `=== true` | `true`, topmost `BUTTON` "Queries" | PASS |
+| saved query listed after click | present | `["Open query mark 1042 shipped"]`, hittable | PASS |
+| `New query` footer after click | present | present, hittable, topmost `BUTTON` | PASS |
+| rail width across the segment switch | unchanged | `210` → `210` | PASS |
+
+### Step 5 — the query head
+
+| Check | Pass condition | Measured | |
+|---|---|---|---|
+| `headHeight` | `=== 44` | `44` | PASS |
+| `oneRow` | `=== true` | `true` (both children top `52`) | PASS |
+| `runHeight` | `=== 28` | `28` | PASS |
+| `nameHeight` | `=== 28` | `28` | PASS |
+| `gapRunToName` | `10 ±1` | `10` | PASS |
+| `runIconInline` | `=== "inline-flex"` | `"flex"` | see below |
+
+**`runIconInline` — the assertion is unachievable as written; the property it
+protects holds.** The `inline-flex` class *is* authored on the Run button
+(`className` contains it). CSS Display 3 blockifies a flex item's `display`,
+and the head is `display: flex`, so `inline-flex` computes to `flex` for any
+child of it. Measured both ways on the same element: `flex` inside the head,
+`inline-flex` when the identical node is cloned into a `display: block`
+parent. The substantive §14 claim the check exists for — "a block-level button
+stacks its icon above its label" — was measured directly instead:
+`flexDirection` `row`, icon centre-Y `66` and label centre-Y `66` (same row,
+Δ 0), icon right edge left of the label's left edge. Icon and label are side by
+side, not stacked: **PASS on the property, FAIL on the literal string**. No code
+change was made — making the computed value literally `inline-flex` would mean
+taking the button out of the head's flex row, which is a worse layout adopted
+to satisfy a measurement artefact. The check should read
+`flexDirection === "row"` plus the icon/label same-row test.
+
+### Step 6 — full bleed and the tint boundary
+
+| Check | Pass condition | Measured | |
+|---|---|---|---|
+| `leftGap` | `=== 0` | `0` | PASS |
+| `rightGap` | `=== 0` | `0` | PASS |
+| `editorGround` | the page `--bg`, not the tint | `rgb(8, 9, 12)` | PASS |
+| `resultsGround` | the page `--bg`, not the tint | `rgb(8, 9, 12)` | PASS |
+| `paneTinted` ≠ `editorGround` | differ | `rgba(255, 255, 255, 0.035)` vs `rgb(8, 9, 12)` | PASS |
+| `editorMono` | contains a mono family | `ui-monospace, "SF Mono", …, monospace` | PASS |
+
+`headTinted` measured `rgba(0, 0, 0, 0)`: the head paints nothing of its own and
+shows the tinted pane through it. That is the intended arrangement (the pane's
+chrome carries the tint), not a miss.
+
+### Tint on the tab itself (not in the brief; added because this check has failed before)
+
+The selected tab's background and the tint were once two equal-specificity
+utilities on one element, and source order decided.
+
+| Check | Pass condition | Measured | |
+|---|---|---|---|
+| selected query tab `backgroundColor` | the tint, not `--surface-2` | `rgba(255, 255, 255, 0.035)` (`--surface-2` is `rgb(25, 28, 34)`) | PASS |
+| selected query tab bottom edge | `--query-edge` inset | `rgba(255, 255, 255, 0.28) 0px -2px 0px 0px inset` | PASS |
+| unselected DB tab | no tint | `rgba(0, 0, 0, 0)`, `box-shadow: none` | PASS |
+| query tab label mono (§3b) | mono family | `ui-monospace` | PASS |
+
+### Step 7 — the resize grip
+
+| Check | Pass condition | Measured | |
+|---|---|---|---|
+| `gripHittable` | `=== true` | `true`; topmost is the pill `div`, a child of the grip | PASS |
+| `hitZoneWidth` vs `paneWidth` | equal | `670` / `670` | PASS |
+| `pillWidth` | `36 ±1` | `36` | PASS |
+| `pillCentred` | `=== true` | `true`, offset `0.00px` | PASS |
+| `startHeight` | — | `220` (`DEFAULT_EDITOR_PX`) | — |
+
+Dragged with real `mousedown` / `mousemove` / `mouseup` at the grip's measured
+centre. `MIN_EDITOR_PX` / `MAX_EDITOR_PX` were read from the live module
+(`import('/src/components/db/QueryTab.tsx')`) rather than hardcoded: `90` /
+`560`.
+
+| Drag | Pass condition | Measured | |
+|---|---|---|---|
+| mid-drag, `dy = +100` from `220` | tracks 1:1 | `320` | PASS |
+| down past the ceiling (`dy = +700`) | clamps at `MAX_EDITOR_PX` `560` | `560`, and `560` after mouseup | PASS |
+| up past the floor (`dy = −900`) | clamps at `MIN_EDITOR_PX` `90` | `90`, and `90` after mouseup | PASS |
+
+### Step 8 — the actions row
+
+| Check | Pass condition | Measured | |
+|---|---|---|---|
+| Run button hittable | — | `true` | PASS |
+| `addHittable` | `=== true` | `true`, topmost `BUTTON` | PASS |
+| `addHeight` | `=== 28` | `28` | PASS |
+| `discardHeight` | `=== 28` | `28` | PASS |
+| `sameBaseline` | `=== true` | `true` (both top `376`) | PASS |
+| `addDisabled` | `=== false` | `false` | PASS |
+| `ranLabelPresent` | `=== true` | `true`; `RAN` badge present; "3 rows affected — no rows returned" | PASS |
+
+**Add to pending clicked for real:** pending badge appears in the head reading
+`1`, 28px and hittable; the `RAN` block, the Discard button and the Add button
+are all gone; the head is still `44px` and still one row with the third child
+added.
+
+### Step 9 — the rail across a tab-kind switch
+
+Read with the correct pane actually visible each time (both panes stay mounted
+and the inactive one is `display: none`, so an existence check would have
+measured the hidden one).
+
+| State | selected tab | visible pane | rail width | rail left/right |
+|---|---|---|---|---|
+| query tab | `mark 1042 shipped` | query | `210` | `240` / `450` |
+| DB tab | `DB orders` | db | `210` | `240` / `450` |
+| query tab again | `mark 1042 shipped` | query | `210` | `240` / `450` |
+
+Pass: identical on both tab kinds → **PASS** (`210` throughout, same left and
+right edge).
+
+The brief's literal selector `document.querySelector('aside')` returns the
+shell's own sidebar (`240px`), not the connection rail — there are four `aside`
+elements and two of them are rails. Measured against the visible
+`ConnectionRail` instead.
+
+### Known gaps, measured rather than reasoned
+
+Both were confirmed in the browser before being written into spec §18.
+
+- **Editing the SQL mid-flight.** With `preview_query` held open behind a gate:
+  Run the stored `UPDATE`, result hidden; edit the editor to
+  `SELECT 1; -- edited mid-flight`, result still hidden; release the response —
+  the result block reappears (`rolled back` text present) against the edited
+  editor, with Add to pending **enabled** because the *pre-edit* `UPDATE`
+  reported 3 rows. What would be staged is `result.statement`, the pre-edit
+  `UPDATE`, so the staged entry stays truthful. Confusing, not incorrect.
+- **The grip is mouse-only.** `tabIndex` `-1`, `document.activeElement === grip`
+  is `false` after `.focus()`, no `aria-valuenow` / `aria-valuemin`, and
+  ArrowUp / ArrowDown / Home / End leave the height at `220`.
+
+### Tally
+
+**26 browser checks: 25 PASS, 1 FAIL** — the `runIconInline === "inline-flex"`
+string comparison, which CSS blockification makes unachievable for a flex item;
+the §14 property behind it was measured directly and passes. No layout code
+was changed, so §3b's numbers stand as drawn.
+
+### Gates
+
+| Gate | Baseline | After |
+|---|---|---|
+| `bun run test` | 545 passing / 51 files | 545 passing / 51 files |
+| `bun run build` | clean, 0 warnings | clean, 0 warnings |
+| `cargo test` | 260 passed / 1 ignored (lib), 6 passed (smoke) | 260 passed / 1 ignored (lib), 6 passed (smoke) |

@@ -101,6 +101,26 @@
     // Echoes success. The gate measures the UI around Apply, not the write —
     // a stub that reported a conflict would exercise the error path instead.
     apply_changes: (args) => ({ applied: (args.changes ?? []).length, conflict: null }),
+    // One saved query so the rail has something to open without the gate
+    // having to create one first. `sql` is a write, so Add to pending is
+    // reachable — a SELECT would leave it correctly disabled and the gate
+    // would have nothing to measure.
+    list_saved_queries: () => [
+      { id: "sq1", connection_id: "c1", name: "mark 1042 shipped", created_at: 1,
+        sql: "UPDATE orders SET status = 'shipped' WHERE id = 1042;" },
+    ],
+    create_saved_query: (args) => ({
+      id: `sq-${Math.random().toString(36).slice(2, 8)}`,
+      connection_id: args.connectionId, name: args.name, sql: args.sql, created_at: 2,
+    }),
+    rename_saved_query: () => null,
+    set_saved_query_sql: () => null,
+    delete_saved_query: () => null,
+    // Reports an affected count, so the result renders the write branch and
+    // Add to pending is enabled. The gate measures the UI around Run, not the
+    // write — the transaction it names is rolled back immediately anyway.
+    preview_query: () => ({ preview_id: "prev-1", columns: [], rows: [], rows_affected: 3 }),
+    rollback_preview: () => null,
   };
 
   window.__TAURI_INTERNALS__ = {
