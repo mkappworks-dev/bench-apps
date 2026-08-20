@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   discardAt,
+  entriesForOtherConnections,
   groupByTable,
   hasStagedDelete,
   indexChanges,
@@ -185,5 +186,20 @@ describe("pendingChanges", () => {
     ];
     expect(discardAt(pending, 0)).toHaveLength(1);
     expect(discardAt(pending, 0)[0]).toMatchObject({ pk_value: "2" });
+  });
+});
+
+describe("entriesForOtherConnections", () => {
+  const mine: PendingChange = { kind: "delete", connection_id: "c1", table: { schema: "public", name: "orders" }, pk_column: "id", pk_value: "1" };
+  const theirs: PendingChange = { kind: "delete", connection_id: "c2", table: { schema: "public", name: "orders" }, pk_column: "id", pk_value: "2" };
+
+  it("keeps everything staged against another connection", () => {
+    expect(entriesForOtherConnections([mine, theirs], "c1")).toEqual([theirs]);
+  });
+
+  // With no connection selected there is no "mine" to discard, so discarding
+  // must be a no-op rather than a wipe.
+  it("keeps everything when no connection is selected", () => {
+    expect(entriesForOtherConnections([mine, theirs], null)).toEqual([mine, theirs]);
   });
 });

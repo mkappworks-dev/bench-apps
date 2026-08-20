@@ -274,7 +274,7 @@ export function PendingPanel({
         pending.length > 0 ? (
           // Spec §14: the ROW sets 30px (h-7.5) for both buttons.
           <div className="flex gap-2 border-t border-border px-3 py-2.5">
-            <SecondaryButton className="h-7.5" disabled={applying} onClick={discardAllPending}>
+            <SecondaryButton className="h-7.5" disabled={applying} onClick={() => discardAllPending(connectionId)}>
               Discard all
             </SecondaryButton>
             <button

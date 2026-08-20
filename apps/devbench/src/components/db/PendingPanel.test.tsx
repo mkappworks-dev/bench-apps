@@ -40,7 +40,7 @@ function renderPanel(connectionId: string | null = "c1", onConflictIndex = vi.fn
 
 describe("PendingPanel", () => {
   beforeEach(() => {
-    useAppStore.getState().discardAllPending();
+    useAppStore.setState({ pending: [] });
     useAppStore.getState().setApplyInFlight(false);
   });
 
@@ -97,6 +97,24 @@ describe("PendingPanel", () => {
     renderPanel();
     fireEvent.click(screen.getByRole("button", { name: "Discard all" }));
     expect(useAppStore.getState().pending).toEqual([]);
+  });
+
+  it("discards this connection's entries and leaves another connection's standing", () => {
+    useAppStore.setState({
+      pending: [
+        { kind: "delete", connection_id: "c1", table: { schema: "public", name: "orders" }, pk_column: "id", pk_value: "1" },
+        { kind: "delete", connection_id: "c2", table: { schema: "public", name: "orders" }, pk_column: "id", pk_value: "2" },
+      ],
+    });
+
+    // renderPanel's first positional argument is the connection id
+    // (`PendingPanel.test.tsx:28`), not an options object.
+    renderPanel("c1");
+    fireEvent.click(screen.getByRole("button", { name: "Discard all" }));
+
+    const left = useAppStore.getState().pending;
+    expect(left).toHaveLength(1);
+    expect(left[0].connection_id).toBe("c2");
   });
 
   it("sends the whole ordered set in one call and clears it on success", async () => {

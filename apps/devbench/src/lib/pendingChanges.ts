@@ -115,6 +115,17 @@ export function removeEntries(
   return pending.filter((p) => !entries.includes(p));
 }
 
+/** What survives a Discard all on `connectionId`. With no connection selected
+ *  nothing is "mine", so nothing is discarded — a null connection must not
+ *  read as "discard everything". */
+export function entriesForOtherConnections(
+  pending: PendingChange[],
+  connectionId: string | null,
+): PendingChange[] {
+  if (!connectionId) return pending;
+  return pending.filter((p) => p.connection_id !== connectionId);
+}
+
 /** Spec §10: staging is an upsert-or-delete, not an append. A cell set back to
  *  its stored value removes its entry rather than adding a second one that
  *  cancels the first — otherwise toggling a checkbox twice would read

@@ -26,7 +26,7 @@ function renderPanel(columns: ColumnInfo[]) {
 
 describe("InsertPanel", () => {
   beforeEach(() => {
-    useAppStore.getState().discardAllPending();
+    useAppStore.setState({ pending: [] });
   });
 
   // Spec §9: visible so the shape of the row is honest, but not editable.

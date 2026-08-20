@@ -205,8 +205,8 @@ describe("useAppStore", () => {
     useAppStore.getState().setDockPanel("chat");
   });
 
-  it("holds one global pending set across tables and clears it wholesale", () => {
-    useAppStore.getState().discardAllPending();
+  it("holds one global pending set across tables, and discarding it clears everything staged against the given connection", () => {
+    useAppStore.setState({ pending: [] });
     useAppStore.getState().stagePendingUpdate({
       kind: "update",
       connection_id: "c1",
@@ -219,26 +219,29 @@ describe("useAppStore", () => {
     });
     useAppStore.getState().togglePendingDelete("c1", { schema: "public", name: "users" }, "id", "9");
     expect(useAppStore.getState().pending).toHaveLength(2);
-    useAppStore.getState().discardAllPending();
+    // Both entries above are staged against "c1" — passing it here (rather
+    // than resetting via setState like the surrounding tests do) is what
+    // actually exercises discardAllPending's own filtering.
+    useAppStore.getState().discardAllPending("c1");
     expect(useAppStore.getState().pending).toEqual([]);
   });
 
   it("stamps every staged entry with the connection it was staged against", () => {
-    useAppStore.getState().discardAllPending();
+    useAppStore.setState({ pending: [] });
     useAppStore.getState().togglePendingDelete("dev", { schema: "public", name: "users" }, "id", "9");
     useAppStore.getState().addPendingInsert("staging", { schema: "public", name: "orders" }, { status: "new" });
     expect(useAppStore.getState().pending.map((p) => p.connection_id)).toEqual(["dev", "staging"]);
-    useAppStore.getState().discardAllPending();
+    useAppStore.setState({ pending: [] });
   });
 
   it("removes exactly the entries handed to it, by identity", () => {
-    useAppStore.getState().discardAllPending();
+    useAppStore.setState({ pending: [] });
     useAppStore.getState().togglePendingDelete("c1", { schema: "public", name: "users" }, "id", "9");
     useAppStore.getState().togglePendingDelete("c1", { schema: "public", name: "users" }, "id", "10");
     const [first, second] = useAppStore.getState().pending;
     useAppStore.getState().removePendingEntries([first]);
     expect(useAppStore.getState().pending).toEqual([second]);
-    useAppStore.getState().discardAllPending();
+    useAppStore.setState({ pending: [] });
   });
 
   // Finding 3: Apply's outcome has exactly one place to be reported, and every

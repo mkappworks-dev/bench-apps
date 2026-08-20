@@ -52,7 +52,7 @@ describe("DbTab", () => {
     // The pending set is module-global app state (spec §10) and no test owns
     // it — without this, a test that stages a change leaves the next one
     // rendering a staged value instead of its own fixture's stored one.
-    useAppStore.getState().discardAllPending();
+    useAppStore.setState({ pending: [] });
     vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(0);
@@ -858,7 +858,7 @@ describe("DbTab", () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
       });
-      useAppStore.getState().discardAllPending();
+      useAppStore.setState({ pending: [] });
 
       renderDb(ORDERS);
       fireEvent.click(await screen.findByText("pending"));
@@ -881,7 +881,7 @@ describe("DbTab", () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
       });
-      useAppStore.getState().discardAllPending();
+      useAppStore.setState({ pending: [] });
 
       renderDb(ORDERS);
       await screen.findByText("pending");
@@ -943,7 +943,7 @@ describe("DbTab", () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"], rows: [["1", null]], pk_column: "id",
       });
-      useAppStore.getState().discardAllPending();
+      useAppStore.setState({ pending: [] });
 
       renderDb(ORDERS);
       fireEvent.click(await screen.findByText("NULL"));
@@ -959,7 +959,7 @@ describe("DbTab", () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"], rows: [["1", null]], pk_column: "id",
       });
-      useAppStore.getState().discardAllPending();
+      useAppStore.setState({ pending: [] });
 
       renderDb(ORDERS);
       fireEvent.click(await screen.findByText("NULL"));
@@ -978,7 +978,7 @@ describe("DbTab", () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
       });
-      useAppStore.getState().discardAllPending();
+      useAppStore.setState({ pending: [] });
 
       renderDb(ORDERS);
       fireEvent.click(await screen.findByText("pending"));
@@ -996,7 +996,7 @@ describe("DbTab", () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
       });
-      useAppStore.getState().discardAllPending();
+      useAppStore.setState({ pending: [] });
 
       renderDb(ORDERS);
       fireEvent.click(await screen.findByText("pending"));
@@ -1044,7 +1044,7 @@ describe("DbTab", () => {
       const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
       });
-      useAppStore.getState().discardAllPending();
+      useAppStore.setState({ pending: [] });
 
       renderDb(ORDERS);
       await screen.findByRole("table");
@@ -1093,7 +1093,7 @@ describe("DbTab", () => {
       const callsBefore = list.mock.calls.length;
 
       act(() => {
-        useAppStore.getState().discardAllPending();
+        useAppStore.setState({ pending: [] });
       });
 
       expect(list.mock.calls.length).toBe(callsBefore);
@@ -1152,7 +1152,7 @@ describe("DbTab", () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "paid"], rows: [["1", "false"]], pk_column: "id",
       });
-      useAppStore.getState().discardAllPending();
+      useAppStore.setState({ pending: [] });
 
       renderDb(ORDERS);
       const box = (await screen.findByRole("checkbox", { name: "paid" })) as HTMLInputElement;
@@ -1178,7 +1178,7 @@ describe("DbTab", () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "paid"], rows: [["1", "false"]], pk_column: "id",
       });
-      useAppStore.getState().discardAllPending();
+      useAppStore.setState({ pending: [] });
 
       renderDb(ORDERS);
       const box = await screen.findByRole("checkbox", { name: "paid" });
@@ -1237,7 +1237,7 @@ describe("DbTab", () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
     });
-    useAppStore.getState().discardAllPending();
+    useAppStore.setState({ pending: [] });
 
     renderDb(ORDERS);
     // DataGrid's role is "table" (see DataGrid.tsx), not "grid" — waiting on
@@ -1264,7 +1264,7 @@ describe("DbTab", () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "status"], rows: [["42", "pending"]], pk_column: "id",
     });
-    useAppStore.getState().discardAllPending();
+    useAppStore.setState({ pending: [] });
 
     renderDb(ORDERS);
     fireEvent.click(await screen.findByRole("button", { name: "Stage delete of row 42" }));
@@ -1297,7 +1297,7 @@ describe("DbTab", () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "status", "paid"], rows: [["42", "pending", "false"]], pk_column: "id",
     });
-    useAppStore.getState().discardAllPending();
+    useAppStore.setState({ pending: [] });
 
     renderDb(ORDERS);
     // Editable first, so the assertion below cannot pass because the row was
@@ -1330,7 +1330,7 @@ describe("DbTab", () => {
       rows: [["<unsupported type>", "pending"]],
       pk_column: "id",
     });
-    useAppStore.getState().discardAllPending();
+    useAppStore.setState({ pending: [] });
 
     renderDb(ORDERS);
     await screen.findByText("<unsupported type>");
@@ -1352,7 +1352,7 @@ describe("DbTab", () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
     });
-    useAppStore.getState().discardAllPending();
+    useAppStore.setState({ pending: [] });
     useAppStore.getState().setActiveConnectionId("c1");
 
     renderDb(ORDERS);

@@ -4,6 +4,7 @@ import type { ColumnInfo } from "../components/db/grid/columnMeta";
 import { tableKey } from "../lib/tableIdentity";
 import {
   discardAt,
+  entriesForOtherConnections,
   removeEntries,
   stageUpdate,
   toggleDelete,
@@ -127,7 +128,10 @@ interface AppState {
    *  it instead of `discardAllPending` so a change staged during the round
    *  trip is not thrown away with the ones that were actually written. */
   removePendingEntries: (entries: PendingChange[]) => void;
-  discardAllPending: () => void;
+  /** Scoped to one connection, making it the exact inverse of Apply (§10).
+   *  Left global it was the only control in the panel that could destroy work
+   *  the panel itself renders as unreachable from here. */
+  discardAllPending: (connectionId: string | null) => void;
   /** Every saved query this session has loaded, across connections — the
    *  same global-list-with-connection-on-each-entry shape as `pending`, and
    *  for the same reason: a query tab pins its connection, so it must be able
@@ -262,7 +266,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   discardPendingAt: (index) => set((s) => ({ pending: discardAt(s.pending, index) })),
   removePendingEntries: (entries) =>
     set((s) => ({ pending: removeEntries(s.pending, entries) })),
-  discardAllPending: () => set({ pending: [] }),
+  discardAllPending: (connectionId) =>
+    set((s) => ({ pending: entriesForOtherConnections(s.pending, connectionId) })),
   savedQueries: [],
   mergeSavedQueriesIntoStore: (list) =>
     set((s) => ({ savedQueries: mergeSavedQueries(s.savedQueries, list) })),
