@@ -22,10 +22,7 @@ export function ConnectionRail({
   onToggleWatch,
   onSelectTable,
   onConnectionChange,
-  // Optional, defaulted to today's behaviour: "tables" with nothing selected
-  // is a meaningful no-opinion default, so the 11 pre-existing call sites
-  // (this file's own tests) that predate the queries segment keep compiling
-  // and behaving exactly as before without passing either.
+  // Optional so the call sites predating the queries segment keep compiling.
   initialSegment = "tables",
   activeQueryId = null,
   onOpenQuery,
@@ -38,33 +35,24 @@ export function ConnectionRail({
   onToggleWatch: (table: QualifiedTable) => void;
   onSelectTable: (table: QualifiedTable) => void;
   onConnectionChange: (connectionId: string) => void;
-  /** "queries" on a query tab, "tables" on a table tab. Initial value only —
-   *  the user can switch, and their switch is not persisted. */
+  /** Initial value only — the user can switch, and the switch is not persisted. */
   initialSegment?: "tables" | "queries";
   /** The query this rail's host tab is showing, if it is a query tab. */
   activeQueryId?: string | null;
-  /** Open (or focus) a query tab. The rail owns creating and deleting a saved
-   *  query; it does not own tabs, so opening one is the host's job. Required,
-   *  unlike the segment/active-id props above: there is no meaningful no-op
-   *  default for "open a query" — a silent no-op would let a host tab ship
-   *  half-wired with the compiler none the wiser. */
+  /** The rail owns the saved-query record but not the tabs that show it. Required
+   *  rather than defaulted: a silent no-op would let a host ship half-wired. */
   onOpenQuery: (queryId: string) => void;
-  /** Close any tab showing this query. Same reason as `onOpenQuery`: the rail
-   *  owns the saved-query record, not the tabs that display it — and a tab
-   *  whose query no longer exists is unusable (its fields fall back to `""`
-   *  and cannot take a keystroke, because `patchSavedQuery` has no row to
-   *  patch) yet still persists in SQLite across a restart. */
+  /** Same reason as `onOpenQuery`. A tab whose query is gone cannot take a
+   *  keystroke (`patchSavedQuery` has no row to patch) yet survives a restart. */
   onCloseQueryTabs: (queryId: string) => void;
 }) {
   const [connections, setConnections] = useState<ConnectionSummary[]>([]);
-  // Distinct from `connections.length === 0`: a failed fetch must not read as
-  // "you have no connections configured" — those call for different actions.
+  // Distinct from `connections.length === 0`: a failed fetch is not "none configured".
   const [connectionsError, setConnectionsError] = useState<string | null>(null);
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [segment, setSegment] = useState<"tables" | "queries">(initialSegment);
-  // Failures of the two query mutations. Distinct from `error` above, which
-  // belongs to the tables fetch and would otherwise replace the whole list.
+  // Distinct from `error`, which belongs to the tables fetch.
   const [queryActionError, setQueryActionError] = useState<string | null>(null);
   const setRoute = useAppStore((s) => s.setRoute);
   const setSettingsPane = useAppStore((s) => s.setSettingsPane);
@@ -93,9 +81,8 @@ export function ConnectionRail({
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, [connectionId]);
 
-  // Loads whenever the connection changes, not when the segment does: a query
-  // tab's label reads out of this list, so the entries have to be there
-  // whether or not anyone has looked at the Queries segment yet.
+  // On connection change, not segment change: a query tab's label reads out of this
+  // list whether or not anyone has opened the Queries segment.
   useEffect(() => {
     if (!connectionId) return;
     invokeListSavedQueries(connectionId).then(mergeSavedQueriesIntoStore).catch(() => {});
@@ -113,9 +100,8 @@ export function ConnectionRail({
     }
   }
 
-  // Database first, store second: removing optimistically and swallowing the
-  // failure left the row alive in SQLite and back on the next list, with the
-  // rail meanwhile claiming it was gone.
+  // Database first: removing optimistically left the row alive in SQLite and back
+  // on the next list, with the rail claiming it was gone.
   async function deleteQuery(id: string) {
     try {
       await invokeDeleteSavedQuery(id);
@@ -129,8 +115,7 @@ export function ConnectionRail({
   }
 
   const current = connections.find((c) => c.id === connectionId);
-  // The host line is what tells two same-named connections apart — and, more
-  // to the point, what stops someone browsing prod thinking it's local.
+  // The host line is what stops someone browsing prod thinking it's local.
   const connectionOptions = connections.map((c) => ({
     value: c.id,
     label: c.name,
@@ -296,11 +281,8 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// Deliberately monochrome rather than the mockup's success-green "watched"
-// state: DESIGN.md reserves semantic color "strictly for actual state
-// (response status, the rollup's partial-failure warning) ... never for
-// decoration or generic interactivity" — a watch toggle is closer to the
-// latter, so it follows the same text/text-faint mapping as everything else.
+// Monochrome, not the mockup's success-green: DESIGN.md reserves semantic color
+// for actual state, never for decoration or generic interactivity.
 function PlugIcon() {
   return (
     <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

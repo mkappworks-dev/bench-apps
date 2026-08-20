@@ -9,17 +9,8 @@ import { EmailTab } from "../email/EmailTab";
 import { useAppStore } from "../../store/useAppStore";
 
 /**
- * Renders one tab instance. Every pane's every tab goes through this, which
- * is what keeps "any tool, any number of times, in either pane" true by
- * construction. `onOpenDb`/`onOpenLog`/`onOpenEmail` are the Rollup deep
- * links; only the "api" case uses them. `onOpenQuery` and `onCloseQueryTabs`
- * are the connection rail's two tab operations — it owns the saved-query
- * record but not the tabs that display it — so both "db" and "query" take
- * them. `onOpenHistory` is the reverse deep link (Email's "Sent by" chip);
- * only the "email" case uses it. `emailFocusId`
- * and `historyFocusId` only matter to the "email"/"api" case respectively,
- * and only when this specific tab is the deep link's target (App.tsx resolves
- * that before this component ever sees it).
+ * Renders one tab instance — every pane's every tab goes through this, which is
+ * what keeps "any tool, any number of times, in either pane" true by construction.
  */
 export function ToolPane({
   tab,

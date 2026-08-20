@@ -13,24 +13,18 @@ import {
 } from "../lib/pendingChanges";
 import { mergeSavedQueries, type SavedQuery } from "../lib/savedQueries";
 
-/** `query` is a real tab kind but deliberately absent from `TABS`: it cannot
- *  be created from the + menu, because opening one needs a saved query to
- *  open. See §3b. */
+/** `query` is a real tab kind but absent from `TABS`: opening one needs a saved
+ *  query, so it cannot come from the + menu. See §3b. */
 export type ToolKind = "api" | "db" | "log" | "email" | "query";
 export type Pane = "left" | "right";
 export type ThemePref = "dark" | "light" | "system";
 export type AppRoute = "workspace" | "settings";
 export type SettingsPane = "general" | "appearance" | "provider" | "connections" | "mcp" | "archive";
-/** Spec §1: the right dock holds one of three occupants at a time. Closing a
- *  panel returns to chat; `chatOpen` still governs whether the dock is open at
- *  all, so AppStrip's existing toggle keeps working unchanged. */
+/** Spec §1. `chatOpen` still governs whether the dock is open at all. */
 export type DockPanel = "chat" | "pending" | "insert";
 
-/** What the Insert panel builds its form from. Published by the toolbar button
- *  that opens the panel, because the dock renders outside `SplitContent` and
- *  cannot reach into a tab's state. Switching tables afterwards does NOT
- *  retarget an open panel: a staged insert belongs to the table it was written
- *  for, and the panel's head names it. */
+/** Published by the toolbar button, because the dock renders outside
+ *  `SplitContent`. Switching tables does NOT retarget an open panel. */
 export interface InsertTarget {
   connectionId: string;
   table: QualifiedTable;
@@ -42,8 +36,7 @@ export interface Tab {
   kind: ToolKind;
   pane: Pane;
   ordinal: number;
-  /** Identifying selection only — never fetched data. See the shell spec's
-   *  "Tab persistence" table for what each kind is allowed to hold. */
+  /** Identifying selection only — never fetched data. */
   state: Record<string, unknown>;
 }
 
@@ -75,10 +68,8 @@ interface AppState {
   theme: ThemePref;
   setTheme: (theme: ThemePref) => void;
   watchedTables: Set<string>;
-  /** The same watch set as `watchedTables`, kept as real `QualifiedTable`
-   *  objects rather than derived `"schema.name"` keys — for wire payloads
-   *  (e.g. `run_correlated_request`) that need the actual identity, not a
-   *  string a Postgres identifier could legally contain a dot inside. */
+  /** Real `QualifiedTable` objects rather than derived `"schema.name"` keys, for
+   *  wire payloads that need the identity — a Postgres identifier may contain a dot. */
   watchedTableList: QualifiedTable[];
   toggleWatchedTable: (table: QualifiedTable) => void;
   /** Replaces watch state wholesale, e.g. after loading it from SQLite. */
@@ -89,22 +80,15 @@ interface AppState {
   setDockPanel: (panel: DockPanel) => void;
   insertTarget: InsertTarget | null;
   setInsertTarget: (target: InsertTarget | null) => void;
-  /** True from the moment Apply is sent until its outcome has been reported.
-   *  Apply is the one round trip left in the write path, so it is the one
-   *  place where the dock can be torn down out from under an answer that is
-   *  still coming — `setChatOpen` and `setDockPanel` refuse to do that while
-   *  this is set, so a conflict always has a panel to land in. */
+  /** `setChatOpen` and `setDockPanel` refuse to tear the dock down while this is
+   *  set, so an Apply's outcome always has a panel to land in. */
   applyInFlight: boolean;
   setApplyInFlight: (inFlight: boolean) => void;
-  /** Bumped once per Apply that actually committed. The grid lives in a tab
-   *  and Apply happens in the dock, so this is how a written commit reaches
-   *  every mounted DbTab — including a split pane's, whose rows are equally
-   *  stale. A counter rather than a boolean: two applies in a row are two
-   *  distinct events, and a flag would need resetting. */
+  /** How a committed Apply reaches every mounted DbTab, including a split pane's.
+   *  A counter, not a boolean: two applies in a row are two distinct events. */
   applyGeneration: number;
   bumpApplyGeneration: () => void;
-  /** Spec §10: global, not per-tab. It can hold changes to several tables from
-   *  several tabs, and Apply commits them together. */
+  /** Spec §10: global, not per-tab. Apply commits the set together. */
   pending: PendingChange[];
   stagePendingUpdate: (entry: UpdateChange) => void;
   togglePendingDelete: (
@@ -118,33 +102,23 @@ interface AppState {
     table: QualifiedTable,
     values: Record<string, string | null>,
   ) => void;
-  /** Spec §12. `table` is always null: a staged statement has no table, so it
-   *  files under its own heading rather than under one it might have touched
-   *  (§10, §18). Always appended — unlike a cell edit there is no stored
-   *  value to compare against, so there is nothing to upsert against. */
+  /** Spec §12. `table` is always null, and entries are always appended: there is
+   *  no stored value to upsert against. */
   addPendingSql: (connectionId: string, statement: string, previewedEffect: string) => void;
   discardPendingAt: (index: number) => void;
-  /** Drops exactly these entries, by identity. Apply's successful path uses
-   *  it instead of `discardAllPending` so a change staged during the round
-   *  trip is not thrown away with the ones that were actually written. */
+  /** By identity, so a change staged during Apply's round trip survives. */
   removePendingEntries: (entries: PendingChange[]) => void;
-  /** Scoped to one connection, making it the exact inverse of Apply (§10).
-   *  Left global it was the only control in the panel that could destroy work
-   *  the panel itself renders as unreachable from here. */
+  /** Scoped to one connection, the exact inverse of Apply (§10). */
   discardAllPending: (connectionId: string | null) => void;
-  /** Every saved query this session has loaded, across connections — the
-   *  same global-list-with-connection-on-each-entry shape as `pending`, and
-   *  for the same reason: a query tab pins its connection, so it must be able
-   *  to resolve its own name while the rail is showing another one. */
+  /** Global across connections: a query tab pins its connection, so it must resolve
+   *  its own name while the rail shows another. */
   savedQueries: SavedQuery[];
   mergeSavedQueriesIntoStore: (list: SavedQuery[]) => void;
   patchSavedQuery: (id: string, patch: { name?: string; sql?: string }) => void;
   removeSavedQuery: (id: string) => void;
   route: AppRoute;
   setRoute: (route: AppRoute) => void;
-  /** Which section Settings opens on. Lives here rather than inside
-   *  SettingsScreen so a deep link like the connection picker's "Manage
-   *  connections…" can land on the pane it actually means. */
+  /** Lives here so a deep link can land on the pane it means. */
   settingsPane: SettingsPane;
   setSettingsPane: (pane: SettingsPane) => void;
   activeSessionId: string | null;
@@ -182,9 +156,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       tabs: s.tabs.map((t) => (t.id === id ? { ...t, state: { ...t.state, ...patch } } : t)),
     })),
 
-  // Moving would leave the left pane empty, which is worse than doing
-  // nothing — the caller (AppStrip) opens the `+` menu targeting the right
-  // pane instead when this declines (shell spec, "Tab instances").
+  // Leaving the left pane empty is worse than declining; AppStrip opens the `+`
+  // menu targeting the right pane instead.
   splitActiveTab: () => {
     const s = get();
     const activeId = s.activeTabId.left;
@@ -231,11 +204,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       watchedTableList: tables,
     }),
   chatOpen: true,
-  // Both dock setters are no-ops while an Apply is in flight, so every route
-  // that could unmount the Pending panel — its own ✕, AppStrip's dock toggle,
-  // the grid's Insert button — is closed by one invariant rather than by each
-  // caller remembering to check. The panel's ✕ and the dock toggle also render
-  // themselves disabled, so this is the floor, not the whole story.
+  // No-ops while an Apply is in flight, so every route that could unmount the
+  // Pending panel is closed by one invariant rather than by each caller.
   setChatOpen: (open) => set((s) => (s.applyInFlight && !open ? {} : { chatOpen: open })),
   dockPanel: "chat",
   setDockPanel: (dockPanel) =>
@@ -250,8 +220,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   stagePendingUpdate: (entry) => set((s) => ({ pending: stageUpdate(s.pending, entry) })),
   togglePendingDelete: (connectionId, table, pkColumn, pkValue) =>
     set((s) => ({ pending: toggleDelete(s.pending, connectionId, table, pkColumn, pkValue) })),
-  // Inserts are always appended: two inserts into one table are two rows, so
-  // there is nothing here to upsert against.
+  // Two inserts into one table are two rows; nothing here to upsert against.
   addPendingInsert: (connectionId, table, values) =>
     set((s) => ({
       pending: [...s.pending, { kind: "insert", connection_id: connectionId, table, values }],
@@ -275,9 +244,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({ savedQueries: s.savedQueries.map((q) => (q.id === id ? { ...q, ...patch } : q)) })),
   removeSavedQuery: (id) => set((s) => ({ savedQueries: s.savedQueries.filter((q) => q.id !== id) })),
   route: "workspace",
-  // Settings replaces the entire workspace, dock included — a third way to
-  // unmount the panel an Apply's outcome is coming back to, alongside the
-  // dock toggle and the panel's own ✕. Same invariant, same reason.
+  // Settings replaces the workspace, dock included — same invariant as above.
   setRoute: (route) => set((s) => (s.applyInFlight && route !== "workspace" ? {} : { route })),
   settingsPane: "general",
   setSettingsPane: (settingsPane) => set({ settingsPane }),

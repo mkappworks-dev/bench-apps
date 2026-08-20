@@ -36,12 +36,6 @@ export function SplitContent({
   const activeTabId = useAppStore((s) => s.activeTabId);
   const splitOpen = tabs.some((t) => t.pane === "right");
 
-  // The two database tools manage their own edge-to-edge layout and internal
-  // scrolling (the rail and the query editor's resize grip both need to reach
-  // the pane's true bottom, and the grid needs to run flush to whatever's
-  // next door) — so a pane hosting one drops the shared p-6/scroll that every
-  // other tool still depends on, rather than fighting it with negative
-  // margins.
   function paneOwnsItsLayout(pane: Pane): boolean {
     const kind = tabs.find((t) => t.pane === pane && t.id === activeTabId[pane])?.kind;
     return kind === "db" || kind === "query";
@@ -53,10 +47,8 @@ export function SplitContent({
       return <EmptyPane onAddTab={(kind) => onAddTab(pane, kind)} />;
     }
     return paneTabs.map((tab) => (
-      // Note the class swap, not the `hidden` attribute — a sibling display
-      // utility would silently beat `[hidden]`'s specificity. `key={tab.id}`
-      // is what gives two DB tabs separate React instances, and therefore
-      // separate useState, per tab.
+      // Class swap, not the `hidden` attribute: a sibling display utility silently beats
+      // `[hidden]`'s specificity. `key={tab.id}` gives two DB tabs separate instances.
       <div key={tab.id} className={tab.id === activeTabId[pane] ? "flex min-h-0 flex-1" : "hidden"}>
         <ToolPane
           tab={tab}
@@ -75,10 +67,8 @@ export function SplitContent({
   }
 
   return (
-    // min-w-0: this row is itself App.tsx's three-column shell's main-axis
-    // flex child, so it inherits the same shrink-refusal a DB tab's wide
-    // table hits lower down — a definite width on `main` below doesn't help
-    // if this ancestor still won't shrink below its content's preferred size.
+    // min-w-0: this row is a flex child of App.tsx's shell, so it inherits the same
+    // shrink-refusal a wide table hits lower down.
     <div className="flex min-h-0 min-w-0 flex-1">
       <main
         className={`flex min-h-0 min-w-0 flex-1 flex-col ${

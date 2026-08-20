@@ -53,10 +53,8 @@ impl ConnectionRegistry {
 
         let connection_string = postgres_connection_string(&host, port as u16, &database, &username, password.as_deref(), &sslmode);
 
-        // A modest pool per connection, not the throwaway max_connections(1)
-        // this codebase used everywhere before: browsing, a query tab, and a
-        // held-open preview transaction can all be in flight on the same
-        // connection at once now.
+        // Browsing, a query tab, and a held-open preview transaction can all be in
+        // flight on one connection at once.
         let pool = PgPoolOptions::new()
             .max_connections(5)
             .connect(&connection_string)
@@ -71,11 +69,8 @@ impl ConnectionRegistry {
     }
 }
 
-/// The one place a Postgres connection string gets built anywhere in this
-/// codebase — `ConnectionRegistry::pool_for` and (Task 4) `test_connection`/
-/// `test_saved_connection` both call this rather than each formatting their
-/// own. `password: None` (or empty) omits the credential segment entirely,
-/// for local trust/peer-auth setups that have no password at all.
+/// The one place a Postgres connection string is built. `password: None` or empty
+/// omits the credential segment, for local trust/peer-auth setups.
 pub fn postgres_connection_string(
     host: &str,
     port: u16,
@@ -128,8 +123,7 @@ mod tests {
             .await
             .expect("requires a real local Postgres — see CONTRIBUTING for setup");
 
-        // Corrupt the stored password. A cache hit must not reconnect (and
-        // therefore must not notice); a cache miss would fail here.
+        // A cache hit must not reconnect, and so must not notice; a miss would fail here.
         secrets.set(&format!("db-connection:{}", created.id), "definitely-wrong").unwrap();
         registry
             .pool_for(&created.id, &db.pool, &secrets)

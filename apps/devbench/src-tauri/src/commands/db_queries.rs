@@ -4,16 +4,14 @@ use tauri::State;
 
 use crate::local_db::LocalDb;
 
-/// A saved query, as stored and as sent over IPC. Field names are the wire
-/// names — serde reads them exactly as written, matching `TableRows`'s
-/// existing `pk_column`.
+/// Field names are the wire names; serde reads them exactly as written.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SavedQuery {
     pub id: String,
     pub connection_id: String,
     pub name: String,
     pub sql: String,
-    /// Epoch milliseconds. Orders the rail, so a rename never reshuffles it.
+    /// Epoch millis. Orders the rail, so a rename never reshuffles it.
     pub created_at: i64,
 }
 
@@ -31,9 +29,8 @@ pub async fn list_saved_queries_impl(
     pool: &SqlitePool,
     connection_id: &str,
 ) -> Result<Vec<SavedQuery>, String> {
-    // `id` breaks the tie: two queries created inside one millisecond would
-    // otherwise come back in whatever order SQLite felt like, and the rail
-    // would reshuffle between renders.
+    // `id` breaks the tie: two queries created in one millisecond would otherwise
+    // reshuffle the rail between renders.
     let rows = sqlx::query(
         "SELECT id, connection_id, name, sql, created_at FROM saved_queries \
          WHERE connection_id = ? ORDER BY created_at, id",
@@ -165,8 +162,6 @@ mod tests {
         assert_eq!(listed, vec![made]);
     }
 
-    // Renaming must not reshuffle the rail, which is the whole reason the
-    // order key is created_at rather than name.
     #[tokio::test]
     async fn the_list_is_ordered_by_creation_and_renaming_does_not_move_a_row() {
         let (_dir, db) = db().await;
@@ -181,8 +176,6 @@ mod tests {
         assert_eq!(ids, vec![first.id, second.id, third.id]);
     }
 
-    // Two queries created inside the same millisecond must still have a
-    // stable order, or the rail reshuffles between renders for no reason.
     #[tokio::test]
     async fn queries_sharing_a_timestamp_still_order_deterministically() {
         let (_dir, db) = db().await;
@@ -225,8 +218,7 @@ mod tests {
         assert_eq!(listed, vec![keep]);
     }
 
-    // Same shape as watched_tables' scoping test: a second connection has to
-    // really exist, because connection_id is a foreign key.
+    // The second connection has to really exist: connection_id is a foreign key.
     #[tokio::test]
     async fn queries_are_scoped_per_connection() {
         let (_dir, db) = db().await;
@@ -242,9 +234,6 @@ mod tests {
         assert!(list_saved_queries_impl(&db.pool, "staging").await.unwrap().is_empty());
     }
 
-    // The cascade is the reason connection_id is a real foreign key rather
-    // than a loose string: a query naming a dropped connection's tables has
-    // nothing left to run against.
     #[tokio::test]
     async fn deleting_a_connection_takes_its_queries_with_it() {
         let (_dir, db) = db().await;
@@ -256,8 +245,7 @@ mod tests {
         assert!(list_saved_queries_impl(&db.pool, "default").await.unwrap().is_empty());
     }
 
-    // Nothing in this module interpolates, so a query whose NAME is hostile
-    // is stored and returned verbatim rather than being rejected or mangled.
+    // Nothing here interpolates, so a hostile NAME is stored and returned verbatim.
     #[tokio::test]
     async fn a_hostile_name_is_stored_verbatim_because_nothing_interpolates_it() {
         let (_dir, db) = db().await;

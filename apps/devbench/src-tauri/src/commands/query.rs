@@ -15,38 +15,13 @@ pub struct QueryPreview {
     pub preview_id: String,
     pub columns: Vec<String>,
     pub rows: Vec<Vec<Option<String>>>,
-    /// `Some(n)` = a write that returned no rows of its own; `None` = a
-    /// read-shaped result (rows, however many, is the whole story).
+    /// `Some(n)` = a write that returned no rows; `None` = read-shaped.
     pub rows_affected: Option<u64>,
 }
 
-/// Whether `sql` has an output column list (a SELECT, or anything with
-/// RETURNING) and, if so, what it is. Runs `describe()` on `tx` — the same
-/// connection the statement will actually execute on, wrapped in a
-/// SAVEPOINT — rather than either of the two approaches that came before:
-///
-///   - describing on `tx` directly (no savepoint) let a Parse failure on
-///     invalid SQL abort the whole transaction, so the follow-up execution
-///     saw only "current transaction is aborted" instead of the real error;
-///   - describing on a separate pooled connection avoided that, but meant
-///     `describe()` and the real execution could land on two different
-///     physical backends. Temp tables, `SET`/search_path, and other
-///     connection-scoped state can differ between them — reproduced
-///     empirically as a valid zero-row SELECT against a temp table getting
-///     misreported as a zero-row *write* when `describe()` drew a
-///     connection that had never seen the temp table.
-///
-/// A SAVEPOINT gets both properties at once: `describe()` runs on the exact
-/// connection/session the statement will execute in (so temp tables etc.
-/// are always visible to both), and a Parse failure only aborts the
-/// savepoint — `ROLLBACK TO SAVEPOINT` recovers `tx` to just before it, so
-/// the subsequent real execution still runs cleanly and surfaces Postgres's
-/// actual error for genuinely invalid SQL.
-///
-/// `Err` is reserved for the one describe failure that must stop the run
-/// before it executes: multi-command input (see MULTIPLE_COMMANDS). Every
-/// other failure is `Ok(None)` — plenty of legitimate single statements
-/// (DDL, `SET`) cannot be introspected and must keep working.
+/// Describes on `tx` behind a SAVEPOINT: describing on `tx` bare lets a Parse
+/// failure abort the whole transaction, and describing on a pooled connection
+/// cannot see `tx`'s temp tables or session `SET`s.
 async fn describe_result_columns(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     sql: &str,
@@ -68,9 +43,8 @@ async fn describe_result_columns(
     }
 }
 
-/// Postgres's complaint when the prepared protocol is handed more than one
-/// command. Matched on the message rather than the SQLSTATE, which is the
-/// generic 42601 `syntax_error` shared with every ordinary typo.
+/// Matched on the message, not the SQLSTATE: that is the generic 42601 every
+/// ordinary typo also raises.
 const MULTIPLE_COMMANDS: &str = "cannot insert multiple commands into a prepared statement";
 
 const MULTIPLE_COMMANDS_MESSAGE: &str =
@@ -81,32 +55,11 @@ fn is_multiple_commands(err: &sqlx::Error) -> bool {
     matches!(err, sqlx::Error::Database(db) if db.message().contains(MULTIPLE_COMMANDS))
 }
 
-/// The one place this codebase distinguishes "0 rows returned" from "N rows
-/// affected" for an arbitrary single statement. Plain `fetch_all` can't make
-/// this distinction — it silently discards the completion tag whenever any
-/// rows come back, and reports nothing useful when none do.
-///
-/// `fetch_many` alone can't tell a zero-row SELECT apart from a zero-row
-/// UPDATE either: both surface only a `Left(PgQueryResult)` with no `Right`
-/// rows. `describe_result_columns` is what tells the two apart — it
-/// reflects the statement's shape regardless of how many rows it ends up
-/// matching.
-///
-/// `raw_sql` rather than `query`: the Either stream is the only way to get
-/// rows AND the completion tag from one execution, and `query(...).fetch_many`
-/// is deprecated. `raw_sql` uses Postgres's simple protocol instead of the
-/// prepared one, which returns values in text format — `raw_sql_decodes_the_same_as_a_prepared_statement`
-/// pins that this changes nothing about how cells decode, since a divergence
-/// there would silently turn working columns into `<unsupported type>`.
-/// One consequence, not a feature: the simple protocol accepts several
-/// statements separated by `;`, where the prepared one rejected them — and
-/// `COMMIT` is one of the statements it accepts. A multi-command run could
-/// therefore commit the very transaction this preview opened, leaving the
-/// write permanent while `rows_affected` reported only the trailing `COMMIT`
-/// tag (0) and the caller's rollback failed with "there is no transaction in
-/// progress". That is why `describe_result_columns` refuses multi-command
-/// input outright, before anything executes: the refusal is what keeps
-/// `raw_sql` safe here, not anything about `raw_sql` itself.
+/// `raw_sql`'s Either stream is the only way to get rows AND the completion tag
+/// from one execution; neither it nor `fetch_all` can tell a zero-row SELECT
+/// from a zero-row UPDATE, which is what `describe_result_columns` is for.
+/// `raw_sql` speaks the simple protocol, which would accept several `;`-separated
+/// commands including `COMMIT` — the refusal above is what keeps that safe.
 async fn execute_with_honest_result(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     sql: &str,
@@ -127,9 +80,6 @@ async fn execute_with_honest_result(
 
     let columns = match described_columns {
         Some(columns) => columns,
-        // describe() couldn't tell us the shape up front (some statements
-        // can't be introspected), but rows actually came back — so this was
-        // read-shaped after all. Fall back to the row's own columns.
         None if !rows.is_empty() => rows[0].columns().iter().map(|c| c.name().to_string()).collect(),
         None => return Ok((Vec::new(), Vec::new(), Some(rows_affected))),
     };
@@ -210,23 +160,15 @@ mod tests {
             &input.host, input.port, &input.database, &input.username, input.password.as_deref(), &input.sslmode,
         );
         sqlx::postgres::PgPoolOptions::new()
-            // Capped so the suite's parallel tests can't collectively exhaust
-            // Postgres's max_connections; each test needs only a handful.
+            // Capped so the suite's parallel tests can't exhaust max_connections.
             .max_connections(4)
             .connect(&connection_string)
             .await
             .expect("requires a real local Postgres — see CONTRIBUTING for setup")
     }
 
-    // The switch from `query(...)` to `raw_sql(...)` in
-    // execute_with_honest_result moved this path onto Postgres's simple
-    // protocol, which sends values as text rather than binary. If sqlx ever
-    // decodes the two differently, cells that work today would start rendering
-    // as `<unsupported type>` with nothing else failing. numeric is already
-    // undecoded on both paths — that is pre-existing and equally so.
-    // Calls the deprecated prepared path on purpose: the whole point is to
-    // compare against it. The deprecation is what execute_with_honest_result
-    // moved away from.
+    // Simple protocol sends text, prepared sends binary. A decoding divergence
+    // would render working cells as `<unsupported type>` with nothing failing.
     #[allow(deprecated)]
     #[tokio::test]
     async fn raw_sql_decodes_the_same_as_a_prepared_statement() {
@@ -384,15 +326,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_zero_row_select_against_a_temp_table_stays_a_read_on_the_same_connection() {
-        // Regression test for the round-2 finding: describe() must run on
-        // the exact same connection/session as the real execution, or a
-        // temp table visible to one but not the other can misclassify a
-        // valid zero-row SELECT as a zero-row write. Calls
-        // execute_with_honest_result directly (not preview_query_impl,
-        // which would acquire its own connection from a pool and can't
-        // guarantee it's the same one) so the temp table and the SELECT are
-        // certain to share one transaction — the same connection the
-        // SAVEPOINT-wrapped describe() and fetch_many both run on inside it.
+        // Calls execute_with_honest_result directly: preview_query_impl would
+        // draw its own pooled connection, which may not be the one holding the
+        // temp table.
         let raw = raw_pool().await;
         let mut tx = raw.begin().await.unwrap();
         sqlx::query("CREATE TEMP TABLE scratch_temp (id int, status text)").execute(&mut *tx).await.unwrap();
@@ -407,9 +343,6 @@ mod tests {
         tx.rollback().await.unwrap();
     }
 
-    // The isolation guarantee Run query rests on: a statement's effect is
-    // real inside its transaction and invisible outside it, so the effect can
-    // be reported honestly without anything being written.
     #[tokio::test]
     async fn a_write_preview_is_not_visible_outside_its_transaction() {
         let raw = raw_pool().await;
@@ -471,13 +404,8 @@ mod tests {
         sqlx::query("DROP TABLE preview_rollback_test").execute(&raw).await.unwrap();
     }
 
-    // The Critical this refusal exists for: `raw_sql` uses the simple
-    // protocol, which accepts several statements separated by `;` — `COMMIT`
-    // among them. Unrefused, `BEGIN; UPDATE ...; COMMIT;` commits the preview
-    // transaction itself, so the write is permanent while the pane reports
-    // "rolled back" and "0 rows affected" (the trailing COMMIT's tag).
-    // The second connection is the whole point: it proves nothing was
-    // written, which reading the code cannot.
+    // Unrefused, the trailing COMMIT commits the preview's own transaction and
+    // the write is permanent — measured, not theorised.
     #[tokio::test]
     async fn a_multi_command_run_is_refused_and_writes_nothing() {
         let raw = raw_pool().await;
@@ -504,8 +432,6 @@ mod tests {
             "the refusal must tell the user what to do about it, got: {err}"
         );
 
-        // From a second connection, after the refusal: the row must be
-        // exactly as it was. A committed escape would read 'escaped' here.
         let status: String = sqlx::query("SELECT status FROM multi_command_refusal_test WHERE id = 1")
             .fetch_one(&raw).await.unwrap().get("status");
         assert_eq!(status, "pending", "a refused multi-command run must not have written anything");
@@ -513,8 +439,6 @@ mod tests {
         sqlx::query("DROP TABLE multi_command_refusal_test").execute(&raw).await.unwrap();
     }
 
-    // The refusal must be narrow. A trailing `;` is one command, and a single
-    // write still runs and still reports its honest count.
     #[tokio::test]
     async fn a_single_statement_still_runs_after_the_multi_command_refusal() {
         let raw = raw_pool().await;
@@ -547,9 +471,6 @@ mod tests {
         sqlx::query("DROP TABLE single_command_still_runs_test").execute(&raw).await.unwrap();
     }
 
-    // A statement `describe()` cannot introspect must NOT be caught by the
-    // multi-command refusal — that is the whole reason the match is on
-    // Postgres's specific message rather than on any describe failure.
     #[tokio::test]
     async fn a_statement_describe_cannot_introspect_still_runs() {
         let (_dir, sqlite) = db().await;

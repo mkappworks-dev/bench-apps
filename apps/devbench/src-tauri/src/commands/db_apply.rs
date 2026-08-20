@@ -10,13 +10,7 @@ use crate::connection_registry::ConnectionRegistry;
 use crate::local_db::LocalDb;
 use crate::secrets::SecretStore;
 
-/// One staged intention. Ordered: Apply replays the set in staging order, so
-/// an insert followed by an update of the same row behaves the way the user
-/// watched it being built.
-///
-/// `table` is a `QualifiedTable`, not the plain string spec §10 sketches, for
-/// the reason §10 itself gives for splitting a primary key into column and
-/// value: a pre-joined string is a string that ends up interpolated into SQL.
+/// One staged intention. Replayed in staging order.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PendingChange {
@@ -25,17 +19,14 @@ pub enum PendingChange {
         pk_column: String,
         pk_value: String,
         column: String,
-        /// The value this edit was staged against. It travels into the WHERE
-        /// so a row someone else moved matches nothing instead of being
-        /// silently overwritten.
+        /// Travels into the WHERE, so a row someone else moved matches nothing.
         old_value: Option<String>,
         new_value: Option<String>,
     },
     Insert {
         table: QualifiedTable,
-        /// A JSON object on the wire. A BTreeMap rather than a HashMap so the
-        /// generated column list and VALUES list are built from one
-        /// deterministic iteration order and cannot drift apart.
+        /// BTreeMap, not HashMap: the column list and VALUES list are built from one
+        /// iteration and must not drift apart.
         values: BTreeMap<String, Option<String>>,
     },
     Delete {
@@ -43,10 +34,6 @@ pub enum PendingChange {
         pk_column: String,
         pk_value: String,
     },
-    /// Staged from a query tab (spec §12), which is the only thing that
-    /// stages one. The statement is re-run here, inside the changeset
-    /// transaction — `previewed_effect` is what the frontend displays
-    /// alongside it so a divergence is visible rather than silent.
     Sql {
         table: Option<QualifiedTable>,
         statement: String,
@@ -54,38 +41,29 @@ pub enum PendingChange {
     },
 }
 
-/// A staged entry that no longer matches the database. Reported rather than
-/// papered over: the alternative is overwriting someone else's write with a
-/// value staged before it happened.
+/// A staged entry that no longer matches the database.
 #[derive(Debug, Serialize, PartialEq)]
 pub struct ConflictReport {
-    /// Position in the submitted set, so the panel can mark the exact entry.
     pub index: usize,
-    /// `public.orders` — for display only, never for SQL.
+    /// Display only, never for SQL.
     pub table: String,
-    /// `id = 42`, the row this entry targeted.
     pub description: String,
-    /// `None` for a delete, which targets a row rather than a column.
     pub column: Option<String>,
     pub expected: Option<String>,
     pub found: Option<String>,
-    /// The primary key matched no row at all — someone deleted it. Distinct
-    /// from `found: None`, which means the row is there holding NULL.
+    /// Distinct from `found: None`, which is a row present holding NULL.
     pub row_missing: bool,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct ApplyOutcome {
-    /// Entries applied, not rows touched — it backs the "Apply 3" label.
+    /// Entries applied, not rows touched.
     pub applied: usize,
-    /// `Some(_)` means the transaction rolled back whole and `applied` is 0.
     pub conflict: Option<ConflictReport>,
 }
 
-/// Resolves a column's Postgres type for interpolation into a cast. The type
-/// comes from the catalog rather than user input, but is validated anyway
-/// before it reaches a format string — the same two-layer discipline the rest
-/// of this codebase applies to identifiers.
+/// Validated even though it comes from the catalog, not user input: the same
+/// two-layer discipline this codebase applies to identifiers.
 async fn cast_type(
     pool: &PgPool,
     table: &QualifiedTable,
@@ -98,11 +76,9 @@ async fn cast_type(
     Ok(ty)
 }
 
-/// Reads a column's current value *inside the aborted transaction*, so the
-/// conflict reports what this entry actually collided with — including any
-/// earlier entry in the same set that already wrote to that cell.
-/// `::text` is safe here in a way it would not be in a WHERE: the row is
-/// already located by its primary key, so there is no index to defeat.
+/// Read inside the aborted transaction, so the conflict reports what this entry
+/// actually collided with. `::text` is safe here only because the row is already
+/// located by its primary key — there is no index to defeat.
 async fn read_current(
     tx: &mut Transaction<'_, Postgres>,
     table: &QualifiedTable,
@@ -117,10 +93,8 @@ async fn read_current(
     );
     match sqlx::query(&sql).bind(pk_value).fetch_optional(&mut **tx).await {
         Ok(Some(row)) => (false, row.try_get::<Option<String>, _>("v").ok().flatten()),
-        // No row: the primary key matches nothing any more.
         Ok(None) => (true, None),
-        // The read itself failed. Reporting "row missing" would be a claim
-        // about the data that this call did not establish.
+        // Reporting "row missing" would claim something this call never established.
         Err(_) => (false, None),
     }
 }
@@ -232,13 +206,6 @@ pub async fn apply_changes_impl(
                 applied += 1;
             }
 
-            // Re-run verbatim: the query tab previewed it in a transaction
-            // that was rolled back, so this is the first time it runs for
-            // real. `query` is the PREPARED protocol, which rejects several
-            // commands in one string — Run refusing multi-command input
-            // (see query.rs) is what guarantees a single command reaches
-            // here, so a staged entry cannot poison the whole changeset with
-            // a protocol error.
             PendingChange::Sql { statement, .. } => {
                 sqlx::query(statement)
                     .execute(&mut *tx)
@@ -269,8 +236,7 @@ pub async fn apply_changes(
 mod tests {
     use super::*;
 
-    // Each test module in this codebase builds its own pool (see db.rs,
-    // db_columns.rs and correlation.rs); there is no shared helper to import.
+    // No shared pool helper in this codebase; each test module builds its own.
     async fn test_pool() -> PgPool {
         let host = std::env::var("PGHOST").unwrap_or_else(|_| "localhost".into());
         let database = std::env::var("PGDATABASE").unwrap_or_else(|_| "devbench_test".into());
@@ -303,9 +269,7 @@ mod tests {
         }
     }
 
-    // Fixture names are unique per test on purpose: cargo runs these
-    // concurrently against one shared database, so two tests sharing a table
-    // name would race and fail intermittently.
+    // Fixture names unique per test: cargo runs these concurrently against one database.
     async fn fixture(pool: &PgPool, name: &str, columns: &str) {
         sqlx::query(&format!("DROP TABLE IF EXISTS {name}")).execute(pool).await.unwrap();
         sqlx::query(&format!("CREATE TABLE {name} ({columns})")).execute(pool).await.unwrap();
@@ -341,11 +305,6 @@ mod tests {
         sqlx::query("DROP TABLE apply_mixed").execute(&pool).await.unwrap();
     }
 
-    // The Sql arm shipped with no test because nothing could stage one. The
-    // query tab can, so this is the first proof that a staged statement
-    // actually runs — and runs in the SAME transaction as the structured
-    // entries beside it, which is what makes Apply one changeset rather than
-    // a batch of separate writes.
     #[tokio::test]
     async fn a_staged_statement_runs_in_the_changeset_transaction() {
         let pool = test_pool().await;
@@ -372,9 +331,6 @@ mod tests {
         sqlx::query("DROP TABLE apply_sql_runs").execute(&pool).await.unwrap();
     }
 
-    // Atomicity has to hold when the failure comes from the free-text arm too.
-    // A staged statement is the one entry whose text the app never validated,
-    // so it is the likeliest thing in any changeset to fail at Apply.
     #[tokio::test]
     async fn a_failing_staged_statement_rolls_back_the_entries_beside_it() {
         let pool = test_pool().await;
@@ -404,9 +360,7 @@ mod tests {
         sqlx::query("DROP TABLE apply_sql_atomic").execute(&pool).await.unwrap();
     }
 
-    // §12: the effect is re-derived at Apply, not replayed from what the run
-    // reported. previewed_effect is carried for DISPLAY so a divergence is
-    // visible; it must never gate or alter what actually runs.
+    // previewed_effect is carried for DISPLAY only; it never gates or alters what runs.
     #[tokio::test]
     async fn previewed_effect_is_display_only_and_does_not_constrain_the_rerun() {
         let pool = test_pool().await;
@@ -414,7 +368,6 @@ mod tests {
         sqlx::query("INSERT INTO apply_sql_effect (status) VALUES ('a'), ('a'), ('a')")
             .execute(&pool).await.unwrap();
 
-        // Staged when one row matched; three match by the time Apply runs.
         let outcome = apply_changes_impl(&pool, &[PendingChange::Sql {
             table: None,
             statement: "UPDATE apply_sql_effect SET status = 'b' WHERE status = 'a'".into(),
@@ -430,13 +383,8 @@ mod tests {
         sqlx::query("DROP TABLE apply_sql_effect").execute(&pool).await.unwrap();
     }
 
-    // The regression that motivated casting at all: sqlx binds every value as
-    // TEXT, and Postgres has no assignment cast from text to integer or
-    // boolean, so an uncast `SET "n" = $1` is a hard error on any column that
-    // is not text. The retired single-preview cell-edit path had exactly this
-    // bug and never tripped it: of its five tests, two rejected a malicious
-    // identifier before reaching SQL at all, and the three that did issue an
-    // UPDATE all edited a text column.
+    // sqlx binds every value as TEXT and Postgres has no assignment cast from text
+    // to integer or boolean, so an uncast `SET "n" = $1` is a hard error off text.
     #[tokio::test]
     async fn casts_values_for_non_text_columns() {
         let pool = test_pool().await;
@@ -466,8 +414,6 @@ mod tests {
         sqlx::query("INSERT INTO apply_conflict (status) VALUES ('moved_underneath')")
             .execute(&pool).await.unwrap();
 
-        // The first entry would succeed on its own. It must still be rolled
-        // back, because the conflicting second entry aborts the whole set.
         let outcome = apply_changes_impl(&pool, &[
             update("apply_conflict", "1", "status", Some("moved_underneath"), Some("first")),
             update("apply_conflict", "1", "status", Some("stale_expectation"), Some("second")),
@@ -478,8 +424,7 @@ mod tests {
         assert_eq!(conflict.index, 1);
         assert_eq!(conflict.column.as_deref(), Some("status"));
         assert_eq!(conflict.expected.as_deref(), Some("stale_expectation"));
-        // Read back inside the aborted transaction: what the first entry had
-        // already written, which is what the second entry actually collided with.
+        // Inside the aborted transaction: what the second entry actually collided with.
         assert_eq!(conflict.found.as_deref(), Some("first"));
         assert!(!conflict.row_missing);
 
@@ -490,9 +435,8 @@ mod tests {
         sqlx::query("DROP TABLE apply_conflict").execute(&pool).await.unwrap();
     }
 
-    // `IS NOT DISTINCT FROM` rather than `=` exists for exactly this case: `=`
-    // against NULL is NULL, never true, so every staged edit of a NULL cell
-    // would match zero rows and report a conflict that did not happen.
+    // `=` against NULL is NULL, never true, so every staged edit of a NULL cell
+    // would report a conflict that did not happen.
     #[tokio::test]
     async fn stages_over_a_null_without_reporting_a_conflict() {
         let pool = test_pool().await;
@@ -520,8 +464,7 @@ mod tests {
         sqlx::query("INSERT INTO apply_atomic (status) VALUES ('before')")
             .execute(&pool).await.unwrap();
 
-        // The second entry violates NOT NULL — a database error, not a
-        // conflict, so it surfaces as Err rather than an ApplyOutcome.
+        // A database error, not a conflict: Err rather than an ApplyOutcome.
         let result = apply_changes_impl(&pool, &[
             update("apply_atomic", "1", "status", Some("before"), Some("after")),
             update("apply_atomic", "1", "status", Some("after"), None),
@@ -556,10 +499,6 @@ mod tests {
         sqlx::query("DROP TABLE apply_gone").execute(&pool).await.unwrap();
     }
 
-    // End-to-end proof that the read path was the only thing missing: the
-    // `IS NOT DISTINCT FROM` guard binds `old_value` as `$3::numeric`, so this
-    // only commits if the decimal string sqlx read back (see db.rs's numeric
-    // decode tests) is exactly what's still stored.
     #[tokio::test]
     async fn updates_a_numeric_column_matching_the_guard_on_its_decimal_string() {
         let pool = test_pool().await;

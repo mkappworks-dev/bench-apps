@@ -1,16 +1,10 @@
 import { tableKey } from "./tableIdentity";
 import type { QualifiedTable } from "./tauri";
 
-/** Wire-compatible with the Rust `PendingChange`. Field names are snake_case
- *  because serde reads them exactly as written, the same way `TableRows`
- *  already carries `pk_column`.
- *
- *  `connection_id` is the exception: it is frontend-only state that the Rust
- *  side neither declares nor needs (`apply_changes` takes the connection as
- *  its own argument, and serde ignores the extra field). It is here because
- *  the set is GLOBAL while a connection is not — without it, a change staged
- *  against dev would key, render and apply against staging the moment the
- *  picker moved. */
+/** Wire-compatible with the Rust `PendingChange`; snake_case because serde reads
+ *  the names as written. `connection_id` is frontend-only — the set is GLOBAL
+ *  while a connection is not, so without it a change staged against dev would
+ *  apply against staging the moment the picker moved. */
 export type PendingChange =
   | {
       kind: "update";
@@ -19,9 +13,8 @@ export type PendingChange =
       pk_column: string;
       pk_value: string;
       column: string;
-      /** ALWAYS the stored database value, never the currently staged one.
-       *  This is what makes the set a diff instead of a log, and what the
-       *  backend's `IS NOT DISTINCT FROM` guard compares against. */
+      /** ALWAYS the stored value, never the staged one: what makes the set a diff
+       *  rather than a log, and what `IS NOT DISTINCT FROM` compares against. */
       old_value: string | null;
       new_value: string | null;
     }
@@ -56,8 +49,7 @@ export interface ConflictReport {
   column: string | null;
   expected: string | null;
   found: string | null;
-  /** The primary key matched no row at all — distinct from `found: null`,
-   *  which means the row is there holding NULL. */
+  /** Distinct from `found: null`, which is a row present holding NULL. */
   row_missing: boolean;
 }
 
@@ -67,11 +59,9 @@ export interface ApplyOutcome {
   conflict: ConflictReport | null;
 }
 
-/** A NUL byte separates the parts, not a `:`. A colon can occur inside a
- *  primary-key value, which would let ("a:b", "c") and ("a", "b:c") key to the
- *  same string and cross two unrelated cells' entries. NUL cannot occur in a
- *  Postgres identifier, in a connection id, nor in a text value Postgres will
- *  store. */
+/** NUL, not `:`: a colon can occur inside a primary-key value, which would let
+ *  ("a:b", "c") and ("a", "b:c") collide. NUL cannot occur in an identifier,
+ *  a connection id, or a text value Postgres will store. */
 function updateKey(
   connectionId: string,
   table: QualifiedTable,
@@ -81,14 +71,9 @@ function updateKey(
   return `${connectionId}\u0000${tableKey(table)}\u0000${pkValue}\u0000${column}`;
 }
 
-/** Spec §10: comparison runs on typed values, not display strings.
- *
- *  On this wire a value is `string | null`, where `null` IS the SQL NULL and
- *  the string "NULL" is four ordinary characters. So identity comparison
- *  already IS the typed comparison the spec asks for, and the failure the spec
- *  warns about — a text cell holding "NULL" testing equal to a real NULL —
- *  cannot arise. This function exists so that reasoning has one home and one
- *  test, rather than being re-derived at every call site. */
+/** Spec §10. On this wire `null` IS the SQL NULL and "NULL" is four ordinary
+ *  characters, so identity comparison already is the typed comparison, and the
+ *  text-cell-holding-"NULL" failure the spec warns about cannot arise. */
 export function sameStoredValue(a: string | null, b: string | null): boolean {
   return a === b;
 }
@@ -105,9 +90,8 @@ export function discardAt(pending: PendingChange[], index: number): PendingChang
   return pending.filter((_, i) => i !== index);
 }
 
-/** Removes exactly the entries given, by identity. Used by Apply, which must
- *  drop what it SENT and nothing else: the grid stays live during the round
- *  trip, so the set it clears against may already have grown. */
+/** By identity: Apply must drop what it SENT and nothing else, since the set may
+ *  have grown during the round trip. */
 export function removeEntries(
   pending: PendingChange[],
   entries: PendingChange[],
@@ -115,9 +99,7 @@ export function removeEntries(
   return pending.filter((p) => !entries.includes(p));
 }
 
-/** What survives a Discard all on `connectionId`. With no connection selected
- *  nothing is "mine", so nothing is discarded — a null connection must not
- *  read as "discard everything". */
+/** With no connection selected nothing is "mine", so nothing is discarded. */
 export function entriesForOtherConnections(
   pending: PendingChange[],
   connectionId: string | null,
@@ -126,10 +108,8 @@ export function entriesForOtherConnections(
   return pending.filter((p) => p.connection_id !== connectionId);
 }
 
-/** Spec §10: staging is an upsert-or-delete, not an append. A cell set back to
- *  its stored value removes its entry rather than adding a second one that
- *  cancels the first — otherwise toggling a checkbox twice would read
- *  "Pending 2" and Apply would write a value that is already there. */
+/** Spec §10: upsert-or-delete, not append. A cell set back to its stored value
+ *  removes its entry, so toggling a checkbox twice does not read "Pending 2". */
 export function stageUpdate(pending: PendingChange[], entry: UpdateChange): PendingChange[] {
   const at = updateIndex(
     pending,
@@ -142,9 +122,8 @@ export function stageUpdate(pending: PendingChange[], entry: UpdateChange): Pend
   return pending.map((p, i) => (i === at ? entry : p));
 }
 
-/** A discriminated result rather than `string | null | undefined`: a staged
- *  NULL and "nothing staged" are different facts, and collapsing them would
- *  make a cell staged to NULL render its stored value instead. */
+/** A staged NULL and "nothing staged" are different facts; collapsing them would
+ *  make a cell staged to NULL render its stored value. */
 export function stagedUpdateFor(
   pending: PendingChange[],
   connectionId: string,
@@ -155,7 +134,6 @@ export function stagedUpdateFor(
   const at = updateIndex(pending, updateKey(connectionId, table, pkValue, column));
   if (at < 0) return { staged: false };
   const hit = pending[at];
-  // Narrowing only — updateIndex matches no other kind.
   return hit.kind === "update" ? { staged: true, value: hit.new_value } : { staged: false };
 }
 
@@ -174,8 +152,7 @@ function deleteIndex(
   );
 }
 
-/** Staging the same row twice means "undo that", not "delete it twice" — the
- *  row action is the only control for it, so it has to be its own undo. */
+/** Staging the same row twice means "undo that": the row action is its only control. */
 export function toggleDelete(
   pending: PendingChange[],
   connectionId: string,
@@ -200,10 +177,8 @@ export function hasStagedDelete(
   return deleteIndex(pending, connectionId, table, pkValue) >= 0;
 }
 
-/** An entry paired with its position in the WHOLE set. Filtering the set (by
- *  connection, say) has to keep that position: a discard button addresses it
- *  directly, and a `ConflictReport`'s index is translated back to it by
- *  `PendingPanel` — the backend counts only the entries it was sent. */
+/** Position in the WHOLE set: a discard button addresses it directly, and a
+ *  `ConflictReport`'s index is translated back to it by `PendingPanel`. */
 export interface IndexedChange {
   entry: PendingChange;
   index: number;
@@ -215,14 +190,10 @@ export function indexChanges(pending: PendingChange[]): IndexedChange[] {
 
 export interface PendingGroup {
   label: string;
-  /** `index` is the position in the WHOLE set, not in this group — a discard
-   *  button addresses that position directly, and a `ConflictReport`'s index
-   *  is translated back to it by `PendingPanel` before anyone else sees it. */
   entries: IndexedChange[];
 }
 
-/** Spec §10: the panel groups by table. A `sql` entry has no table, so it
- *  files under its own heading rather than under one it might have touched. */
+/** Spec §10: grouped by table; a `sql` entry has none, so it files on its own. */
 export function groupByTable(entries: IndexedChange[]): PendingGroup[] {
   const groups: PendingGroup[] = [];
   entries.forEach(({ entry, index }) => {
