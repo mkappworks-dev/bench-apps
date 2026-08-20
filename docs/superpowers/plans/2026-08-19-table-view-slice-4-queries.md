@@ -1747,7 +1747,12 @@ export function QueryTab({
   onToggleWatch: (table: QualifiedTable) => void;
 }) {
   const queryId = typeof tab.state.queryId === "string" ? tab.state.queryId : null;
-  const connectionId = typeof tab.state.connectionId === "string" ? tab.state.connectionId : null;
+  // Two connections, deliberately distinct (settled in Task 5). PINNED is part
+  // of the document's identity: captured at open, never patched, and what this
+  // query RUNS against. ACTIVE is only where the rail is browsing, which the
+  // user may move without retargeting this tab.
+  const pinnedConnectionId = typeof tab.state.connectionId === "string" ? tab.state.connectionId : null;
+  const activeConnectionId = useAppStore((s) => s.activeConnectionId);
   const savedQueries = useAppStore((s) => s.savedQueries);
   const patchSavedQuery = useAppStore((s) => s.patchSavedQuery);
   const setActiveConnectionId = useAppStore((s) => s.setActiveConnectionId);
@@ -1824,7 +1829,7 @@ export function QueryTab({
   return (
     <div className="flex h-full w-full min-h-0 min-w-0">
       <ConnectionRail
-        connectionId={connectionId}
+        connectionId={activeConnectionId}
         selected={null}
         watchedTables={watchedTables}
         onToggleWatch={onToggleWatch}
@@ -2148,12 +2153,14 @@ Add state and the run function inside the component:
   }
 
   async function run() {
-    if (running || !connectionId || !query) return;
+    // pinnedConnectionId, never activeConnectionId: a query runs against the
+    // connection it was written for, whatever the rail happens to be browsing.
+    if (running || !pinnedConnectionId || !query) return;
     setRunError(null);
     setResult(null);
     setRunning(true);
     try {
-      const preview = await invokePreviewQuery(connectionId, query.sql);
+      const preview = await invokePreviewQuery(pinnedConnectionId, query.sql);
       // Rolled back here, in the continuation that received it — not on a
       // later click and not in an unmount cleanup. Nothing holds a lock while
       // the user decides, and an unmount mid-flight still lands here because
@@ -2171,8 +2178,8 @@ Add state and the run function inside the component:
   }
 
   function stage() {
-    if (!connectionId || !query || result?.rows_affected == null) return;
-    addPendingSql(connectionId, query.sql, effectLabel(result.rows_affected));
+    if (!pinnedConnectionId || !query || result?.rows_affected == null) return;
+    addPendingSql(pinnedConnectionId, query.sql, effectLabel(result.rows_affected));
     setResult(null);
   }
 ```
@@ -2193,7 +2200,7 @@ Replace the `RunSlot` stub with the real button in the head — `inline-flex`, b
 ```tsx
           <button
             type="button"
-            disabled={running || !connectionId}
+            disabled={running || !pinnedConnectionId}
             onClick={() => void run()}
             className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-sm bg-accent px-3 text-xs font-bold text-accent-on transition-opacity duration-150 disabled:opacity-50"
           >
