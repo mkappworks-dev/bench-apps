@@ -2954,10 +2954,31 @@ Both were confirmed in the browser before being written into spec §18.
 
 ### Tally
 
-**26 browser checks: 25 PASS, 1 FAIL** — the `runIconInline === "inline-flex"`
-string comparison, which CSS blockification makes unachievable for a flex item;
-the §14 property behind it was measured directly and passes. No layout code
-was changed, so §3b's numbers stand as drawn.
+**39 checks carry an explicit PASS/FAIL verdict: 38 PASS, 1 FAIL.** The one
+failure is the `runIconInline === "inline-flex"` string comparison, which CSS
+blockification makes unachievable for a flex item; the §14 property behind it
+was measured directly and passes. No layout code was changed, so §3b's numbers
+stand as drawn.
+
+The basis, so the figure can be rebuilt from the tables above rather than taken
+on trust:
+
+- **38 verdict-carrying table rows** — every row above except Step 7's
+  `startHeight` (recorded `—`, a reading not a check), Step 9's three
+  state rows and the three gate rows — **plus Step 9's prose verdict = 39**.
+- **All 33 pass conditions the brief states are covered**: 31 as verdict-carrying
+  rows, and Step 8's two follow-through conditions (the pending badge appears,
+  the result block is gone) as the bold prose under that table.
+- **9 checks were added beyond the brief**: the four tab-tint rows, mid-drag
+  tracking, Run-button hittability, Step 4's `segmentedControlFound` and its
+  rail-width-across-the-segment-switch row (8 verdict-carrying), plus the
+  post-Add head still measuring 44px in one row (prose).
+- **42 recorded observations** in total: the 39 above, plus the three prose
+  confirmations after the real Add to pending click.
+
+An earlier draft of this section said "26 browser checks: 25 PASS, 1 FAIL". That
+figure was understated and not reconstructable from these tables; it is
+corrected here.
 
 ### Gates
 

@@ -602,8 +602,11 @@ apart, and it means a button added to any of those rows inherits the right
 height without carrying a number of its own.
 
 **`.primary` must be `inline-flex`.** The app sets `svg { display: block }`
-globally, so an icon inside a block-level button stacks above its label rather
-than sitting beside it.
+globally (Tailwind's Preflight), so an icon inside a block-level button stacks
+above its label rather than sitting beside it. This is what you **author**, not
+what `getComputedStyle` reports back: wherever such a button is itself a flex or
+grid item — the query head and its actions row are both — the computed value is
+`flex`, and a gate asserting `inline-flex` there can never pass. See §16.
 
 **Checkboxes are drawn, not native**: 14px, 4px radius, transparent with a faint
 border when off, accent fill with an inset tick when on. A UA checkbox is ~16px,
@@ -738,10 +741,13 @@ at the element's own centre, never by comparing z-index: a virtualized row's
 `transform` creates a stacking context, so a correct z-index and an unhittable
 element look identical.
 
-One §14 property cannot be read from `getComputedStyle` at all. CSS Display 3
-blockifies a flex item, so the query head's `inline-flex` children compute to
-`flex`; the check that the icon sits beside its label rather than above it is
-made on `flexDirection` and on the icon's and label's centre-Y instead.
+§14's `inline-flex` rule is readable from `getComputedStyle` only where the
+button is not itself a flex or grid item. Both of Slice 4's primaries are:
+`Run query` is a child of the query head, and `Add to pending` a child of the
+actions row's `flex justify-end`. CSS Display 3 blockifies a flex item, so each
+computes to `flex` however it is authored. Where that applies, the check that
+the icon sits beside its label rather than above it is made on `flexDirection`
+and on the icon's and label's centre-Y instead.
 
 ## 17. Slices
 
