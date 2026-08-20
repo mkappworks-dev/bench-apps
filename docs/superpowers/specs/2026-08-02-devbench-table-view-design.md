@@ -814,13 +814,20 @@ Slice 4: `docs/superpowers/plans/2026-08-19-table-view-slice-4-queries.md`.
   staged entry stays truthful — this is confusing, not incorrect. Guarding it
   would mean reintroducing the generation-counter machinery §15 retired, for a
   window that cannot produce a wrong write. Left as is, deliberately.
-- **The query editor's resize grip is mouse-only.** It carries
-  `role="separator"` and `aria-orientation`, but no `tabindex`, no
-  `aria-valuenow`/`aria-valuemin`/`aria-valuemax`, and no key handling: arrow
-  keys do nothing and it cannot take focus. A keyboard user cannot resize the
-  editor. The pane is still fully usable — the editor and results both scroll —
-  so this is a missing affordance rather than a block, but the separator role
-  currently promises an interaction that is not implemented.
+- **The query editor's resize grip advertises an interaction it does not
+  offer.** The problem is not merely that it is mouse-only. It carries
+  `role="separator"` and `aria-orientation`, which is how a *resizable*
+  separator announces itself to assistive technology — but it has no
+  `tabindex`, no `aria-valuenow`/`aria-valuemin`/`aria-valuemax`, and no key
+  handling, so a keyboard or screen-reader user is told there is a separator
+  to operate and then given no way to operate it. A silent `<div>` would at
+  least not have made the promise. The pane stays fully usable (editor and
+  results both scroll), so this is a broken promise rather than a block.
+  Keyboard support — focusability, arrow-key stepping between `MIN_EDITOR_PX`
+  and `MAX_EDITOR_PX`, and the `aria-value*` trio to match — is the fix, and
+  is deliberately NOT taken in this wave: it adds a new interaction at the end
+  of a 23-commit branch, where the risk of a late behaviour change outweighs
+  the delay. Follow-up.
 - **Popover and jump can disagree on a match.** `get_referenced_row` binds the
   lookup value cast to the referenced column's real type (`= $1::timestamptz`,
   say). The jump's pinned filter compiles through the filter compiler to
@@ -832,3 +839,31 @@ Slice 4: `docs/superpowers/plans/2026-08-19-table-view-slice-4-queries.md`.
   target int, uuid or text primary keys, where both renderings agree. The
   real fix is a change to the filter compiler's casting strategy, which
   affects every filter in the application and belongs in its own change.
+
+- **A bare `COMMIT`/`ROLLBACK` still reaches the server (residual of the
+  multi-command refusal).** Run now refuses multi-command input — the path
+  that could actually write, where `BEGIN; UPDATE …; COMMIT;` committed the
+  preview's own transaction and made the write permanent while the pane said
+  "rolled back". A *single* `COMMIT` is not multi-command, so it still runs:
+  measured, it ends the preview transaction (which by then holds nothing but
+  the describe savepoint), reports `0 rows affected`, and leaves the database
+  untouched — the subsequent rollback returns `Ok` rather than erroring. The
+  residual harm is therefore a confusing message about an empty transaction,
+  not data loss. Accepted. Should the rollback ever fail for real, the query
+  pane now surfaces that as an explicit warning that replaces the
+  "rolled back — nothing is written" reassurance and blocks staging, rather
+  than swallowing it: we never claim nothing was written when we cannot prove
+  it.
+- **`focusOrCreateTab` searches the left pane only.** A saved query already
+  open in a **split right pane** is not found when it is re-selected from a
+  left-pane rail, so a second tab is created for the same document. Worse, the
+  new tab pins whatever connection is active at that moment: if the active
+  connection moved in between, the two tabs are the same query aimed at two
+  different databases, and Run in each writes somewhere different. §3b's "one
+  saved query is one document" therefore holds only *within* a pane. The same
+  pane-blindness affects every deep link that routes through
+  `focusOrCreateTab` (Rollup's open-table, open-log, open-email); queries are
+  where it turns into a correctness question rather than a tidiness one,
+  because a query tab carries a pinned connection and the others do not.
+  Fixing it means teaching the lookup about both panes and deciding which pane
+  wins when a match exists in each — a shell-wide change, not a query one.
