@@ -299,6 +299,25 @@ describe("QueryTab", () => {
     expect(screen.getByRole("button", { name: "Add to pending" })).toBeEnabled();
   });
 
+  // Fix 3. Staging targets the PINNED connection; PendingPanel and Apply are
+  // scoped to the ACTIVE one. Opening the panel without retargeting shows a
+  // set this tab's own entries are not in.
+  it("points the active connection at the pinned one before opening the pending panel", () => {
+    useAppStore.setState({
+      activeConnectionId: "c2",
+      pending: [
+        { kind: "sql", connection_id: "c1", table: null, statement: "SELECT 1;", previewed_effect: "1 row affected" },
+      ],
+    });
+
+    renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Pending/ }));
+
+    expect(useAppStore.getState().activeConnectionId).toBe("c1");
+    expect(useAppStore.getState().dockPanel).toBe("pending");
+    expect(useAppStore.getState().chatOpen).toBe(true);
+  });
+
   it("runs on Cmd+Enter from inside the editor", async () => {
     const run = vi.spyOn(tauriLib, "invokePreviewQuery").mockResolvedValue(WRITE_PREVIEW);
     vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);

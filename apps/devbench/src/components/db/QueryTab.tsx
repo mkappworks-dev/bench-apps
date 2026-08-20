@@ -211,9 +211,11 @@ export function QueryTab({
             onClick={() => void run()}
             className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-sm bg-accent px-3 text-xs font-bold text-accent-on transition-opacity duration-150 disabled:opacity-50"
           >
-            <PlayIcon />
+            <span aria-hidden="true" className="inline-flex">
+              <PlayIcon />
+            </span>
             <span>Run query</span>
-            <span className="text-[10.5px] font-semibold opacity-70">⌘⏎</span>
+            <span aria-hidden="true" className="text-[10.5px] font-semibold opacity-70">⌘⏎</span>
           </button>
           <input
             aria-label="Query name"
@@ -227,6 +229,12 @@ export function QueryTab({
               className="h-7 gap-1.5"
               aria-pressed={dockPanel === "pending"}
               onClick={() => {
+                // This tab stages against its PINNED connection, but
+                // PendingPanel and Apply are both scoped to the ACTIVE one.
+                // Without this, clicking the count opens a panel where this
+                // tab's own entries are inactive, Apply is disabled and
+                // Discard all won't touch them.
+                if (pinnedConnectionId) setActiveConnectionId(pinnedConnectionId);
                 setDockPanel("pending");
                 setChatOpen(true);
               }}
