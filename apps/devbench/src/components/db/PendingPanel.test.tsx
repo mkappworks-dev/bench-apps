@@ -59,6 +59,18 @@ describe("PendingPanel", () => {
     expect(screen.getByText("delete")).toBeTruthy();
   });
 
+  // Fix 2: this panel appends its own "when run" suffix (EntryBody, below) —
+  // a producer that also appends it renders "... when run when run". Staging
+  // through the real store action, not a hand-built fixture, is what would
+  // have caught this: the bug was in what QueryTab handed to
+  // `previewed_effect`, not in this panel.
+  it("renders a staged sql entry's effect exactly once, not doubled", () => {
+    useAppStore.getState().addPendingSql("c1", "UPDATE orders SET status = 'x';", "3 rows affected");
+    renderPanel();
+    expect(screen.getByText("· 3 rows affected when run")).toBeTruthy();
+    expect(screen.queryByText(/when run when run/)).toBeNull();
+  });
+
   it("shows an update as old then new, so the diff is readable without the grid", () => {
     seed([UPDATE]);
     renderPanel();

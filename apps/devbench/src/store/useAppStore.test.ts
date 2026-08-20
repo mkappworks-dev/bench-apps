@@ -298,7 +298,7 @@ describe("useAppStore", () => {
 
   it("stages a sql change with no table, under its own heading", () => {
     useAppStore.setState({ pending: [] });
-    useAppStore.getState().addPendingSql("c1", "UPDATE orders SET status = 'x';", "3 rows affected when run");
+    useAppStore.getState().addPendingSql("c1", "UPDATE orders SET status = 'x';", "3 rows affected");
 
     expect(useAppStore.getState().pending).toEqual([
       {
@@ -306,7 +306,7 @@ describe("useAppStore", () => {
         connection_id: "c1",
         table: null,
         statement: "UPDATE orders SET status = 'x';",
-        previewed_effect: "3 rows affected when run",
+        previewed_effect: "3 rows affected",
       },
     ]);
   });
@@ -316,8 +316,8 @@ describe("useAppStore", () => {
   // nothing to upsert against either.
   it("appends a second sql change rather than replacing the first", () => {
     useAppStore.setState({ pending: [] });
-    useAppStore.getState().addPendingSql("c1", "SELECT 1;", "1 row affected when run");
-    useAppStore.getState().addPendingSql("c1", "SELECT 1;", "1 row affected when run");
+    useAppStore.getState().addPendingSql("c1", "SELECT 1;", "1 row affected");
+    useAppStore.getState().addPendingSql("c1", "SELECT 1;", "1 row affected");
     expect(useAppStore.getState().pending).toHaveLength(2);
   });
 });

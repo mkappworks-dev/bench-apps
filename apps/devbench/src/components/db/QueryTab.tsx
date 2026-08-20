@@ -54,7 +54,11 @@ export function QueryTab({
   const [editorHeight, setEditorHeight] = useState(DEFAULT_EDITOR_PX);
   const dragState = useRef<{ startY: number; startHeight: number } | null>(null);
   const writeTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  const [result, setResult] = useState<QueryPreview | null>(null);
+  // `statement` is what was actually sent to `invokePreviewQuery` — captured
+  // once, at run time — not re-read from `query.sql` when staging. Staging
+  // off the live field would record an effect for a statement never
+  // previewed the moment the field moves after Run.
+  const [result, setResult] = useState<{ preview: QueryPreview; statement: string } | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
 
@@ -95,32 +99,44 @@ export function QueryTab({
   function onSqlChange(sql: string) {
     if (!queryId) return;
     patchSavedQuery(queryId, { sql });
+    // A result describes the statement that produced it, so editing the SQL
+    // makes it stale. Left up, it would let Add to pending record an effect
+    // this statement never had — and carry a write's enabled button over to a
+    // pasted SELECT.
+    setResult(null);
+    setRunError(null);
     debouncedWrite("sql", () => invokeSetSavedQuerySql(queryId, sql));
   }
 
   /** §12: the effect the run reported, carried into the pending entry so a
    *  divergence at Apply is visible rather than silent. Only ever built for a
-   *  statement that reported a count — a SELECT cannot be staged. */
+   *  statement that reported a count — a SELECT cannot be staged. Bare
+   *  phrase: PendingPanel owns the "when run" suffix at render time. */
   function effectLabel(n: number): string {
-    return `${n} row${n === 1 ? "" : "s"} affected when run`;
+    return `${n} row${n === 1 ? "" : "s"} affected`;
   }
 
   async function run() {
     // pinnedConnectionId, never activeConnectionId: a query runs against the
     // connection it was written for, whatever the rail happens to be browsing.
     if (running || !pinnedConnectionId || !query) return;
+    // Captured now, not re-read from `query.sql` later: this is the text that
+    // is about to be sent, and it is what the result — and any staging of it
+    // — must describe, regardless of what the editor holds by the time
+    // either happens.
+    const statement = query.sql;
     setRunError(null);
     setResult(null);
     setRunning(true);
     try {
-      const preview = await invokePreviewQuery(pinnedConnectionId, query.sql);
+      const preview = await invokePreviewQuery(pinnedConnectionId, statement);
       // Rolled back here, in the continuation that received it — not on a
       // later click and not in an unmount cleanup. Nothing holds a lock while
       // the user decides, and an unmount mid-flight still lands here because
       // this chain is not tied to React's lifecycle. What gets staged is the
       // STATEMENT; Apply re-runs it (§12), so this transaction has no future.
       void invokeRollbackPreview(preview.preview_id).catch(() => {});
-      setResult(preview);
+      setResult({ preview, statement });
     } catch (err) {
       // A failed preview_query never returned a preview_id — there is no
       // transaction of ours to roll back.
@@ -131,8 +147,8 @@ export function QueryTab({
   }
 
   function stage() {
-    if (!pinnedConnectionId || !query || result?.rows_affected == null) return;
-    addPendingSql(pinnedConnectionId, query.sql, effectLabel(result.rows_affected));
+    if (!pinnedConnectionId || !result || result.preview.rows_affected == null) return;
+    addPendingSql(pinnedConnectionId, result.statement, effectLabel(result.preview.rows_affected));
     setResult(null);
   }
 
@@ -250,12 +266,12 @@ export function QueryTab({
                   Pending and Apply
                 </span>
               </div>
-              {result.rows_affected === null ? (
-                <DataGrid columns={result.columns} rows={result.rows} />
+              {result.preview.rows_affected === null ? (
+                <DataGrid columns={result.preview.columns} rows={result.preview.rows} />
               ) : (
                 <div className="text-xs text-text-faint">
-                  {result.rows_affected} row{result.rows_affected === 1 ? "" : "s"} affected — no rows
-                  returned.
+                  {result.preview.rows_affected} row{result.preview.rows_affected === 1 ? "" : "s"} affected
+                  — no rows returned.
                 </div>
               )}
               {/* 28px, set by the row rather than by each button (§14). */}
@@ -265,10 +281,10 @@ export function QueryTab({
                 </SecondaryButton>
                 <button
                   type="button"
-                  disabled={result.rows_affected === null}
+                  disabled={result.preview.rows_affected === null}
                   onClick={stage}
                   title={
-                    result.rows_affected === null
+                    result.preview.rows_affected === null
                       ? "Re-running a query that returns rows writes nothing, so there is nothing to stage."
                       : undefined
                   }

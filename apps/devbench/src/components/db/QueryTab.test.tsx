@@ -105,7 +105,7 @@ describe("QueryTab", () => {
 
     act(() => {
       useAppStore.setState({
-        pending: [{ kind: "sql", connection_id: "c1", table: null, statement: "SELECT 1;", previewed_effect: "1 row affected when run" }],
+        pending: [{ kind: "sql", connection_id: "c1", table: null, statement: "SELECT 1;", previewed_effect: "1 row affected" }],
       });
     });
     rerender(<QueryTab tab={TAB} onOpenQuery={() => {}} watchedTables={new Set()} onToggleWatch={() => {}} />);
@@ -172,12 +172,64 @@ describe("QueryTab", () => {
         connection_id: "c1",
         table: null,
         statement: "SELECT 1;",
-        previewed_effect: "3 rows affected when run",
+        previewed_effect: "3 rows affected",
       },
     ]);
     // The result is consumed by staging it; leaving it up invites a second
     // click that would stage the same statement twice.
     expect(screen.queryByRole("button", { name: "Add to pending" })).not.toBeInTheDocument();
+  });
+
+  // Fix 1: a result describes the statement that produced it. Left up across
+  // an edit, it would let Add to pending record an effect for a statement
+  // that was never previewed, and would carry a write's enabled button over
+  // to whatever gets pasted next — including a SELECT.
+  it("clears the result when the SQL changes, since it no longer describes what would run", async () => {
+    vi.spyOn(tauriLib, "invokePreviewQuery").mockResolvedValue(WRITE_PREVIEW);
+    vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+    vi.spyOn(tauriLib, "invokeSetSavedQuerySql").mockResolvedValue(undefined);
+
+    renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+    await waitFor(() => expect(screen.getByText(/3 rows affected/)).toBeInTheDocument());
+
+    fireEvent.change(screen.getByRole("textbox", { name: "SQL" }), { target: { value: "SELECT 2;" } });
+
+    expect(screen.queryByText(/3 rows affected/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add to pending" })).not.toBeInTheDocument();
+  });
+
+  // Fix 1: staging must record what was actually sent to the database, not
+  // whatever `query.sql` has since become — clearing the result on edit makes
+  // the bug unreachable through the editor, but capturing at run time is what
+  // keeps the invariant true even if the underlying query is mutated by some
+  // other route while the result is still up.
+  it("stages the statement that ran, even if the query's sql has since moved", async () => {
+    vi.spyOn(tauriLib, "invokePreviewQuery").mockResolvedValue(WRITE_PREVIEW);
+    vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+
+    renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add to pending" })).toBeEnabled());
+
+    // Mutates the store directly, bypassing onSqlChange (which would itself
+    // clear the result) — simulating some other route moving the query's sql
+    // out from under a result that is still on screen.
+    act(() => {
+      useAppStore.getState().patchSavedQuery("q1", { sql: "DROP TABLE orders;" });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Add to pending" }));
+
+    expect(useAppStore.getState().pending).toEqual([
+      {
+        kind: "sql",
+        connection_id: "c1",
+        table: null,
+        statement: "SELECT 1;",
+        previewed_effect: "3 rows affected",
+      },
+    ]);
   });
 
   it("discards the result and stages nothing", async () => {
@@ -215,6 +267,36 @@ describe("QueryTab", () => {
     fireEvent.keyDown(screen.getByRole("textbox", { name: "SQL" }), { key: "Enter", metaKey: true });
 
     await waitFor(() => expect(run).toHaveBeenCalled());
+  });
+
+  // Highest-risk property in this file: run and stage must use the tab's
+  // PINNED connection, never wherever the rail happens to be browsing. Every
+  // other test in this file seeds both ids as "c1", which would let a
+  // pinned/active swap inside run()/stage() slip through unnoticed — this one
+  // sets them apart on purpose.
+  it("runs and stages against the pinned connection, not the one the rail is browsing", async () => {
+    useAppStore.setState({ activeConnectionId: "c2" });
+    const run = vi.spyOn(tauriLib, "invokePreviewQuery").mockResolvedValue(WRITE_PREVIEW);
+    vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+
+    renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+
+    await waitFor(() => expect(run).toHaveBeenCalledWith("c1", "SELECT 1;"));
+    expect(run).not.toHaveBeenCalledWith("c2", expect.anything());
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add to pending" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Add to pending" }));
+
+    expect(useAppStore.getState().pending).toEqual([
+      {
+        kind: "sql",
+        connection_id: "c1",
+        table: null,
+        statement: "SELECT 1;",
+        previewed_effect: "3 rows affected",
+      },
+    ]);
   });
 
   // Coverage gap from the previous task's review: one timer per field, keyed,
