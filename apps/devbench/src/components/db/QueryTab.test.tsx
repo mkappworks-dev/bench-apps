@@ -259,6 +259,46 @@ describe("QueryTab", () => {
     expect(screen.queryByRole("button", { name: "Add to pending" })).not.toBeInTheDocument();
   });
 
+  // Fix 1(b). A failed rollback means the transaction is gone, so the
+  // statement may have committed. The reassurance must not stand, and a
+  // statement whose effect is unknown must not be queued to run AGAIN.
+  it("replaces the rolled-back reassurance with a warning when the rollback fails, and blocks staging", async () => {
+    vi.spyOn(tauriLib, "invokePreviewQuery").mockResolvedValue(WRITE_PREVIEW);
+    vi.spyOn(tauriLib, "invokeRollbackPreview").mockRejectedValue(
+      new Error("rollback failed: there is no transaction in progress"),
+    );
+
+    renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+
+    await waitFor(() => expect(screen.getByText(/could not be rolled back/i)).toBeInTheDocument());
+    expect(screen.queryByText(/nothing is written unless you add it/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add to pending" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add to pending" }));
+    expect(useAppStore.getState().pending).toEqual([]);
+  });
+
+  // The warning is per-run, not sticky: a later run whose rollback succeeds
+  // must read as rolled back again.
+  it("clears the failed-rollback warning on the next successful run", async () => {
+    vi.spyOn(tauriLib, "invokePreviewQuery").mockResolvedValue(WRITE_PREVIEW);
+    const rollback = vi
+      .spyOn(tauriLib, "invokeRollbackPreview")
+      .mockRejectedValueOnce(new Error("no transaction in progress"))
+      .mockResolvedValue(undefined);
+
+    renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+    await waitFor(() => expect(screen.getByText(/could not be rolled back/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+    await waitFor(() => expect(rollback).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByText(/rolled back — nothing is written/i)).toBeInTheDocument());
+    expect(screen.queryByText(/could not be rolled back/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add to pending" })).toBeEnabled();
+  });
+
   it("runs on Cmd+Enter from inside the editor", async () => {
     const run = vi.spyOn(tauriLib, "invokePreviewQuery").mockResolvedValue(WRITE_PREVIEW);
     vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);

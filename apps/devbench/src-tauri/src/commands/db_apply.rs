@@ -43,10 +43,8 @@ pub enum PendingChange {
         pk_column: String,
         pk_value: String,
     },
-    /// Staged from the query console (spec §12). No UI stages one in Slice 3;
-    /// the variant exists because Apply must handle whatever the set holds,
-    /// and a set that cannot represent it would have to change again in
-    /// Slice 4. The statement is re-run here, inside the changeset
+    /// Staged from a query tab (spec §12), which is the only thing that
+    /// stages one. The statement is re-run here, inside the changeset
     /// transaction — `previewed_effect` is what the frontend displays
     /// alongside it so a divergence is visible rather than silent.
     Sql {
@@ -234,8 +232,13 @@ pub async fn apply_changes_impl(
                 applied += 1;
             }
 
-            // Re-run verbatim: the console previewed it in a transaction that
-            // was rolled back, so this is the first time it runs for real.
+            // Re-run verbatim: the query tab previewed it in a transaction
+            // that was rolled back, so this is the first time it runs for
+            // real. `query` is the PREPARED protocol, which rejects several
+            // commands in one string — Run refusing multi-command input
+            // (see query.rs) is what guarantees a single command reaches
+            // here, so a staged entry cannot poison the whole changeset with
+            // a protocol error.
             PendingChange::Sql { statement, .. } => {
                 sqlx::query(statement)
                     .execute(&mut *tx)
@@ -338,11 +341,11 @@ mod tests {
         sqlx::query("DROP TABLE apply_mixed").execute(&pool).await.unwrap();
     }
 
-    // The Sql arm shipped in Slice 3 with no test because nothing could stage
-    // one. Slice 4's query tab can, so this is the first proof that a staged
-    // statement actually runs — and runs in the SAME transaction as the
-    // structured entries beside it, which is what makes Apply one changeset
-    // rather than a batch of separate writes.
+    // The Sql arm shipped with no test because nothing could stage one. The
+    // query tab can, so this is the first proof that a staged statement
+    // actually runs — and runs in the SAME transaction as the structured
+    // entries beside it, which is what makes Apply one changeset rather than
+    // a batch of separate writes.
     #[tokio::test]
     async fn a_staged_statement_runs_in_the_changeset_transaction() {
         let pool = test_pool().await;

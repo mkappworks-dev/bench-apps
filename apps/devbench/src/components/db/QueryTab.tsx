@@ -60,6 +60,11 @@ export function QueryTab({
   // previewed the moment the field moves after Run.
   const [result, setResult] = useState<{ preview: QueryPreview; statement: string } | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  // Set only when the automatic rollback FAILED. The transaction is then gone
+  // and the statement may have committed, so this replaces the "rolled back"
+  // reassurance rather than sitting beside it — and blocks staging, since a
+  // statement whose effect is unknown must not be queued to run again.
+  const [rollbackFailure, setRollbackFailure] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
 
   // One timer per field, keyed, so renaming does not cancel a pending SQL
@@ -105,6 +110,7 @@ export function QueryTab({
     // pasted SELECT.
     setResult(null);
     setRunError(null);
+    setRollbackFailure(null);
     debouncedWrite("sql", () => invokeSetSavedQuerySql(queryId, sql));
   }
 
@@ -127,6 +133,7 @@ export function QueryTab({
     const statement = query.sql;
     setRunError(null);
     setResult(null);
+    setRollbackFailure(null);
     setRunning(true);
     try {
       const preview = await invokePreviewQuery(pinnedConnectionId, statement);
@@ -135,7 +142,12 @@ export function QueryTab({
       // the user decides, and an unmount mid-flight still lands here because
       // this chain is not tied to React's lifecycle. What gets staged is the
       // STATEMENT; Apply re-runs it (§12), so this transaction has no future.
-      void invokeRollbackPreview(preview.preview_id).catch(() => {});
+      // A FAILED rollback is not a swallowable detail: it means the
+      // transaction is already gone, so the statement may have committed.
+      // Never tell the user nothing was written when we cannot prove it.
+      void invokeRollbackPreview(preview.preview_id).catch((err) =>
+        setRollbackFailure(err instanceof Error ? err.message : String(err)),
+      );
       setResult({ preview, statement });
     } catch (err) {
       // A failed preview_query never returned a preview_id — there is no
@@ -148,6 +160,7 @@ export function QueryTab({
 
   function stage() {
     if (!pinnedConnectionId || !result || result.preview.rows_affected == null) return;
+    if (rollbackFailure) return;
     addPendingSql(pinnedConnectionId, result.statement, effectLabel(result.preview.rows_affected));
     setResult(null);
   }
@@ -259,13 +272,24 @@ export function QueryTab({
           {runError ? <div className="text-xs text-danger">{runError}</div> : null}
           {result ? (
             <>
-              <div className="flex items-center gap-2 text-xs text-text-faint">
-                <span className="rounded-full bg-surface-2 px-2 py-0.5 font-bold text-text-faint">RAN</span>
-                <span>
-                  ran in a transaction that was rolled back — nothing is written unless you add it to
-                  Pending and Apply
-                </span>
-              </div>
+              {rollbackFailure ? (
+                <div className="flex items-start gap-2 rounded-lg border border-border bg-danger-bg p-2.5 text-xs text-danger">
+                  <span className="shrink-0 rounded-full bg-danger px-2 py-0.5 font-bold text-accent-on">RAN</span>
+                  <span>
+                    this run's transaction could not be rolled back, so whether the statement was
+                    written is unknown — check the database before doing anything else. Staging is
+                    blocked until you run again. ({rollbackFailure})
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-xs text-text-faint">
+                  <span className="rounded-full bg-surface-2 px-2 py-0.5 font-bold text-text-faint">RAN</span>
+                  <span>
+                    ran in a transaction that was rolled back — nothing is written unless you add it to
+                    Pending and Apply
+                  </span>
+                </div>
+              )}
               {result.preview.rows_affected === null ? (
                 <DataGrid columns={result.preview.columns} rows={result.preview.rows} />
               ) : (
@@ -281,12 +305,14 @@ export function QueryTab({
                 </SecondaryButton>
                 <button
                   type="button"
-                  disabled={result.preview.rows_affected === null}
+                  disabled={result.preview.rows_affected === null || rollbackFailure !== null}
                   onClick={stage}
                   title={
-                    result.preview.rows_affected === null
-                      ? "Re-running a query that returns rows writes nothing, so there is nothing to stage."
-                      : undefined
+                    rollbackFailure !== null
+                      ? "This run's transaction could not be rolled back, so its effect is unknown. Run it again before staging anything."
+                      : result.preview.rows_affected === null
+                        ? "Only a statement that reported an affected row count can be staged."
+                        : undefined
                   }
                   className="inline-flex h-7 items-center rounded-sm bg-accent px-3 text-xs font-bold text-accent-on disabled:opacity-50"
                 >

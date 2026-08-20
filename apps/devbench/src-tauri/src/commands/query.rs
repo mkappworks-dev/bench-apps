@@ -42,15 +42,43 @@ pub struct QueryPreview {
 /// savepoint — `ROLLBACK TO SAVEPOINT` recovers `tx` to just before it, so
 /// the subsequent real execution still runs cleanly and surfaces Postgres's
 /// actual error for genuinely invalid SQL.
-async fn describe_result_columns(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, sql: &str) -> Option<Vec<String>> {
+///
+/// `Err` is reserved for the one describe failure that must stop the run
+/// before it executes: multi-command input (see MULTIPLE_COMMANDS). Every
+/// other failure is `Ok(None)` — plenty of legitimate single statements
+/// (DDL, `SET`) cannot be introspected and must keep working.
+async fn describe_result_columns(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    sql: &str,
+) -> Result<Option<Vec<String>>, String> {
     if sqlx::query("SAVEPOINT devbench_describe").execute(&mut **tx).await.is_err() {
-        return None;
+        return Ok(None);
     }
-    let described = sqlx::Executor::describe(&mut **tx, sql).await.ok();
+    let described = sqlx::Executor::describe(&mut **tx, sql).await;
     let recovery_sql =
-        if described.is_some() { "RELEASE SAVEPOINT devbench_describe" } else { "ROLLBACK TO SAVEPOINT devbench_describe" };
+        if described.is_ok() { "RELEASE SAVEPOINT devbench_describe" } else { "ROLLBACK TO SAVEPOINT devbench_describe" };
     let _ = sqlx::query(recovery_sql).execute(&mut **tx).await;
-    described.filter(|d| !d.columns().is_empty()).map(|d| d.columns().iter().map(|c| c.name().to_string()).collect())
+    match described {
+        Ok(d) => {
+            let columns: Vec<String> = d.columns().iter().map(|c| c.name().to_string()).collect();
+            Ok((!columns.is_empty()).then_some(columns))
+        }
+        Err(e) if is_multiple_commands(&e) => Err(MULTIPLE_COMMANDS_MESSAGE.to_string()),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Postgres's complaint when the prepared protocol is handed more than one
+/// command. Matched on the message rather than the SQLSTATE, which is the
+/// generic 42601 `syntax_error` shared with every ordinary typo.
+const MULTIPLE_COMMANDS: &str = "cannot insert multiple commands into a prepared statement";
+
+const MULTIPLE_COMMANDS_MESSAGE: &str =
+    "one statement per run: this text is several SQL commands separated by `;`. \
+     Run them one at a time.";
+
+fn is_multiple_commands(err: &sqlx::Error) -> bool {
+    matches!(err, sqlx::Error::Database(db) if db.message().contains(MULTIPLE_COMMANDS))
 }
 
 /// The one place this codebase distinguishes "0 rows returned" from "N rows
@@ -71,14 +99,19 @@ async fn describe_result_columns(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 /// pins that this changes nothing about how cells decode, since a divergence
 /// there would silently turn working columns into `<unsupported type>`.
 /// One consequence, not a feature: the simple protocol accepts several
-/// statements separated by `;`, where the prepared one rejected them. Such
-/// input runs, but `rows_affected` then reports only the last statement's tag,
-/// so the effect shown understates what ran.
+/// statements separated by `;`, where the prepared one rejected them — and
+/// `COMMIT` is one of the statements it accepts. A multi-command run could
+/// therefore commit the very transaction this preview opened, leaving the
+/// write permanent while `rows_affected` reported only the trailing `COMMIT`
+/// tag (0) and the caller's rollback failed with "there is no transaction in
+/// progress". That is why `describe_result_columns` refuses multi-command
+/// input outright, before anything executes: the refusal is what keeps
+/// `raw_sql` safe here, not anything about `raw_sql` itself.
 async fn execute_with_honest_result(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     sql: &str,
 ) -> Result<(Vec<String>, Vec<Vec<Option<String>>>, Option<u64>), String> {
-    let described_columns = describe_result_columns(tx, sql).await;
+    let described_columns = describe_result_columns(tx, sql).await?;
 
     let mut rows: Vec<sqlx::postgres::PgRow> = Vec::new();
     let mut rows_affected: u64 = 0;
@@ -436,6 +469,102 @@ mod tests {
         assert_eq!(still_pending, "pending");
 
         sqlx::query("DROP TABLE preview_rollback_test").execute(&raw).await.unwrap();
+    }
+
+    // The Critical this refusal exists for: `raw_sql` uses the simple
+    // protocol, which accepts several statements separated by `;` — `COMMIT`
+    // among them. Unrefused, `BEGIN; UPDATE ...; COMMIT;` commits the preview
+    // transaction itself, so the write is permanent while the pane reports
+    // "rolled back" and "0 rows affected" (the trailing COMMIT's tag).
+    // The second connection is the whole point: it proves nothing was
+    // written, which reading the code cannot.
+    #[tokio::test]
+    async fn a_multi_command_run_is_refused_and_writes_nothing() {
+        let raw = raw_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS multi_command_refusal_test").execute(&raw).await.unwrap();
+        sqlx::query("CREATE TABLE multi_command_refusal_test (id serial PRIMARY KEY, status text)")
+            .execute(&raw).await.unwrap();
+        sqlx::query("INSERT INTO multi_command_refusal_test (status) VALUES ('pending')")
+            .execute(&raw).await.unwrap();
+
+        let (_dir, sqlite) = db().await;
+        let secrets = InMemorySecretStore::default();
+        let created = create_connection_impl(&sqlite.pool, &secrets, local_dev_input()).await.unwrap();
+        let registry = ConnectionRegistry::new();
+        let previews = PendingPreviewRegistry::new();
+
+        let result = preview_query_impl(
+            &registry, &previews, &sqlite.pool, &secrets, &created.id,
+            "BEGIN; UPDATE multi_command_refusal_test SET status = 'escaped' WHERE id = 1; COMMIT;", 0,
+        ).await;
+
+        let err = result.expect_err("multi-command input must be refused, not run");
+        assert!(
+            err.contains("one statement per run"),
+            "the refusal must tell the user what to do about it, got: {err}"
+        );
+
+        // From a second connection, after the refusal: the row must be
+        // exactly as it was. A committed escape would read 'escaped' here.
+        let status: String = sqlx::query("SELECT status FROM multi_command_refusal_test WHERE id = 1")
+            .fetch_one(&raw).await.unwrap().get("status");
+        assert_eq!(status, "pending", "a refused multi-command run must not have written anything");
+
+        sqlx::query("DROP TABLE multi_command_refusal_test").execute(&raw).await.unwrap();
+    }
+
+    // The refusal must be narrow. A trailing `;` is one command, and a single
+    // write still runs and still reports its honest count.
+    #[tokio::test]
+    async fn a_single_statement_still_runs_after_the_multi_command_refusal() {
+        let raw = raw_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS single_command_still_runs_test").execute(&raw).await.unwrap();
+        sqlx::query("CREATE TABLE single_command_still_runs_test (id serial PRIMARY KEY, status text)")
+            .execute(&raw).await.unwrap();
+        sqlx::query("INSERT INTO single_command_still_runs_test (status) VALUES ('pending')")
+            .execute(&raw).await.unwrap();
+
+        let (_dir, sqlite) = db().await;
+        let secrets = InMemorySecretStore::default();
+        let created = create_connection_impl(&sqlite.pool, &secrets, local_dev_input()).await.unwrap();
+        let registry = ConnectionRegistry::new();
+        let previews = PendingPreviewRegistry::new();
+
+        let preview = preview_query_impl(
+            &registry, &previews, &sqlite.pool, &secrets, &created.id,
+            "UPDATE single_command_still_runs_test SET status = 'shipped' WHERE id = 1;", 0,
+        ).await.unwrap();
+        assert_eq!(preview.rows_affected, Some(1));
+        rollback_preview_impl(&previews, &preview.preview_id).await.unwrap();
+
+        let select = preview_query_impl(
+            &registry, &previews, &sqlite.pool, &secrets, &created.id,
+            "SELECT status FROM single_command_still_runs_test WHERE id = 1", 0,
+        ).await.unwrap();
+        assert_eq!(select.rows, vec![vec![Some("pending".to_string())]]);
+        rollback_preview_impl(&previews, &select.preview_id).await.unwrap();
+
+        sqlx::query("DROP TABLE single_command_still_runs_test").execute(&raw).await.unwrap();
+    }
+
+    // A statement `describe()` cannot introspect must NOT be caught by the
+    // multi-command refusal — that is the whole reason the match is on
+    // Postgres's specific message rather than on any describe failure.
+    #[tokio::test]
+    async fn a_statement_describe_cannot_introspect_still_runs() {
+        let (_dir, sqlite) = db().await;
+        let secrets = InMemorySecretStore::default();
+        let created = create_connection_impl(&sqlite.pool, &secrets, local_dev_input()).await.unwrap();
+        let registry = ConnectionRegistry::new();
+        let previews = PendingPreviewRegistry::new();
+
+        let preview = preview_query_impl(
+            &registry, &previews, &sqlite.pool, &secrets, &created.id,
+            "CREATE TEMP TABLE undescribable_ddl_test (id int)", 0,
+        ).await.expect("DDL is a single command and must keep working");
+        assert_eq!(preview.rows, Vec::<Vec<Option<String>>>::new());
+
+        rollback_preview_impl(&previews, &preview.preview_id).await.unwrap();
     }
 
     #[tokio::test]
