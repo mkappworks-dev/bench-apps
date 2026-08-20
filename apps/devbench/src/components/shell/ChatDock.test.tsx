@@ -84,12 +84,12 @@ describe("ChatDock", () => {
   });
 
   describe("resize", () => {
-    // Same reasoning as QueryConsole's resize tests: this exercises the drag
-    // clamp arithmetic and the `--w-chat` custom property write, not real
-    // layout — there's no getBoundingClientRect here, so unlike DataGrid's
-    // virtualization this is honestly assertable under jsdom. It can't prove
-    // how the resize *looks*, or that AppStrip's topbar tracks the same
-    // property — see the task report for how those were checked in a browser.
+    // This exercises the drag clamp arithmetic and the `--w-chat` custom
+    // property write, not real layout — there's no getBoundingClientRect
+    // here, so unlike DataGrid's virtualization this is honestly assertable
+    // under jsdom. It can't prove how the resize *looks*, or that AppStrip's
+    // topbar tracks the same property — see the task report for how those
+    // were checked in a browser.
     beforeEach(() => {
       vi.spyOn(tauriLib, "invokeGetProviderStatus").mockResolvedValue({
         provider: "anthropic",

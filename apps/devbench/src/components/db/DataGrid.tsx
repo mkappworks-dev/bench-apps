@@ -241,7 +241,7 @@ export function DataGrid({
   const sortIndexOf = (column: string) => sort.findIndex((term) => term.column === column);
 
   // Drag state lives outside React state — only the resulting width needs a
-  // re-render, not every mousemove. Mirrors QueryConsole/ChatDock's own
+  // re-render, not every mousemove. Mirrors QueryTab/ChatDock's own
   // resize-drag wiring (window-level listeners added on mousedown, torn down
   // on mouseup) rather than introducing a new pattern.
   function beginColumnResize(column: string) {

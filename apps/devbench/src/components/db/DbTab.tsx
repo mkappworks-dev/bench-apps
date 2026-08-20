@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ConnectionRail } from "./ConnectionRail";
 import { DataGrid, cellDisplay, CellValue } from "./DataGrid";
-import { QueryConsole } from "./QueryConsole";
 import { GridToolbar } from "./grid/GridToolbar";
 import { canFollow, familyOfColumn, fkTargetOf, type ColumnInfo, type ForeignKeyRef } from "./grid/columnMeta";
 import { FkLinkButton, FkPopover } from "./grid/FkPopover";
@@ -90,18 +89,6 @@ function TrashIcon() {
   );
 }
 
-// Unlike ui/Menu's ChevronIcon (fixed text-faint, for the dropdown chevron
-// that's always dim), this one has no color class — it inherits the toggle
-// button's own color so it darkens/lightens the same way "Query console"'s
-// text does on hover/pressed, matching the mockup.
-function ConsoleChevronIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
-      <path d="M6 9l6 6 6-6" />
-    </svg>
-  );
-}
-
 export function DbTab({
   watchedTables,
   onToggleWatch,
@@ -175,7 +162,6 @@ export function DbTab({
   const limitRef = useRef(limit);
 
   const [editing, setEditing] = useState<CellEdit | null>(null);
-  const [consoleOpen, setConsoleOpen] = useState(false);
   // A staging refusal (currently only "this row's primary key is NULL")
   // renders next to the grid, not in place of it — reusing `error`, which
   // swaps the whole grid for an error box, would make one unusable cell look
@@ -759,18 +745,6 @@ export function DbTab({
                 </span>
               </SecondaryButton>
             ) : null}
-            <button
-              type="button"
-              aria-label="Query console"
-              aria-pressed={consoleOpen}
-              onClick={() => setConsoleOpen((open) => !open)}
-              className={`${pending.length > 0 ? "ml-2" : "ml-auto"} flex h-7.5 shrink-0 items-center gap-1.5 rounded-sm px-2.25 text-xs font-medium text-text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-text aria-pressed:bg-surface-2 aria-pressed:text-text`}
-            >
-              <span className={`flex transition-transform duration-150 ${consoleOpen ? "rotate-180" : ""}`}>
-                <ConsoleChevronIcon />
-              </span>
-              <span>Query console</span>
-            </button>
           </div>
         ) : null}
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
@@ -908,7 +882,6 @@ export function DbTab({
             </>
           )}
         </div>
-        {consoleOpen && activeConnectionId ? <QueryConsole connectionId={activeConnectionId} /> : null}
       </div>
     </div>
   );

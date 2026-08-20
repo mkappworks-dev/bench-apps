@@ -123,11 +123,6 @@ pub async fn preview_query_impl(
     Ok(QueryPreview { preview_id, columns, rows, rows_affected })
 }
 
-pub async fn commit_preview_impl(previews: &PendingPreviewRegistry, preview_id: &str) -> Result<(), String> {
-    let preview = previews.take(preview_id).ok_or_else(|| format!("no open preview with id {preview_id}"))?;
-    preview.transaction.commit().await.map_err(|e| format!("commit failed: {e}"))
-}
-
 pub async fn rollback_preview_impl(previews: &PendingPreviewRegistry, preview_id: &str) -> Result<(), String> {
     let preview = previews.take(preview_id).ok_or_else(|| format!("no open preview with id {preview_id}"))?;
     preview.transaction.rollback().await.map_err(|e| format!("rollback failed: {e}"))
@@ -144,11 +139,6 @@ pub async fn preview_query(
     sql: String,
 ) -> Result<QueryPreview, String> {
     preview_query_impl(&registry, &previews, &db.pool, secrets.as_ref(), &connection_id, &sql, chrono::Utc::now().timestamp_millis()).await
-}
-
-#[tauri::command]
-pub async fn commit_preview(previews: State<'_, Arc<PendingPreviewRegistry>>, preview_id: String) -> Result<(), String> {
-    commit_preview_impl(&previews, &preview_id).await
 }
 
 #[tauri::command]
@@ -384,8 +374,11 @@ mod tests {
         tx.rollback().await.unwrap();
     }
 
+    // The isolation guarantee Run query rests on: a statement's effect is
+    // real inside its transaction and invisible outside it, so the effect can
+    // be reported honestly without anything being written.
     #[tokio::test]
-    async fn a_write_preview_is_not_visible_until_commit() {
+    async fn a_write_preview_is_not_visible_outside_its_transaction() {
         let raw = raw_pool().await;
         sqlx::query("DROP TABLE IF EXISTS preview_write_test").execute(&raw).await.unwrap();
         sqlx::query("CREATE TABLE preview_write_test (id serial PRIMARY KEY, status text)").execute(&raw).await.unwrap();
@@ -409,11 +402,11 @@ mod tests {
             .fetch_one(&raw).await.unwrap().get("status");
         assert_eq!(still_pending, "pending", "an uncommitted preview must not be visible to another connection");
 
-        commit_preview_impl(&previews, &preview.preview_id).await.unwrap();
+        rollback_preview_impl(&previews, &preview.preview_id).await.unwrap();
 
-        let now_shipped: String = sqlx::query("SELECT status FROM preview_write_test WHERE id = 1")
+        let still_pending: String = sqlx::query("SELECT status FROM preview_write_test WHERE id = 1")
             .fetch_one(&raw).await.unwrap().get("status");
-        assert_eq!(now_shipped, "shipped");
+        assert_eq!(still_pending, "pending", "rolling back must leave the row as it was");
 
         sqlx::query("DROP TABLE preview_write_test").execute(&raw).await.unwrap();
     }
@@ -446,9 +439,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn committing_or_rolling_back_an_unknown_preview_id_is_a_clear_error() {
+    async fn rolling_back_an_unknown_preview_id_is_a_clear_error() {
         let previews = PendingPreviewRegistry::new();
-        assert!(commit_preview_impl(&previews, "not-a-real-id").await.is_err());
         assert!(rollback_preview_impl(&previews, "not-a-real-id").await.is_err());
     }
 

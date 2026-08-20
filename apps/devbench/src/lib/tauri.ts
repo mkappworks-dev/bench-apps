@@ -309,10 +309,6 @@ export function invokePreviewQuery(connectionId: string, sql: string): Promise<Q
   return invoke("preview_query", { connectionId, sql });
 }
 
-export function invokeCommitPreview(previewId: string): Promise<void> {
-  return invoke("commit_preview", { previewId });
-}
-
 export function invokeRollbackPreview(previewId: string): Promise<void> {
   return invoke("rollback_preview", { previewId });
 }

@@ -49,7 +49,7 @@ export function DockShell({
     document.documentElement.style.setProperty("--w-chat", `${width}px`);
   }, [width]);
 
-  // No persistence beyond this mount, matching QueryConsole's drag-resize
+  // No persistence beyond this mount, matching the query tab's drag-resize
   // height: reopening the dock (it fully unmounts on close) starts back at
   // DEFAULT_WIDTH_PX. Removing the override here (rather than leaving the last
   // dragged value on the root element) is what makes that true.
