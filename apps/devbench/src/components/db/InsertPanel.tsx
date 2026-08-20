@@ -5,14 +5,12 @@ import { familyOfUdt, isNumericUdt, type ColumnInfo } from "./grid/columnMeta";
 import { useAppStore, type InsertTarget } from "../../store/useAppStore";
 import { tableKey } from "../../lib/tableIdentity";
 
-/** Spec §9: the database assigns identity, generated and serial columns, so
- *  they are shown (the row's shape should be honest) but never typed into. */
+// The database assigns identity, generated and serial columns, so they are shown (the row's shape should be honest) but never typed into.
 function isAssigned(column: ColumnInfo): boolean {
   return column.is_identity;
 }
 
-/** Required means "the database will reject the row without it": NOT NULL, no
- *  default, and not something the database fills in itself. */
+// Required means "the database will reject the row without it": NOT NULL, no default, and not assigned by the database itself.
 function isRequired(column: ColumnInfo): boolean {
   return !isAssigned(column) && !column.nullable && column.default_expr === null;
 }
@@ -24,16 +22,8 @@ export function InsertPanel({ target, onClose }: { target: InsertTarget; onClose
 
   const editable = target.columns.filter((c) => !isAssigned(c));
   const filled = editable.filter((c) => (draft[c.name] ?? "").trim() !== "");
-  // Two ways to end up staging an empty insert, and both fail the whole Apply
-  // transaction with `has no values`, taking every other staged change down
-  // with it:
-  //   - no fields at all, the window where the grid's rows have landed but
-  //     describe_columns has not (`some` over an empty list is false);
-  //   - every column optional and none of them typed into, e.g.
-  //     `notes(id serial pk, body text, created_at timestamptz default now())`,
-  //     where nothing is required so the required-field check passes trivially.
-  // Supporting `INSERT ... DEFAULT VALUES` would make the second case legal,
-  // but that is a new backend error contract and is deliberately deferred.
+  // Two ways to stage an empty insert and fail the whole Apply transaction: no editable columns yet
+  // (describe_columns still loading), or every column optional and none of them typed into.
   const missing =
     editable.length === 0 ||
     filled.length === 0 ||
@@ -41,22 +31,15 @@ export function InsertPanel({ target, onClose }: { target: InsertTarget; onClose
 
   function stage() {
     if (missing) return;
-    // A blank field is omitted rather than sent as NULL: spec §9 makes blank
-    // mean "let the database decide", and an omitted column is exactly that —
-    // it takes its default, or NULL when it has none. Sending NULL explicitly
-    // would instead override a default the user chose not to touch.
+    // A blank field is omitted, not sent as NULL — an omitted column takes its default (or NULL with none),
+    // while an explicit NULL would override a default the user chose not to touch.
     const values: Record<string, string | null> = {};
     for (const column of editable) {
       const typed = (draft[column.name] ?? "").trim();
       if (typed !== "") values[column.name] = typed;
     }
-    // The panel's own target, not whatever the picker points at now: the form
-    // was built from THIS connection's column metadata, and switching
-    // connections while it is open must not re-aim the insert.
+    // target's own connectionId, not whatever the picker points at now — the form was built from THIS connection's metadata.
     addPendingInsert(target.connectionId, target.table, values);
-    // Straight to Pending rather than closing: the whole point of Save is that
-    // it did NOT write, and showing the entry it produced is what makes that
-    // legible instead of looking like nothing happened.
     setDockPanel("pending");
   }
 
@@ -67,9 +50,7 @@ export function InsertPanel({ target, onClose }: { target: InsertTarget; onClose
       title={`Insert row · ${tableKey(target.table)}`}
       onClose={onClose}
       footer={
-        // Spec §14: the ROW sets 30px (h-7.5) for both its secondary and its
-        // primary, which is what stops the pair drifting apart. SecondaryButton
-        // deliberately carries no height of its own for exactly this reason.
+        // SecondaryButton deliberately carries no height of its own — the row sets h-7.5 for both buttons.
         <div className="flex gap-2 border-t border-border px-3 py-2.5">
           <SecondaryButton className="h-7.5" onClick={onClose}>
             Cancel
@@ -89,9 +70,6 @@ export function InsertPanel({ target, onClose }: { target: InsertTarget; onClose
         {target.columns.map((column) => {
           const assigned = isAssigned(column);
           const required = isRequired(column);
-          // The label carries the column name plus its annotations, and the
-          // control is named by it — so a screen reader (and a test) reads
-          // "status * text" rather than an anonymous textbox.
           const label = (
             <span className="flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wide text-text-faint">
               {column.name}

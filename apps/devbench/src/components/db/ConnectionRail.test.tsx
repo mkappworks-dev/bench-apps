@@ -57,8 +57,6 @@ describe("ConnectionRail", () => {
     expect(onToggleWatch).toHaveBeenCalledWith({ schema: "public", name: "orders" });
   });
 
-  // Base UI's Menu is the styled picker used everywhere else (Method,
-  // Theme, …) — the raw <select> this used to be is gone project-wide.
   it("shows saved connections in the picker and reports a change, via the styled Menu (not a native select)", async () => {
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([
       { id: "c1", name: "Local Dev", engine: "postgres", host: "localhost", port: 5432, database: "devbench_test", username: "postgres", sslmode: "disable", has_password: true },
@@ -85,15 +83,11 @@ describe("ConnectionRail", () => {
     expect(picker).toHaveTextContent("Local Dev");
 
     fireEvent.click(picker);
-    // The host line is part of each option's accessible name on purpose —
-    // "Staging" alone doesn't say which server you're about to browse.
     fireEvent.click(await screen.findByRole("menuitemradio", { name: /Staging.*staging-db\.internal:5432\/app/ }));
 
     expect(onConnectionChange).toHaveBeenCalledWith("c2");
   });
 
-  // Landing on Settings > General would make the user hunt for the pane they
-  // just asked for by name, so the pane is part of what this action navigates to.
   it("'Manage connections…' opens Settings on the Connections pane, not just Settings", async () => {
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([
       { id: "c1", name: "Local Dev", engine: "postgres", host: "localhost", port: 5432, database: "devbench_test", username: "postgres", sslmode: "disable", has_password: true },
@@ -164,9 +158,6 @@ describe("ConnectionRail", () => {
     expect(screen.queryByText(/select a connection/i)).not.toBeInTheDocument();
   });
 
-  // The bug this guards: folding a failed connections fetch into the
-  // zero-connections branch tells a user with connections configured to go
-  // add one, when the real problem is a transient load failure.
   it("shows a distinct error when the connections list itself fails to load, not the zero-connections copy", async () => {
     vi.spyOn(tauriLib, "invokeListConnections").mockRejectedValue(new Error("keychain locked"));
     const listTables = vi.spyOn(tauriLib, "invokeDbConnectAndListTables");
@@ -237,10 +228,6 @@ describe("ConnectionRail", () => {
     expect(onSelectTable).toHaveBeenCalledWith({ schema: "public", name: "orders" });
   });
 
-  // Regression: every other test in this file renders with `selected={null}`,
-  // so nothing exercised the highlight/aria-current branch at all — including
-  // whether it compares full identity rather than just `name`, which is the
-  // entire reason `selected` carries a schema now.
   it("marks only the table matching the full selected identity as current", async () => {
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([
@@ -269,7 +256,6 @@ describe("ConnectionRail", () => {
     expect(other.closest("div")).not.toHaveClass("bg-surface-2");
   });
 
-  // Nesting a <button> inside a <button> is invalid HTML and breaks focus.
   it("keeps the watch toggle a sibling of the select button, never nested", async () => {
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([
@@ -293,8 +279,7 @@ describe("ConnectionRail", () => {
     expect(watch.closest("button")).toBe(watch);
   });
 
-  // Parameters<typeof …>[0] rather than React.ComponentProps: this file does
-  // not import React, and the new JSX transform does not put it in scope.
+  // Parameters<typeof …>[0], not React.ComponentProps — this file doesn't import React, and the JSX transform doesn't put it in scope.
   function renderRail(overrides: Partial<Parameters<typeof ConnectionRail>[0]> = {}) {
     return render(
       <ConnectionRail
@@ -332,8 +317,6 @@ describe("ConnectionRail", () => {
     expect(screen.queryByText("orders")).not.toBeInTheDocument();
   });
 
-  // §3a: tables are not created from here, so the footer belongs to one
-  // segment only.
   it("shows the New query footer on Queries only", async () => {
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([]);
@@ -389,8 +372,6 @@ describe("ConnectionRail", () => {
     expect(useAppStore.getState().savedQueries.map((q) => q.id)).toContain("new1");
   });
 
-  // "+ New query" with no delete is a list that can only grow, and the
-  // default name guarantees it fills with "untitled query".
   it("deletes a query from the store and the database", async () => {
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([]);
@@ -404,15 +385,9 @@ describe("ConnectionRail", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete query doomed" }));
 
     await waitFor(() => expect(del).toHaveBeenCalledWith("q1"));
-    // The store follows the database now, so the removal lands after the
-    // invoke resolves rather than optimistically before it.
     await waitFor(() => expect(useAppStore.getState().savedQueries.find((q) => q.id === "q1")).toBeUndefined());
   });
 
-  // Fix 4. The trash button sits in the query tab's OWN rail, one click from
-  // the document it would otherwise leave behind: name field and editor both
-  // fall back to "" and cannot take a keystroke, and the tab row survives a
-  // restart in SQLite.
   it("asks its host to close any tab showing the query it deleted", async () => {
     const onCloseQueryTabs = vi.fn();
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
@@ -429,10 +404,6 @@ describe("ConnectionRail", () => {
     await waitFor(() => expect(onCloseQueryTabs).toHaveBeenCalledWith("q1"));
   });
 
-  // Fix 8. Removing optimistically and swallowing the failure left the row
-  // alive in SQLite and back on the next list, with the rail meanwhile
-  // claiming it was gone — and would have closed the tab over a deletion
-  // that never happened.
   it("keeps the query, its tab and an error message when the delete fails", async () => {
     const onCloseQueryTabs = vi.fn();
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
@@ -452,8 +423,6 @@ describe("ConnectionRail", () => {
     expect(onCloseQueryTabs).not.toHaveBeenCalled();
   });
 
-  // Fix 8. `void createQuery()` made a failure an unhandled rejection with
-  // nothing on screen — the button simply did nothing.
   it("surfaces a failed create rather than rejecting into nowhere", async () => {
     const onOpenQuery = vi.fn();
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);

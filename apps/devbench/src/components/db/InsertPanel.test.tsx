@@ -29,7 +29,6 @@ describe("InsertPanel", () => {
     useAppStore.setState({ pending: [] });
   });
 
-  // Spec §9: visible so the shape of the row is honest, but not editable.
   it("renders a database-assigned column read-only and says who assigns it", () => {
     renderPanel([column("id", { is_identity: true, nullable: false })]);
     const field = screen.getByLabelText(/^id/) as HTMLInputElement;
@@ -51,10 +50,6 @@ describe("InsertPanel", () => {
     expect((screen.getByRole("button", { name: /stage insert/i }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  // Nothing here is required — serial identity, a nullable text column, a
-  // defaulted timestamp — so the required-field check passes on an untouched
-  // form. Staging it builds `values: {}`, which `apply_changes` rejects with
-  // "has no values", failing every other staged change with it.
   it("keeps Save disabled on an untouched form where every column is optional", () => {
     renderPanel([
       column("id", { is_identity: true, nullable: false }),
@@ -64,22 +59,15 @@ describe("InsertPanel", () => {
     const save = () => screen.getByRole("button", { name: /stage insert/i }) as HTMLButtonElement;
     expect(save().disabled).toBe(true);
 
-    // One field is enough — the guard is "nothing filled", not "something
-    // required is missing".
+    // One field is enough — the guard is "nothing filled", not "something required is missing".
     fireEvent.change(screen.getByLabelText(/^body/), { target: { value: "note" } });
     expect(save().disabled).toBe(false);
 
-    // And clearing it again puts the guard back.
     fireEvent.change(screen.getByLabelText(/^body/), { target: { value: "   " } });
     expect(save().disabled).toBe(true);
   });
 
-  // Spec §9: leaving a field blank visibly means "let the database decide".
-  // Filling the other column is what isolates the claim: Save going live with
-  // created_at still blank is the proof that a default does not make it
-  // required. (An untouched form is separately blocked — see the all-optional
-  // test below — so asserting on one alone would not say anything about
-  // defaults.)
+  // Filling the other column isolates the claim: Save going live with created_at still blank proves a default doesn't make it required.
   it("shows a default expression as the field's placeholder and does not require it", () => {
     renderPanel([
       column("status", { nullable: false }),
@@ -116,9 +104,6 @@ describe("InsertPanel", () => {
     ]);
   });
 
-  // The form was built from THIS connection's column metadata. Tagging the
-  // entry with whatever the picker points at when Save is clicked is how an
-  // insert ends up in the wrong database.
   it("stages the insert against the connection the panel was opened for", () => {
     useAppStore.getState().setActiveConnectionId("c-elsewhere");
     render(

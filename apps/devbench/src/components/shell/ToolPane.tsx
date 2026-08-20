@@ -55,12 +55,6 @@ export function ToolPane({
         <DbTab
           watchedTables={watchedTables}
           onToggleWatch={toggleWatchedTable}
-          // `tab.state` is an untyped bag (Record<string, unknown>) — normalizeTable
-          // guards the shape here rather than casting it, since a cast would let
-          // anything else the bag might hold through unchecked. DbTab normalizes
-          // again internally, so this is defense in depth, not redundant: it's
-          // what keeps a malformed value from ever reaching DbTab as if it were
-          // a validated QualifiedTable.
           table={normalizeTable(tab.state.table)}
           onPatchState={onPatchState}
           onOpenQuery={onOpenQuery}

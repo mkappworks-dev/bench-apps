@@ -13,12 +13,11 @@ import {
   type QueryPreview,
 } from "../../lib/tauri";
 
-/** Exported for the browser gate, which measures the grip against these
- * rather than trusting the CSS. */
+// Exported for the browser gate, which measures the grip against these rather than trusting the CSS.
 export const MIN_EDITOR_PX = 90;
 export const MAX_EDITOR_PX = 560;
 const DEFAULT_EDITOR_PX = 220;
-/** Matches useTabController's own write debounce. */
+// Matches useTabController's own write debounce.
 const WRITE_DEBOUNCE_MS = 300;
 
 export function QueryTab({
@@ -35,8 +34,7 @@ export function QueryTab({
   onToggleWatch: (table: QualifiedTable) => void;
 }) {
   const queryId = typeof tab.state.queryId === "string" ? tab.state.queryId : null;
-  // PINNED is the document's identity — captured at open, never patched, and what
-  // this query RUNS against. ACTIVE is only where the rail is browsing.
+  // PINNED is the document's identity — captured at open, never patched, and what this query RUNS against. ACTIVE is only where the rail is browsing.
   const pinnedConnectionId = typeof tab.state.connectionId === "string" ? tab.state.connectionId : null;
   const activeConnectionId = useAppStore((s) => s.activeConnectionId);
   const savedQueries = useAppStore((s) => s.savedQueries);
@@ -52,12 +50,10 @@ export function QueryTab({
   const [editorHeight, setEditorHeight] = useState(DEFAULT_EDITOR_PX);
   const dragState = useRef<{ startY: number; startHeight: number } | null>(null);
   const writeTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  // Captured at run time, not re-read from `query.sql`: staging off the live field
-  // would record an effect for a statement never previewed.
+  // Captured at run time, not re-read from `query.sql` — staging off the live field would record an effect for a statement never previewed.
   const [result, setResult] = useState<{ preview: QueryPreview; statement: string } | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
-  // Set only when the automatic rollback FAILED: the transaction is gone and the
-  // statement may have committed, so this replaces the "rolled back" reassurance.
+  // Set only when the automatic rollback FAILED: the statement may have committed, so this replaces the "rolled back" reassurance.
   const [rollbackFailure, setRollbackFailure] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
 
@@ -73,7 +69,7 @@ export function QueryTab({
     );
   }
 
-  // Drops only the trailing persist; the keystrokes are already in the store.
+  // Drops only the trailing persist — the keystrokes are already in the store.
   useEffect(() => {
     const timers = writeTimers.current;
     return () => {
@@ -84,8 +80,7 @@ export function QueryTab({
 
   function onNameChange(name: string) {
     if (!queryId) return;
-    // Store first, synchronously: the label reads out of the store, and nothing may
-    // write back into the field the caret is sitting in.
+    // Store first, synchronously — nothing may write back into the field the caret is sitting in.
     patchSavedQuery(queryId, { name });
     debouncedWrite("name", () => invokeRenameSavedQuery(queryId, name));
   }
@@ -93,22 +88,19 @@ export function QueryTab({
   function onSqlChange(sql: string) {
     if (!queryId) return;
     patchSavedQuery(queryId, { sql });
-    // A result describes the statement that produced it, so editing the SQL makes it
-    // stale — otherwise Add to pending could record an effect this statement never had.
+    // A result describes the statement that produced it — editing the SQL makes it stale, so Add to pending must not see it.
     setResult(null);
     setRunError(null);
     setRollbackFailure(null);
     debouncedWrite("sql", () => invokeSetSavedQuerySql(queryId, sql));
   }
 
-  /** Bare phrase: PendingPanel owns the "when run" suffix at render time. */
+  // Bare phrase: PendingPanel owns the "when run" suffix at render time.
   function effectLabel(n: number): string {
     return `${n} row${n === 1 ? "" : "s"} affected`;
   }
 
   async function run() {
-    // pinnedConnectionId, never activeConnectionId: a query runs against the
-    // connection it was written for, whatever the rail is browsing.
     if (running || !pinnedConnectionId || !query) return;
     const statement = query.sql;
     setRunError(null);
@@ -117,9 +109,7 @@ export function QueryTab({
     setRunning(true);
     try {
       const preview = await invokePreviewQuery(pinnedConnectionId, statement);
-      // §15: rolled back in the continuation that received it, so no lock is held while
-      // the user decides. A FAILED rollback means the statement may have committed —
-      // never tell the user nothing was written when we cannot prove it.
+      // Rolled back asynchronously so no lock is held while the user decides.
       void invokeRollbackPreview(preview.preview_id).catch((err) =>
         setRollbackFailure(err instanceof Error ? err.message : String(err)),
       );
@@ -172,13 +162,9 @@ export function QueryTab({
         onOpenQuery={onOpenQuery}
         onCloseQueryTabs={onCloseQueryTabs}
       />
-      {/* The tint lives on the pane's chrome. The editor and results below
-          re-assert --bg, because what you write and what comes back are
-          ordinary content (§3b). */}
+      {/* The tint lives on the pane's chrome; the editor and results re-assert --bg since what you write and get back is ordinary content. */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-query-tint">
         <div className="flex h-11 shrink-0 items-center gap-2.5 border-b border-border pl-3 pr-2.5">
-          {/* Run leads, the name follows: on a tab whose purpose is executing
-              something, the action is the subject. */}
           <button
             type="button"
             disabled={running || !pinnedConnectionId}
@@ -203,8 +189,7 @@ export function QueryTab({
               className="h-7 gap-1.5"
               aria-pressed={dockPanel === "pending"}
               onClick={() => {
-                // This tab stages against its PINNED connection; PendingPanel and Apply are
-                // scoped to the ACTIVE one.
+                // PendingPanel and Apply are scoped to the ACTIVE connection, so sync it to this tab's PINNED one first.
                 if (pinnedConnectionId) setActiveConnectionId(pinnedConnectionId);
                 setDockPanel("pending");
                 setChatOpen(true);
@@ -218,8 +203,6 @@ export function QueryTab({
           ) : null}
         </div>
 
-        {/* Full bleed: the editor is the content of this pane, not a field
-            sitting inside it, so it runs edge to edge with no gutter. */}
         <div className="relative shrink-0 border-b border-border bg-bg" style={{ height: editorHeight }}>
           <textarea
             aria-label="SQL"
@@ -234,8 +217,6 @@ export function QueryTab({
             }}
             className="block h-full w-full resize-none border-0 bg-transparent px-3.5 pb-5 pt-3 font-mono text-xs leading-[1.6] text-text outline-none"
           />
-          {/* Full-width hit zone, small centred grip: the affordance reads as
-              "bottom middle", not a bar spanning the pane. */}
           <div
             role="separator"
             aria-orientation="horizontal"
@@ -277,7 +258,6 @@ export function QueryTab({
                   — no rows returned.
                 </div>
               )}
-              {/* 28px, set by the row rather than by each button (§14). */}
               <div className="flex justify-end gap-2">
                 <SecondaryButton className="h-7" onClick={() => setResult(null)}>
                   Discard

@@ -219,9 +219,6 @@ describe("useAppStore", () => {
     });
     useAppStore.getState().togglePendingDelete("c1", { schema: "public", name: "users" }, "id", "9");
     expect(useAppStore.getState().pending).toHaveLength(2);
-    // Both entries above are staged against "c1" — passing it here (rather
-    // than resetting via setState like the surrounding tests do) is what
-    // actually exercises discardAllPending's own filtering.
     useAppStore.getState().discardAllPending("c1");
     expect(useAppStore.getState().pending).toEqual([]);
   });
@@ -244,8 +241,6 @@ describe("useAppStore", () => {
     useAppStore.setState({ pending: [] });
   });
 
-  // Finding 3: Apply's outcome has exactly one place to be reported, and every
-  // route that unmounts the dock has to be shut while it is coming.
   it("refuses to close the dock or leave the pending panel while an Apply is in flight", () => {
     useAppStore.getState().setChatOpen(true);
     useAppStore.getState().setDockPanel("pending");
@@ -257,7 +252,6 @@ describe("useAppStore", () => {
     expect(useAppStore.getState().chatOpen).toBe(true);
     expect(useAppStore.getState().dockPanel).toBe("pending");
 
-    // Settings replaces the whole workspace, so it unmounts the dock too.
     useAppStore.getState().setRoute("settings");
     expect(useAppStore.getState().route).toBe("workspace");
 
@@ -314,9 +308,6 @@ describe("useAppStore", () => {
     ]);
   });
 
-  // Two runs of the same statement are two things to apply, unlike a cell
-  // staged twice — there is no stored value to compare against, so there is
-  // nothing to upsert against either.
   it("appends a second sql change rather than replacing the first", () => {
     useAppStore.setState({ pending: [] });
     useAppStore.getState().addPendingSql("c1", "SELECT 1;", "1 row affected");

@@ -4,11 +4,7 @@ import { describe, expect, it, vi, beforeEach, beforeAll } from "vitest";
 import { DataGrid, type DataGridProps } from "./DataGrid";
 import { EMPTY_LAYOUT, type GridLayout } from "./grid/gridLayout";
 
-// jsdom gives every element a height of 0, which makes TanStack Virtual
-// compute a zero-row viewport and render nothing (see LogStream.test.tsx,
-// which hit the same issue). Give the layout primitives real numbers so the
-// virtualizer has a window to fill; a test that stops rendering rows fails
-// as a result rather than silently asserting on an empty grid.
+// jsdom gives every element a height of 0, which makes TanStack Virtual compute a zero-row viewport and render nothing.
 beforeAll(() => {
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: 600 });
   Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, value: 800 });
@@ -29,9 +25,7 @@ function columnOrder(): string[] {
   );
 }
 
-// DataGrid takes `layout` as a controlled prop (widths/order/pins/hidden) —
-// this harness plays the role DbTab does in production, feeding
-// onLayoutChange's result back in as the next render's layout.
+// This harness plays the role DbTab does in production, feeding onLayoutChange's result back in as the next render's `layout` prop.
 function ControlledGrid({
   initialLayout = EMPTY_LAYOUT,
   ...props
@@ -57,9 +51,6 @@ describe("DataGrid", () => {
     expect(screen.getByText("<unsupported type>")).toBeInTheDocument();
   });
 
-  // A checkbox rather than a word: booleans are the one column type whose whole
-  // value space fits in a control. Slice 1 renders it read-only; Slice 3 makes
-  // it interactive.
   it("renders a boolean as a checkbox reflecting its value", () => {
     render(<DataGrid columns={["paid"]} rows={[["true"], ["false"]]} />);
     const boxes = screen.getAllByRole("checkbox");
@@ -69,7 +60,6 @@ describe("DataGrid", () => {
     expect(boxes[0]).toBeDisabled();
   });
 
-  // Three states, and the brief calls NULL-distinctness a hard constraint.
   it("keeps NULL distinct from false in a boolean column", () => {
     render(<DataGrid columns={["paid"]} rows={[["false"], [null]]} />);
     expect(screen.getAllByRole("checkbox")).toHaveLength(1);
@@ -83,10 +73,7 @@ describe("DataGrid", () => {
     expect(onSort).toHaveBeenCalledWith("status", false);
   });
 
-  // The mockup uses one chevron that rotates 180° for desc rather than two
-  // distinct glyphs — the indicator is a decorative SVG (aria-hidden; sort
-  // state itself is on aria-sort, covered below), so it's queried by
-  // data-testid rather than by text/role.
+  // A decorative SVG (aria-hidden; sort state itself is on aria-sort, covered below), so it's queried by data-testid, not text/role.
   it("shows the sort direction indicator rotated for descending, upright for ascending", () => {
     const { rerender } = render(<DataGrid columns={["id"]} rows={[]} sort={[{ column: "id", descending: false }]} />);
     expect(screen.getByTestId("sort-chevron-id")).not.toHaveClass("rotate-180");
@@ -147,15 +134,11 @@ describe("DataGrid", () => {
     expect(screen.queryByText("Copy as TSV")).not.toBeInTheDocument();
   });
 
-  // Virtualization unmounts the row underneath an open menu, so a menu that
-  // outlives a scroll would be left anchored to nothing.
   it("closes the menu when the grid is scrolled", async () => {
     render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
     fireEvent.click(screen.getByRole("button", { name: "Copy row" }));
     expect(screen.getByText("Copy as TSV")).toBeInTheDocument();
     const scrollContainer = document.querySelector(".overflow-auto") as HTMLElement;
-    // The listener attaches a frame after opening (see the effect's own
-    // comment) — a scroll from a later frame is what this pins.
     await act(async () => {
       await new Promise(requestAnimationFrame);
     });
@@ -163,10 +146,7 @@ describe("DataGrid", () => {
     await waitFor(() => expect(screen.queryByText("Copy as TSV")).not.toBeInTheDocument());
   });
 
-  // A trigger that isn't fully in view gets focused by the click, and the
-  // browser scrolls it into view AFTER the click handler runs — a same-frame
-  // scroll must not dismiss the menu that click just opened. (jsdom doesn't
-  // focus-scroll, so this drives the scroll directly.)
+  // jsdom doesn't focus-scroll on click like a real browser does, so this drives the same-frame scroll directly to prove it's ignored.
   it("survives the scroll the opening click itself causes", async () => {
     render(<DataGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
     fireEvent.click(screen.getByRole("button", { name: "Copy row" }));
@@ -180,9 +160,6 @@ describe("DataGrid", () => {
     await waitFor(() => expect(screen.queryByText("Copy as TSV")).not.toBeInTheDocument());
   });
 
-  // Same hazard raisedRowIndex exists to fix: the row's own transform makes
-  // it a stacking context, so escaping later siblings means raising the row
-  // that owns the open menu, not just the menu's own z-index.
   it("raises the row whose copy menu is open to zIndex 20", () => {
     render(<DataGrid columns={["id"]} rows={[["a"], ["b"]]} />);
     const triggers = screen.getAllByRole("button", { name: "Copy row" });
@@ -204,10 +181,7 @@ describe("DataGrid", () => {
     expect(screen.getByTestId("custom-cell")).toHaveTextContent("pending-custom");
   });
 
-  // Proves the virtualizer is actually windowing rather than the mocked
-  // dimensions above happening to make it render everything: with 2000 rows
-  // and a 600px-tall viewport at 33px/row, a real window renders well under
-  // the full count but still more than zero.
+  // With 2000 rows and a 600px viewport at 33px/row, a real window renders well under the full count but still more than zero.
   it("virtualizes rather than rendering every row", () => {
     const many = Array.from({ length: 2000 }, (_, i) => [String(i), "row"]);
     render(<DataGrid columns={["id", "label"]} rows={many} />);
@@ -229,15 +203,12 @@ describe("DataGrid", () => {
     expect(idHeader).not.toHaveAttribute("aria-sort");
   });
 
-  // Mirrors the mockup's `.th-resize` drag handle: dragging pins that one
-  // column to a fixed px width while every other column stays flexible.
   it("dragging a column's resize handle fixes that column's width, leaving others flexible", () => {
     render(<ControlledGrid columns={["id", "status"]} rows={[["1", "pending"]]} />);
     const headerRow = screen.getByRole("button", { name: "Sort by id" }).closest('[role="row"]') as HTMLElement;
     expect(headerRow.style.gridTemplateColumns).toBe("minmax(140px, 1fr) minmax(140px, 1fr) 60px");
 
-    // getBoundingClientRect is mocked (see beforeAll) to always report a
-    // width of 800, so dragging 40px right should pin the column at 840px.
+    // getBoundingClientRect is mocked to always report 800, so dragging 40px right pins the column at 840px.
     fireEvent.mouseDown(screen.getByTestId("resize-handle-id"), { clientX: 0 });
     fireEvent.mouseMove(window, { clientX: 40 });
     fireEvent.mouseUp(window);
@@ -267,11 +238,6 @@ describe("DataGrid", () => {
     expect(screen.getByRole("button", { name: "Sort by id" })).toHaveTextContent("2");
   });
 
-  // The client-side "Filter rows on this page" box (and the row-index
-  // renumbering hazard it used to guard against) is gone — filtering is now
-  // server-side only, via GridToolbar's Filter popover (see GridToolbar.test.tsx
-  // and DbTab.test.tsx). `renderCell` always receives the plain data index
-  // now, covered by the reorder test below.
   it("reorders a column with Alt+Arrow, giving the header drag a keyboard equivalent", () => {
     render(<ControlledGrid columns={["id", "status", "amount"]} rows={[]} />);
     expect(columnOrder()).toEqual(["id", "status", "amount"]);
@@ -283,9 +249,7 @@ describe("DataGrid", () => {
     expect(columnOrder()).toEqual(["id", "status", "amount"]);
   });
 
-  // Reordering changes where a column is drawn, never which value it holds.
-  // If this regresses, an inline edit writes to whichever column happens to
-  // occupy that screen position — a silent, data-corrupting failure.
+  // If this regresses, an inline edit writes to whichever column happens to occupy that screen position — silent data corruption.
   it("keeps renderCell on the DATA column index after a reorder, not the on-screen position", () => {
     const calls: { columnIndex: number; value: string | null }[] = [];
     render(
@@ -306,11 +270,7 @@ describe("DataGrid", () => {
     expect(amount.at(-1)?.columnIndex).toBe(2);
   });
 
-  // Persisting layout across a table switch (the previous "remembers it under
-  // the layout key" behaviour) moved to DbTab along with the `stored`/
-  // `updateLayout` state — DataGrid now just reflects whatever `layout` prop
-  // it's given. The storage round-trip itself (including the corrupt-JSON
-  // fallback) is still covered directly in gridLayout.test.ts.
+  // DataGrid just reflects whatever `layout` prop it's given — the storage round-trip (including the corrupt-JSON fallback) is covered in gridLayout.test.ts.
   it("freezes a column to the left edge, reporting the change via onLayoutChange", () => {
     render(<ControlledGrid columns={["id", "status"]} rows={[]} />);
     fireEvent.click(screen.getByRole("button", { name: "Freeze id" }));
@@ -328,10 +288,8 @@ describe("DataGrid", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/clipboard permission denied/i);
   });
 
-  // jsdom can't verify that this actually escapes a later sibling's paint —
-  // that's a real-browser stacking-context question (see raisedRowIndex's doc
-  // comment). What this pins is the one thing jsdom CAN check: the prop
-  // reaches the right row's own style and no other row's.
+  // Whether this actually escapes a later sibling's paint is a real-browser stacking-context question jsdom can't answer — this
+  // only pins the one thing jsdom CAN check: the prop reaches the right row's own style and no other row's.
   it("raises only the row named by raisedRowIndex, leaving its siblings at the default stacking order", () => {
     render(<DataGrid columns={["id"]} rows={[["a"], ["b"], ["c"]]} raisedRowIndex={1} />);
 
@@ -355,7 +313,6 @@ describe("DataGrid", () => {
     );
     expect(screen.getByRole("button", { name: "Act on row 0" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Act on row 1" })).toBeTruthy();
-    // The copy trigger is not retired by this slice and must survive.
     expect(screen.getAllByRole("button", { name: "Copy row" })).toHaveLength(2);
   });
 });

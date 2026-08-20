@@ -15,7 +15,6 @@ const UPDATE: PendingChange = {
 const DELETE: PendingChange = {
   kind: "delete", connection_id: "c1", table: USERS, pk_column: "id", pk_value: "9",
 };
-// Same shape, staged while the picker was pointing somewhere else.
 const OTHER_CONNECTION: PendingChange = {
   kind: "update", connection_id: "c2", table: ORDERS, pk_column: "id", pk_value: "42",
   column: "status", old_value: "pending", new_value: "cancelled",
@@ -59,11 +58,6 @@ describe("PendingPanel", () => {
     expect(screen.getByText("delete")).toBeTruthy();
   });
 
-  // Fix 2: this panel appends its own "when run" suffix (EntryBody, below) —
-  // a producer that also appends it renders "... when run when run". Staging
-  // through the real store action, not a hand-built fixture, is what would
-  // have caught this: the bug was in what QueryTab handed to
-  // `previewed_effect`, not in this panel.
   it("renders a staged sql entry's effect exactly once, not doubled", () => {
     useAppStore.getState().addPendingSql("c1", "UPDATE orders SET status = 'x';", "3 rows affected");
     renderPanel();
@@ -107,8 +101,6 @@ describe("PendingPanel", () => {
       ],
     });
 
-    // renderPanel's first positional argument is the connection id
-    // (`PendingPanel.test.tsx:28`), not an options object.
     renderPanel("c1");
     fireEvent.click(screen.getByRole("button", { name: "Discard all" }));
 
@@ -128,8 +120,6 @@ describe("PendingPanel", () => {
     await waitFor(() => expect(useAppStore.getState().pending).toEqual([]));
   });
 
-  // Spec §10: a conflict rolls the transaction back whole. The set must
-  // SURVIVE, or the user loses work to a failure that wrote nothing.
   it("keeps the set and reports what it expected versus what it found on a conflict", async () => {
     seed([UPDATE]);
     vi.spyOn(tauriLib, "invokeApplyChanges").mockResolvedValue({
@@ -177,9 +167,6 @@ describe("PendingPanel", () => {
     expect(useAppStore.getState().applyGeneration).toBe(before);
   });
 
-  // The backend enumerates the array it was SENT, which is only this
-  // connection's subset. Without mapping, a conflict on the first sent entry
-  // reports index 0 — which addresses a different connection's entry.
   it("reports a conflict against the entry's position in the whole set, not the sent subset", async () => {
     // UPDATE is connection c1; it sits at whole-set index 1, sent index 0.
     seed([OTHER_CONNECTION, UPDATE]);
@@ -228,9 +215,6 @@ describe("PendingPanel", () => {
   });
 
   describe("more than one connection in the set", () => {
-    // The set is global, the connection is not. Applying an entry staged
-    // against dev to whatever the picker now points at is a write to the wrong
-    // database — the whole reason entries carry their connection.
     it("sends only the entries staged against this connection, and counts only those", async () => {
       seed([UPDATE, OTHER_CONNECTION, DELETE]);
       const apply = vi
@@ -241,12 +225,9 @@ describe("PendingPanel", () => {
       fireEvent.click(screen.getByRole("button", { name: "Apply 2" }));
 
       await waitFor(() => expect(apply).toHaveBeenCalledWith("c1", [UPDATE, DELETE]));
-      // The other connection's work is left exactly where it was.
       await waitFor(() => expect(useAppStore.getState().pending).toEqual([OTHER_CONNECTION]));
     });
 
-    // Not hidden: staged work the user cannot see is staged work they cannot
-    // discard, and it would still be counted by the Pending badge.
     it("still shows the other connection's entries, marked as not part of this Apply", () => {
       seed([UPDATE, OTHER_CONNECTION]);
       renderPanel();
@@ -264,10 +245,7 @@ describe("PendingPanel", () => {
     });
   });
 
-  // Finding 2: the grid is NOT frozen during Apply, so the set can grow while
-  // the call is out. Clearing it wholesale on success destroys the newcomer —
-  // and the post-Apply refetch then repaints the stored value over it, so the
-  // edit vanishes with no error anywhere.
+  // A wholesale clear would destroy a newcomer staged mid-flight — the post-Apply refetch would then silently repaint the stored value over it.
   it("keeps a change staged during Apply and clears only what it sent", async () => {
     seed([UPDATE]);
     let resolveApply: (outcome: tauriLib.ApplyOutcome) => void = () => {};
@@ -281,8 +259,6 @@ describe("PendingPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
     await screen.findByRole("button", { name: "Applying…" });
 
-    // B is staged mid-flight, exactly as toggling a checkbox in the live grid
-    // would do it.
     const staged: PendingChange = {
       kind: "update", connection_id: "c1", table: ORDERS, pk_column: "id", pk_value: "7",
       column: "paid", old_value: "false", new_value: "true",
@@ -299,8 +275,6 @@ describe("PendingPanel", () => {
     await waitFor(() => expect(useAppStore.getState().pending).toEqual([staged]));
   });
 
-  // Finding 3: the transaction rolls back and the panel is the only place the
-  // conflict can be reported. Dismissing it mid-flight loses that report.
   it("cannot be closed while an Apply is in flight", async () => {
     seed([UPDATE]);
     let resolveApply: (outcome: tauriLib.ApplyOutcome) => void = () => {};
@@ -317,8 +291,6 @@ describe("PendingPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
     await screen.findByRole("button", { name: "Applying…" });
     expect((screen.getByRole("button", { name: "Close pending changes" }) as HTMLButtonElement).disabled).toBe(true);
-    // The dock itself is held open too, so AppStrip's toggle cannot unmount
-    // the panel out from under the answer.
     expect(useAppStore.getState().applyInFlight).toBe(true);
 
     await act(async () => {
@@ -328,18 +300,13 @@ describe("PendingPanel", () => {
     await waitFor(() => expect(useAppStore.getState().applyInFlight).toBe(false));
   });
 
-  // Finding 4: an insert with no values renders as a completely blank card,
-  // so the entry that fails the whole transaction is the one the user cannot
-  // see. The UI no longer stages one, but the card must still say what it is.
   it("says an insert with no values will be rejected rather than rendering blank", () => {
     seed([{ kind: "insert", connection_id: "c1", table: ORDERS, values: {} }]);
     renderPanel();
     expect(screen.getByText(/no values/i)).toBeTruthy();
   });
 
-  // The cleanup lives in a `finally` for these two cases specifically. Without
-  // them, moving it to the success branch — which would leave the dock and
-  // Settings locked forever after any failed Apply — passes the whole suite.
+  // Moving this cleanup to the success branch would leave the dock and Settings locked forever after a failed Apply, and pass the rest of the suite.
   it("releases the in-flight lock when the transaction rolls back", async () => {
     seed([UPDATE]);
     vi.spyOn(tauriLib, "invokeApplyChanges").mockResolvedValue({

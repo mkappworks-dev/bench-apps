@@ -25,22 +25,17 @@ function isValidPane(pane: string): pane is Pane {
   return pane === "left" || pane === "right";
 }
 
-/** Keyed by `ToolKind` rather than an array so a sixth kind fails to compile
- *  here instead of silently losing its tabs on the next restart. */
+// Keyed by `ToolKind`, not an array, so a sixth kind fails to compile here instead of silently losing its tabs on restart.
 const RENDERABLE_KINDS: Record<ToolKind, true> = { api: true, db: true, log: true, email: true, query: true };
 
-// ToolPane's switch has no default case (React throws on a bad kind) and a bad
-// pane value drops the tab from both AppStrip and SplitContent.
+// ToolPane's switch has no default case (React throws on a bad kind), so an unrenderable row must be filtered here first.
 function hydrateTab(row: TabRow): Tab | null {
   if (!Object.hasOwn(RENDERABLE_KINDS, row.kind)) return null;
   if (!isValidPane(row.pane)) return null;
   return { id: row.id, kind: row.kind as ToolKind, pane: row.pane, ordinal: row.ordinal, state: parseState(row.state) };
 }
 
-/**
- * Call exactly once, at the top of the tree: the session-switch effect below
- * issues one invokeListTabs per mount, and a second instance would race it.
- */
+// Call exactly once, at the top of the tree — the session-switch effect below issues one invokeListTabs per mount, and a second instance would race it.
 export function useTabController() {
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const addTabInStore = useAppStore((s) => s.addTab);
@@ -96,8 +91,7 @@ export function useTabController() {
       setTimeout(() => {
         writeTimers.current.delete(id);
         const tab = useAppStore.getState().tabs.find((t) => t.id === id);
-        // Current full state at flush time, not the patch that scheduled this timer:
-        // coalesced edits must write the latest value.
+        // Current full state at flush time, not the patch that scheduled this timer — coalesced edits must write the latest value.
         if (tab) void invokeSetTabState(id, JSON.stringify(tab.state)).catch(() => {});
       }, DEBOUNCE_MS),
     );
@@ -120,8 +114,7 @@ export function useTabController() {
     });
   }
 
-  /** Query tabs need `match`: two saved queries are two tabs, so a kind-only
-   *  search would focus whichever came first. */
+  // Query tabs need `match` — two saved queries are two tabs, so a kind-only search would focus whichever came first.
   function focusOrCreateTab(
     kind: ToolKind,
     statePatch?: Record<string, unknown>,
@@ -132,8 +125,7 @@ export function useTabController() {
       .tabs.find((t) => t.pane === "left" && t.kind === kind && (match ? match(t) : true));
     if (existing) {
       setActiveTabIdInStore("left", existing.id);
-      // Found BY its state, so patching here would rewrite what was just matched on.
-      // Deep links pass no matcher and still patch, which is the point there.
+      // Found BY its state, so patching here would rewrite what was just matched on — deep links pass no matcher and still patch.
       if (statePatch && !match) patchTabState(existing.id, statePatch);
       return existing.id;
     }

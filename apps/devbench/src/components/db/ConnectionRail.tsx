@@ -22,7 +22,6 @@ export function ConnectionRail({
   onToggleWatch,
   onSelectTable,
   onConnectionChange,
-  // Optional so the call sites predating the queries segment keep compiling.
   initialSegment = "tables",
   activeQueryId = null,
   onOpenQuery,
@@ -30,29 +29,21 @@ export function ConnectionRail({
 }: {
   connectionId: string | null;
   selected: QualifiedTable | null;
-  /** Keyed `"schema.name"` — a bare name can't distinguish two schemas. */
+  // Keyed "schema.name" — a bare name can't distinguish two schemas.
   watchedTables: Set<string>;
   onToggleWatch: (table: QualifiedTable) => void;
   onSelectTable: (table: QualifiedTable) => void;
   onConnectionChange: (connectionId: string) => void;
-  /** Initial value only — the user can switch, and the switch is not persisted. */
   initialSegment?: "tables" | "queries";
-  /** The query this rail's host tab is showing, if it is a query tab. */
   activeQueryId?: string | null;
-  /** The rail owns the saved-query record but not the tabs that show it. Required
-   *  rather than defaulted: a silent no-op would let a host ship half-wired. */
   onOpenQuery: (queryId: string) => void;
-  /** Same reason as `onOpenQuery`. A tab whose query is gone cannot take a
-   *  keystroke (`patchSavedQuery` has no row to patch) yet survives a restart. */
   onCloseQueryTabs: (queryId: string) => void;
 }) {
   const [connections, setConnections] = useState<ConnectionSummary[]>([]);
-  // Distinct from `connections.length === 0`: a failed fetch is not "none configured".
   const [connectionsError, setConnectionsError] = useState<string | null>(null);
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [segment, setSegment] = useState<"tables" | "queries">(initialSegment);
-  // Distinct from `error`, which belongs to the tables fetch.
   const [queryActionError, setQueryActionError] = useState<string | null>(null);
   const setRoute = useAppStore((s) => s.setRoute);
   const setSettingsPane = useAppStore((s) => s.setSettingsPane);
@@ -81,8 +72,6 @@ export function ConnectionRail({
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, [connectionId]);
 
-  // On connection change, not segment change: a query tab's label reads out of this
-  // list whether or not anyone has opened the Queries segment.
   useEffect(() => {
     if (!connectionId) return;
     invokeListSavedQueries(connectionId).then(mergeSavedQueriesIntoStore).catch(() => {});
@@ -100,8 +89,6 @@ export function ConnectionRail({
     }
   }
 
-  // Database first: removing optimistically left the row alive in SQLite and back
-  // on the next list, with the rail claiming it was gone.
   async function deleteQuery(id: string) {
     try {
       await invokeDeleteSavedQuery(id);
@@ -115,7 +102,6 @@ export function ConnectionRail({
   }
 
   const current = connections.find((c) => c.id === connectionId);
-  // The host line is what stops someone browsing prod thinking it's local.
   const connectionOptions = connections.map((c) => ({
     value: c.id,
     label: c.name,
@@ -125,9 +111,6 @@ export function ConnectionRail({
 
   return (
     <aside className="flex w-52.5 min-w-52.5 min-h-0 flex-col overflow-y-auto border-r border-border">
-      {/* h-11, matching the pane strip and the sessions header: this head used
-          to be padding-sized (46px), which put its rule 2px below every other
-          top divider in the shell — visible as a kink across the full width. */}
       <div className="flex h-11 items-center border-b border-border px-2">
         {connectionsError ? (
           <div
@@ -213,8 +196,7 @@ export function ConnectionRail({
                 >
                   {t.name}
                 </button>
-                {/* Siblings, not nested: a <button> inside a <button> is invalid
-                    HTML and yields unpredictable focus and activation. */}
+                {/* Siblings, not nested — a <button> inside a <button> is invalid HTML. */}
                 <button
                   type="button"
                   aria-label={`watch ${key}`}
@@ -281,8 +263,6 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// Monochrome, not the mockup's success-green: DESIGN.md reserves semantic color
-// for actual state, never for decoration or generic interactivity.
 function PlugIcon() {
   return (
     <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

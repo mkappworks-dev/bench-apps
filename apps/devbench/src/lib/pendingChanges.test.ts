@@ -52,8 +52,6 @@ describe("pendingChanges", () => {
     expect(twice[0]).toMatchObject({ new_value: "cancelled" });
   });
 
-  // Spec §10: without this the set is append-only, "Pending 2" would be a lie,
-  // and Apply would write a value that is already there.
   it("leaves no pending change when a boolean is toggled back to its stored value", () => {
     const on = stageUpdate([], edit("1", "paid", "false", "true"));
     const off = stageUpdate(on, edit("1", "paid", "false", "false"));
@@ -73,9 +71,6 @@ describe("pendingChanges", () => {
     expect(pending).toHaveLength(2);
   });
 
-  // A text column holding the four characters N-U-L-L is a value; a real NULL
-  // is the absence of one. Comparing display strings would silently drop the
-  // change that turns one into the other.
   it('never treats a text value of "NULL" as equal to a real NULL', () => {
     expect(sameStoredValue("NULL", null)).toBe(false);
     expect(sameStoredValue(null, null)).toBe(true);
@@ -93,9 +88,6 @@ describe("pendingChanges", () => {
     expect(stagedUpdateFor(pending, DEV, USERS, "1", "status")).toEqual({ staged: false });
   });
 
-  // The set is global; a connection is not. Same table, same key, same column
-  // on a different database is a DIFFERENT cell — rendering dev's staged value
-  // over staging's row is how a change gets applied to the wrong database.
   it("does not report a change staged on one connection as staged on another", () => {
     const pending = stageUpdate([], edit("1", "status", "pending", "shipped", DEV));
     expect(stagedUpdateFor(pending, DEV, ORDERS, "1", "status")).toEqual({
@@ -105,7 +97,6 @@ describe("pendingChanges", () => {
     expect(stagedUpdateFor(pending, STAGING, ORDERS, "1", "status")).toEqual({ staged: false });
   });
 
-  // Same cell on two connections is two entries, not an upsert over one.
   it("keeps one entry per connection for the same cell", () => {
     let pending: PendingChange[] = [];
     pending = stageUpdate(pending, edit("1", "status", "pending", "shipped", DEV));
@@ -127,22 +118,16 @@ describe("pendingChanges", () => {
   it("does not report a delete staged on one connection as staged on another", () => {
     const staged = toggleDelete([], DEV, ORDERS, "id", "7");
     expect(hasStagedDelete(staged, STAGING, ORDERS, "7")).toBe(false);
-    // And toggling on the other connection stages a second delete rather than
-    // cancelling the first.
     expect(toggleDelete(staged, STAGING, ORDERS, "id", "7")).toHaveLength(2);
   });
 
-  // Apply removes what it SENT. The grid stays live during the round trip, so
-  // the set it clears against may have grown — a positional or wholesale
-  // removal would take the newcomer with it.
   it("removes exactly the entries given, leaving ones staged since", () => {
     const sent = edit("1", "status", "pending", "shipped");
     const later = edit("2", "paid", "false", "true");
     expect(removeEntries([sent, later], [sent])).toEqual([later]);
   });
 
-  // Equal-by-value is not the same entry: a cell re-staged to the same value
-  // during the round trip is a new intent the commit did not cover.
+  // Equal-by-value is not the same entry — a cell re-staged to the same value during the round trip is a new intent.
   it("removes by identity, not by value", () => {
     const sent = edit("1", "status", "pending", "shipped");
     const restaged = edit("1", "status", "pending", "shipped");
@@ -168,8 +153,6 @@ describe("pendingChanges", () => {
     expect(groups[2].entries[0].index).toBe(3);
   });
 
-  // Filtering the set by connection must not renumber it: the discard button
-  // and a ConflictReport both address the position in the WHOLE set.
   it("keeps whole-set indices when only part of the set is grouped", () => {
     const pending: PendingChange[] = [
       edit("1", "status", "pending", "shipped", STAGING),
@@ -198,10 +181,7 @@ describe("entriesForOtherConnections", () => {
   });
 
   it("keeps everything when no connection is selected", () => {
-    // Reference identity, not deep equality: `connection_id` is a required
-    // string in every variant, so `filter(p => p.connection_id !== null)` —
-    // the function with its guard deleted — returns a NEW array holding the
-    // same elements. Only `toBe` can tell the two apart.
+    // `toBe`, not `toEqual` — a version with its guard deleted would still return an equal-by-value array here.
     const pending = [mine, theirs];
     expect(entriesForOtherConnections(pending, null)).toBe(pending);
   });

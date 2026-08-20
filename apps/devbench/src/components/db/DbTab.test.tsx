@@ -6,9 +6,7 @@ import { useAppStore } from "../../store/useAppStore";
 import * as tauriLib from "../../lib/tauri";
 import type { TableRows } from "../../lib/tauri";
 
-// DbTab renders DataGrid, which virtualizes rows via TanStack Virtual. jsdom
-// gives every element a height of 0, which makes the virtualizer compute a
-// zero-row viewport (see DataGrid.test.tsx for the same fix).
+// jsdom gives every element a height of 0, which makes TanStack Virtual compute a zero-row viewport.
 beforeAll(() => {
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: 600 });
   Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, value: 800 });
@@ -29,10 +27,6 @@ function renderDb(table: tauriLib.QualifiedTable | string | null, onPatchState =
   };
 }
 
-// DbTab is a controlled component — `table` comes from the parent's tab
-// state, changed only by calling `onPatchState`. This harness plays the
-// parent's role so tests can drive a real table switch the way ToolPane
-// does, instead of asserting on onPatchState in isolation.
 function DbTabHarness({ initialTable }: { initialTable: tauriLib.QualifiedTable | null }) {
   const [table, setTable] = useState(initialTable);
   return (
@@ -50,9 +44,6 @@ function DbTabHarness({ initialTable }: { initialTable: tauriLib.QualifiedTable 
 describe("DbTab", () => {
   beforeEach(() => {
     localStorage.clear();
-    // The pending set is module-global app state (spec §10) and no test owns
-    // it — without this, a test that stages a change leaves the next one
-    // rendering a staged value instead of its own fixture's stored one.
     useAppStore.setState({ pending: [] });
     vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
@@ -72,14 +63,9 @@ describe("DbTab", () => {
     await waitFor(() =>
       expect(describeColumns).toHaveBeenCalledWith("c1", { schema: "alt", name: "orders" }),
     );
-    // The schema does not change when the page or the filter does, so this is
-    // fetched per table, not per query.
     expect(describeColumns).toHaveBeenCalledTimes(1);
   });
 
-  // Slice 1 inferred the family from a sample value. A text column whose
-  // values happen to be digits was offered `>` and `<`, which SQL will happily
-  // run on text with results nobody wants.
   it("offers filter operators from the real column type, not from the values", async () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["ref_code"], rows: [["4821"]], pk_column: null,
@@ -144,8 +130,6 @@ describe("DbTab", () => {
     );
   });
 
-  // A tab persisted before schemas existed stores a bare string. Resolving it
-  // to public keeps the tab open across the upgrade instead of blanking it.
   it("reads a legacy bare table name as public", async () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id"], rows: [["1"]], pk_column: "id",
@@ -162,8 +146,6 @@ describe("DbTab", () => {
     );
   });
 
-  // The core independence bug this migration fixes: two DbTab instances,
-  // given different `table` props, must never share fetched rows.
   it("re-fetches when its table prop changes to a different table", async () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: ["id"], rows: [], pk_column: null });
     const { rerender, onPatchState } = renderDb(ORDERS);
@@ -186,13 +168,6 @@ describe("DbTab", () => {
     );
   });
 
-  // Regression guard for a bug verified manually (freezing a column on
-  // public.dup did not leak to alt.dup) but never pinned by a repeatable
-  // test: the grid layout key must be scoped by schema, not table name
-  // alone, or two same-named tables in different schemas would share one
-  // saved layout. Asserts on localStorage keys and the pin button's
-  // aria-pressed state only — not on layout geometry, which jsdom can't
-  // give a meaningful answer for (see DataGrid.test.tsx).
   it("scopes the saved grid layout to schema, not table name alone", async () => {
     localStorage.clear();
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
@@ -223,15 +198,9 @@ describe("DbTab", () => {
   it("selecting a table in the schema tree patches state rather than fetching directly", () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: [], rows: [], pk_column: null });
     const { onPatchState } = renderDb(null);
-    // ConnectionRail's own tests cover the rail UI; DbTab's contract is that
-    // selecting a table calls onPatchState, not a direct fetch. Covered
-    // end-to-end (two DB tabs, two tables) in SplitContent.test.tsx.
     expect(onPatchState).not.toHaveBeenCalled();
   });
 
-  // No connection has been picked yet — a real, reachable state now that
-  // connections are no longer hardcoded. Must read as "pick one", not as a
-  // silent blank pane indistinguishable from a table simply not loaded yet.
   it("shows a distinct empty state and fetches nothing when there is no active connection", () => {
     useAppStore.getState().setActiveConnectionId(null);
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: [], rows: [], pk_column: null });
@@ -278,8 +247,6 @@ describe("DbTab", () => {
     await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", ORDERS, expect.objectContaining({ orderBy: [{ column: "status", descending: true, enabled: true }] })));
   });
 
-  // Page count now comes from a separate invokeCountTableRows call, fired
-  // alongside the row fetch rather than derived from how many rows came back.
   it("advances to the next page and requests the corresponding offset", async () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id"],
@@ -311,12 +278,6 @@ describe("DbTab", () => {
     expect(await screen.findByRole("button", { name: "Next page" })).toBeDisabled();
   });
 
-  // Regression guard: GridToolbar's rows-per-page <select> calls
-  // onLimitChange then onPageChange synchronously in one onChange. Both are
-  // this render's DbTab closures; without a synchronously-updated ref for
-  // "the limit to fetch with," onPageChange's own fetchRows call would still
-  // read the PRE-change limit and — since it fires second — win the
-  // requestId race, silently reverting the effective page size.
   it("changing rows per page fetches with the new limit, not the pre-change one", async () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id"], rows: [["1"]], pk_column: "id",
@@ -333,10 +294,6 @@ describe("DbTab", () => {
     );
   });
 
-  // The toolbar's rows-per-page control calls onLimitChange and then
-  // onPageChange. Only the second may fetch: fetching from both bills every
-  // page-size change two round trips (and two counts), and the first one's
-  // result is thrown away by the requestId race anyway.
   it("changing rows per page issues exactly one row query and one count", async () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id"], rows: [["1"]], pk_column: "id",
@@ -348,9 +305,6 @@ describe("DbTab", () => {
     listRows.mockClear();
     count.mockClear();
 
-    // Both handlers run synchronously inside the change event, so the call
-    // counts are already final here — no waitFor needed, and none that could
-    // mask a second query arriving late.
     fireEvent.change(screen.getByRole("combobox", { name: "Rows per page" }), { target: { value: "250" } });
 
     expect(listRows).toHaveBeenCalledTimes(1);
@@ -369,8 +323,6 @@ describe("DbTab", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Filter" }));
     fireEvent.click(screen.getByRole("button", { name: /add filter/i }));
-    // FilterPopover disambiguates per-row controls as "Filter column, condition
-    // N" (a11y fix from an earlier task) — a plain-string match here would miss.
     fireEvent.change(screen.getByRole("combobox", { name: /^Filter column/ }), { target: { value: "status" } });
     fireEvent.change(screen.getByRole("textbox", { name: /^Filter value/ }), { target: { value: "paid" } });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
@@ -382,9 +334,6 @@ describe("DbTab", () => {
     expect(count).toHaveBeenLastCalledWith("c1", ORDERS, expected);
   });
 
-  // A failing query is usually a filter the user just applied. Replacing the
-  // whole grid with an error box takes the Filter popover away with it, and
-  // switching tables becomes the only escape.
   it("keeps the toolbar reachable when a filter produces a server error", async () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "status"], rows: [["1", "paid"]], pk_column: "id",
@@ -400,7 +349,6 @@ describe("DbTab", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("operator does not exist");
 
-    // The whole point: the user can still get back into the filter and undo it.
     fireEvent.click(screen.getByRole("button", { name: /^Filter/ }));
     fireEvent.click(screen.getByRole("button", { name: /remove condition/i }));
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
@@ -409,8 +357,6 @@ describe("DbTab", () => {
     );
   });
 
-  // The backend derives `columns` from the first row, so zero matches means
-  // zero columns — which must not empty the popovers' column pickers.
   it("keeps real column names in the popovers after a filter matches no rows", async () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "status"], rows: [["1", "paid"]], pk_column: "id",
@@ -427,8 +373,6 @@ describe("DbTab", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^Filter/ }));
     fireEvent.click(screen.getByRole("button", { name: /add filter/i }));
-    // Condition 2 is the freshly added one, which seeds itself from columns[0]
-    // — the case that used to produce `{ column: undefined }`.
     const columnPicker = screen.getByRole("combobox", { name: "Filter column, condition 2" });
     expect(Array.from(columnPicker.querySelectorAll("option")).map((o) => o.textContent)).toEqual(["id", "status"]);
     expect(columnPicker).toHaveValue("id");
@@ -441,12 +385,9 @@ describe("DbTab", () => {
     vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(250);
 
     renderDb(ORDERS);
-    // 250 rows at 100 per page is 3 pages.
     expect(await screen.findByText("of 3")).toBeInTheDocument();
   });
 
-  // Same reasoning as a table switch, one level up: the table stays open but
-  // its old sort/page no longer describe a request against the new connection.
   it("switching the active connection resets sort and page for the table that stays open", async () => {
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "status"],
@@ -499,13 +440,6 @@ describe("DbTab", () => {
     );
   });
 
-  // Regression guard for a bug caught in review: the previous table's grid
-  // (with its own toolbar and sort columns) stayed mounted and clickable
-  // for the entire window between selecting a new table and that table's
-  // first fetch resolving. A Next click landed during that window before
-  // requested an offset against a table whose page 0 had never been fetched.
-  // This interacts *during* the loading window rather than after
-  // `waitFor`-settling it, which is the only way to catch this class of bug.
   it("makes the grid's Next control unavailable while switching to a table that hasn't loaded yet", async () => {
     const deferredPaymentsFetch: { resolve: ((value: TableRows) => void) | null } = { resolve: null };
     const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation((_conn, t) => {
@@ -516,8 +450,6 @@ describe("DbTab", () => {
         deferredPaymentsFetch.resolve = resolve;
       });
     });
-    // orders spans multiple pages (Next enabled); payments' single row is
-    // one page (Next ends up disabled once it loads).
     vi.spyOn(tauriLib, "invokeCountTableRows").mockImplementation((_conn, t) =>
       Promise.resolve(t.name === "orders" ? 150 : 1),
     );
@@ -529,9 +461,6 @@ describe("DbTab", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Browse public.payments" }));
 
-    // Still inside payments' loading window: orders' toolbar — and its Next
-    // control, which described orders' pages, not payments' — must be gone,
-    // not merely disabled-but-present-and-stale.
     expect(screen.queryByRole("button", { name: "Next page" })).not.toBeInTheDocument();
     expect(screen.getByText("Loading…")).toBeInTheDocument();
     expect(listRows).not.toHaveBeenCalledWith("c1", PAYMENTS, expect.objectContaining({ offset: 100 }));
@@ -542,13 +471,8 @@ describe("DbTab", () => {
     expect(listRows).toHaveBeenLastCalledWith("c1", PAYMENTS, expect.objectContaining({ orderBy: [], offset: 0 }));
   });
 
-  // Regression guard for the race a naive implementation hits: firing a sort
-  // click while a previous one is still in flight must not let the slower,
-  // now-superseded response overwrite the newer one once it finally resolves.
   it("discards a slower in-flight fetch once a newer request has superseded it", async () => {
-    // A plain closure variable reassigned only inside the nested Promise
-    // executor gets over-narrowed to `null` by TS's flow analysis at the read
-    // site below; a holder object sidesteps that.
+    // A holder object avoids TS over-narrowing a closure variable reassigned only inside the Promise executor to `null`.
     const deferredStatusFetch: { resolve: ((value: TableRows) => void) | null } = { resolve: null };
     vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation((_conn, _table, opts) => {
       if (opts?.orderBy?.[0]?.column === "status") {
@@ -603,14 +527,12 @@ describe("DbTab", () => {
     vi.spyOn(tauriLib, "invokeDescribeColumns").mockResolvedValue(FK_META);
   }
 
-  // Spec §8: the icon marks a column with a target, and only such a column.
   it("shows a link icon only on cells in a column with a foreign key", async () => {
     mockFkTable();
     renderDb(ORDERS);
 
     const link = await screen.findByRole("button", { name: /public\.users\.id/ });
     expect(link).toBeInTheDocument();
-    // One keyed column, one row: exactly one icon. `id` has no target.
     expect(screen.getAllByRole("button", { name: /Show referenced row/ })).toHaveLength(1);
   });
 
@@ -622,12 +544,6 @@ describe("DbTab", () => {
     expect(screen.queryByRole("button", { name: /Show referenced row/ })).not.toBeInTheDocument();
   });
 
-  // Regression guard for a bug caught in review: the describe_columns effect
-  // cleared metadata only when there was no table at all, so on an A -> B
-  // switch it left A's metadata in place until B's own describe_columns
-  // resolved. If B's rows land first (as they do here, since B's
-  // describe_columns is still pending), the grid painted B's data under A's
-  // schema — a link icon claiming a foreign key B's column doesn't have.
   it("shows no link icon for a table switched to while its own metadata is still loading", async () => {
     const deferredPaymentsDescribe: { resolve: ((value: typeof FK_META) => void) | null } = { resolve: null };
     vi.spyOn(tauriLib, "invokeDescribeColumns").mockImplementation((_conn, t) => {
@@ -649,12 +565,9 @@ describe("DbTab", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Browse public.payments" }));
 
-    // payments' rows have landed; its describe_columns call is still
-    // in flight. Absent metadata must render, never orders' stale metadata.
     await screen.findByText("no-fk-here");
     expect(screen.queryByRole("button", { name: /Show referenced row/ })).not.toBeInTheDocument();
 
-    // And once payments' own (FK-less) metadata does arrive, still nothing.
     await act(async () => {
       deferredPaymentsDescribe.resolve?.([]);
     });
@@ -672,8 +585,6 @@ describe("DbTab", () => {
     renderDb(ORDERS);
     fireEvent.click(await screen.findByRole("button", { name: /Show referenced row/ }));
 
-    // The referencing pair is what goes over the wire; the backend resolves
-    // the target from the catalog.
     await waitFor(() =>
       expect(referenced).toHaveBeenCalledWith("c1", ORDERS, "user_id", "usr_88"),
     );
@@ -681,7 +592,6 @@ describe("DbTab", () => {
     expect(await screen.findByText("grace@example.com")).toBeInTheDocument();
   });
 
-  // Spec §8: an unenforced or broken key states where the row is missing from.
   it("says no matching row when the key points nowhere", async () => {
     mockFkTable();
     vi.spyOn(tauriLib, "invokeGetReferencedRow").mockResolvedValue(null);
@@ -692,11 +602,6 @@ describe("DbTab", () => {
     expect(await screen.findByText("No matching row in public.users.")).toBeInTheDocument();
   });
 
-  // Wiring-level guard: FkPopover.test.tsx only proves the component renders
-  // whatever `error` prop it's handed — it can't catch openFk's own catch
-  // block being changed to swallow the failure. If it were, the popover would
-  // render the exact forbidden claim below ("No matching row"), reporting an
-  // outage as a fact about the data, and every other FK test would still pass.
   it("reports a failed lookup as an error, never as a missing row", async () => {
     mockFkTable();
     vi.spyOn(tauriLib, "invokeGetReferencedRow").mockRejectedValue(new Error("connection reset"));
@@ -708,8 +613,6 @@ describe("DbTab", () => {
     expect(screen.queryByText(/No matching row/)).not.toBeInTheDocument();
   });
 
-  // Spec §8: "switches the grid to public.users with a pinned id = usr_88
-  // filter, clearing sort, pins and hidden columns."
   it("jumps to the referenced table with a pinned filter on that row", async () => {
     mockFkTable();
     vi.spyOn(tauriLib, "invokeGetReferencedRow").mockResolvedValue({
@@ -735,11 +638,6 @@ describe("DbTab", () => {
     );
   });
 
-  // Layouts are keyed per table (gridLayout.ts, layoutKey above), so the
-  // source table's pins and hidden columns never reach the target in the
-  // first place — there is nothing for the jump to clear. A previous version
-  // of handleJump cleared the *destination's* own saved pins/hidden anyway,
-  // permanently wiping settings on a table the user never touched.
   it("leaves the destination table's saved layout alone", async () => {
     const seededLayout = { widths: { id: 200 }, order: ["email", "id"], pinned: ["id"], hidden: ["email"] };
     localStorage.setItem("devbench.grid-layout.c1:public.users", JSON.stringify(seededLayout));
@@ -758,14 +656,9 @@ describe("DbTab", () => {
       expect(listRows).toHaveBeenCalledWith("c1", { schema: "public", name: "users" }, expect.anything()),
     );
 
-    // Widths, order, pinned and hidden all survive the jump exactly as
-    // seeded — the jump must not touch stored layout at all.
     expect(JSON.parse(localStorage.getItem("devbench.grid-layout.c1:public.users")!)).toEqual(seededLayout);
   });
 
-  // A self-referencing key does not change `table`, so the table-switch effect
-  // never fires. Without the same-table branch the pinned filter is set on a
-  // ref and then silently dropped.
   it("applies the pinned filter when the key points at the table already open", async () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "manager_id"], rows: [["e2", "e1"]], pk_column: "id",
@@ -798,12 +691,6 @@ describe("DbTab", () => {
     );
   });
 
-  // A cross-table jump would close the popover just by unmounting its row
-  // (the table-switch effect nulls tableRows out from under it) even if
-  // handleJump's own closeFk() call were deleted — that doesn't exercise the
-  // thing being guarded. The same-table branch never unmounts anything: only
-  // its own closeFk() call closes the popover, so this is where the guard
-  // actually bites.
   it("closes the popover when a same-table jump lands", async () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "manager_id"], rows: [["e2", "e1"]], pk_column: "id",
@@ -829,12 +716,6 @@ describe("DbTab", () => {
     );
   });
 
-  // Regression guard: only closeFk's own call sites (onClose, handleJump, the
-  // table-switch effect) used to close a popover — a filter/sort/page/limit/
-  // refresh swaps tableRows without ever clearing it first, so a popover left
-  // anchored to its old rowIndex would silently repaint onto whatever row
-  // lands at that index in the new results, with a stale onJump bound to the
-  // wrong cell's value.
   it("closes the popover when the underlying query changes", async () => {
     mockFkTable([
       ["1", "usr_88"],
@@ -878,8 +759,6 @@ describe("DbTab", () => {
       ]);
     });
 
-    // Spec §10: required, not decorative. A cell that snapped back to its
-    // stored value would look like the click did nothing.
     it("renders a staged cell's pending value, marked as staged", async () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
@@ -916,9 +795,6 @@ describe("DbTab", () => {
       expect(screen.getByText(/No single-column primary key/)).toBeInTheDocument();
     });
 
-    // The backend renders an unstringifiable value as this literal marker
-    // (distinct from NULL) — editing it would mean overwriting something the
-    // user never actually saw, PK or no PK.
     it("cells showing <unsupported type> are not editable even when the table has a primary key", async () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status", "payload"],
@@ -929,9 +805,6 @@ describe("DbTab", () => {
       renderDb(ORDERS);
       await waitFor(() => screen.getByText("<unsupported type>"));
 
-      // Prove editing works at all in this row first — an ordinary cell in
-      // the same row must open — so the assertion below can't pass simply
-      // because nothing in the row is editable yet.
       fireEvent.click(screen.getByText("pending"));
       expect(await screen.findByDisplayValue("pending")).toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
@@ -940,8 +813,6 @@ describe("DbTab", () => {
       expect(screen.queryByRole("textbox", { name: /^Edit / })).not.toBeInTheDocument();
     });
 
-    // NULL and "" are different values on the wire, and an untouched draft of
-    // a NULL cell means "still NULL", not "now the empty string".
     it("stages null rather than an empty string when a NULL cell's draft is untouched", async () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"], rows: [["1", null]], pk_column: "id",
@@ -953,8 +824,6 @@ describe("DbTab", () => {
       await screen.findByLabelText("Edit status");
       fireEvent.click(screen.getByRole("button", { name: "Stage change" }));
 
-      // Untouched draft: the value never differs from stored, so the diff
-      // model correctly records nothing at all.
       expect(useAppStore.getState().pending).toEqual([]);
     });
 
@@ -993,8 +862,6 @@ describe("DbTab", () => {
       expect(screen.getByText("pending")).toBeTruthy();
     });
 
-    // Spec §16, the text half of "staging a cell twice back to its stored
-    // value leaves no pending change".
     it("typing a cell back to its stored value clears the pending change", async () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
@@ -1007,7 +874,6 @@ describe("DbTab", () => {
       fireEvent.click(screen.getByRole("button", { name: "Stage change" }));
       expect(useAppStore.getState().pending).toHaveLength(1);
 
-      // The staged value is what the cell now shows, so that is what gets clicked.
       fireEvent.click(await screen.findByText("shipped"));
       fireEvent.change(await screen.findByLabelText("Edit status"), { target: { value: "pending" } });
       fireEvent.click(screen.getByRole("button", { name: "Stage change" }));
@@ -1015,11 +881,6 @@ describe("DbTab", () => {
       expect(useAppStore.getState().pending).toEqual([]);
     });
 
-    // The dock renders beside a MOUNTED DbTab, so an Apply can land with a
-    // cell editor open. The refetch replaces tableRows underneath it while
-    // editing.rowIndex stays put — accepting then would carry another
-    // row's pk_value and old_value, a wrong UPDATE the backend's
-    // IS NOT DISTINCT FROM guard would accept as correct.
     it("closes an open editor when an Apply lands and refetches", async () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
@@ -1029,8 +890,6 @@ describe("DbTab", () => {
       fireEvent.click(await screen.findByText("pending"));
       await screen.findByLabelText("Edit status");
 
-      // What PendingPanel's apply() does on success: drop what it sent, then
-      // signal the commit.
       act(() => {
         useAppStore.getState().removePendingEntries(useAppStore.getState().pending);
         useAppStore.getState().bumpApplyGeneration();
@@ -1039,10 +898,6 @@ describe("DbTab", () => {
       await waitFor(() => expect(screen.queryByLabelText("Edit status")).toBeNull());
     });
 
-    // Apply removes only the entries it sent — its own connection's, minus
-    // anything staged during the round trip — so a successful commit routinely
-    // leaves the set non-empty. Waiting for empty would leave the applied cells
-    // painted with their pre-Apply values and no way back.
     it("refetches when an Apply lands, leaving the pending set non-empty", async () => {
       const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
@@ -1064,7 +919,6 @@ describe("DbTab", () => {
       });
       const before = listRows.mock.calls.length;
 
-      // What a successful Apply on c1 leaves behind: c2's entry still staged.
       act(() => {
         useAppStore.getState().removePendingEntries([useAppStore.getState().pending[0]]);
         useAppStore.getState().bumpApplyGeneration();
@@ -1074,8 +928,6 @@ describe("DbTab", () => {
       expect(useAppStore.getState().pending).toHaveLength(1);
     });
 
-    // A discard changes nothing in the database — the staged overlay clearing
-    // is a re-render, not a reload. Refetching cost the user an open draft.
     it("does not refetch or disturb an open editor when a staged entry is discarded", async () => {
       const list = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
@@ -1103,8 +955,6 @@ describe("DbTab", () => {
       expect((screen.getByLabelText("Edit status") as HTMLInputElement).value).toBe("typed");
     });
 
-    // The count is not the signal: Apply removes what it sent while a cell
-    // staged mid-flight remains, so a real commit can leave the size unchanged.
     it("refetches when an Apply lands, even with the pending count unchanged", async () => {
       const list = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
@@ -1143,15 +993,10 @@ describe("DbTab", () => {
         />,
       );
 
-      // Waits for the NEW table's rows, not merely for the editor to vanish:
-      // the switch blanks the grid for a moment, and an assertion taken during
-      // that gap passes even when `editing` is never cleared — the editor then
-      // reappears on payments' row 0 carrying orders' draft.
       expect(await screen.findByText("waiting")).toBeInTheDocument();
       expect(screen.queryByLabelText("Edit status")).toBeNull();
     });
 
-    // Spec §7: toggling IS the edit — no text editor, no confirm/cancel.
     it("toggles a boolean in place and stages it, with no editor in between", async () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "paid"], rows: [["1", "false"]], pk_column: "id",
@@ -1172,12 +1017,9 @@ describe("DbTab", () => {
         },
       ]);
       expect(screen.queryByLabelText("Edit paid")).toBeNull();
-      // The staged value is drawn, or the click would look like a no-op.
       expect((screen.getByRole("checkbox", { name: "paid" }) as HTMLInputElement).checked).toBe(true);
     });
 
-    // Spec §16, the boolean half of "staging a cell twice back to its stored
-    // value leaves no pending change".
     it("toggling a boolean twice leaves no pending change", async () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "paid"], rows: [["1", "false"]], pk_column: "id",
@@ -1203,9 +1045,6 @@ describe("DbTab", () => {
       expect(box.disabled).toBe(true);
     });
 
-    // Spec §7 calls this a hard constraint: the three states must stay
-    // distinct, so NULL keeps its italic text rather than becoming a third
-    // checkbox appearance nobody can name.
     it("keeps NULL visually distinct from false in a boolean column", async () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
         columns: ["id", "paid"], rows: [["1", null], ["2", "false"]], pk_column: "id",
@@ -1232,8 +1071,6 @@ describe("DbTab", () => {
 
     expect(useAppStore.getState().dockPanel).toBe("insert");
     expect(useAppStore.getState().insertTarget?.table).toEqual(ORDERS);
-    // The panel builds its fields from these, so an empty list here would be a
-    // silently blank form rather than a visible failure.
     expect(useAppStore.getState().insertTarget?.columns.map((c) => c.name)).toEqual(["id", "status"]);
   });
 
@@ -1244,13 +1081,7 @@ describe("DbTab", () => {
     useAppStore.setState({ pending: [] });
 
     renderDb(ORDERS);
-    // DataGrid's role is "table" (see DataGrid.tsx), not "grid" — waiting on
-    // it is just this test's way of letting the initial row fetch settle.
     await screen.findByRole("table");
-    // Hidden entirely when empty: it must never advertise a state that does
-    // not exist (spec §3). Matched by "Pending <count>", not just a leading
-    // "pending" — the row's own status value is "pending" too, and that cell
-    // is itself a button (see DbTab.tsx's editable-cell button).
     expect(screen.queryByRole("button", { name: /^pending \d/i })).toBeNull();
 
     act(() => {
@@ -1281,9 +1112,6 @@ describe("DbTab", () => {
     expect(useAppStore.getState().pending).toEqual([]);
   });
 
-  // Spec §11: it requires a single-column primary key — the same rule that
-  // already governs whether a cell is editable. Without one there is no safe
-  // WHERE target, so the action must be absent rather than disabled-and-lying.
   it("offers no delete action when the table has no single-column primary key", async () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "status"], rows: [["42", "pending"]], pk_column: null,
@@ -1294,9 +1122,6 @@ describe("DbTab", () => {
     expect(screen.queryByRole("button", { name: /stage delete/i })).toBeNull();
   });
 
-  // Finding 6: the update would be appended AFTER the delete, match zero rows
-  // at Apply, and be reported as "someone deleted it after this change was
-  // staged" — blaming a stranger for the user's own staged delete.
   it("stops accepting cell edits on a row already staged for deletion", async () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "status", "paid"], rows: [["42", "pending", "false"]], pk_column: "id",
@@ -1304,8 +1129,6 @@ describe("DbTab", () => {
     useAppStore.setState({ pending: [] });
 
     renderDb(ORDERS);
-    // Editable first, so the assertion below cannot pass because the row was
-    // never editable at all.
     expect((await screen.findByText("pending")).closest("button")!.disabled).toBe(false);
 
     fireEvent.click(screen.getByRole("button", { name: "Stage delete of row 42" }));
@@ -1314,20 +1137,13 @@ describe("DbTab", () => {
     expect(cell.disabled).toBe(true);
     fireEvent.click(cell);
     expect(screen.queryByLabelText("Edit status")).toBeNull();
-    // The checkbox editor is the same rule by a different control.
     expect((screen.getByRole("checkbox", { name: "paid" }) as HTMLInputElement).disabled).toBe(true);
-    // Only the delete is staged — no update crept in.
     expect(useAppStore.getState().pending).toHaveLength(1);
 
-    // Undoing the delete gives the row back.
     fireEvent.click(screen.getByRole("button", { name: "Undo staged delete of row 42" }));
     expect(screen.getByText("pending").closest("button")!.disabled).toBe(false);
   });
 
-  // Finding 5: `<unsupported type>` is the grid's placeholder for a type
-  // `cell_to_string` could not decode, not a key. Staged as one it becomes
-  // `WHERE "id" = $2::numeric` with the literal marker bound — invalid input
-  // syntax, failing the whole set and naming nothing.
   it("refuses the whole row when the primary key itself is <unsupported type>", async () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "status"],
@@ -1339,9 +1155,7 @@ describe("DbTab", () => {
     renderDb(ORDERS);
     await screen.findByText("<unsupported type>");
 
-    // No row action: there is no WHERE target to delete by.
     expect(screen.queryByRole("button", { name: /stage delete/i })).toBeNull();
-    // And no editable cell beside it either.
     const cell = screen.getByText("pending").closest("button")!;
     expect(cell.disabled).toBe(true);
     fireEvent.click(cell);
@@ -1349,9 +1163,6 @@ describe("DbTab", () => {
     expect(useAppStore.getState().pending).toEqual([]);
   });
 
-  // Finding 1: the pending set is global, the connection is not. Repainting
-  // dev's staged value onto staging's identically-keyed row is how Apply ends
-  // up committing against the wrong database.
   it("does not paint a value staged on another connection onto this connection's rows", async () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "status"], rows: [["1", "pending"]], pk_column: "id",
@@ -1372,7 +1183,6 @@ describe("DbTab", () => {
     expect(screen.getByText("pending")).toBeTruthy();
     expect(screen.queryByText("shipped")).toBeNull();
     expect(document.querySelector('[data-staged="true"]')).toBeNull();
-    // The delete action likewise reads as unstaged for this connection.
     act(() => {
       useAppStore.getState().togglePendingDelete("c2", ORDERS, "id", "1");
     });

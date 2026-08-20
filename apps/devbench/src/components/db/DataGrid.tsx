@@ -21,58 +21,30 @@ import {
   type GridLayout,
 } from "./grid/gridLayout";
 
-/** One `ORDER BY` term. A list of these is what lets a sort tie-break. */
 export interface SortTerm {
   column: string;
   descending: boolean;
 }
 
 export interface DataGridProps {
-  /** Column names in DATA order — the order row arrays are indexed by. What
-   *  the user sees is derived from this plus their saved order/pins. */
+  // Column names in DATA order — the order row arrays are indexed by, not the on-screen position. Cell/row callbacks below use this index.
   columns: string[];
   rows: (string | null)[][];
-  /** Active sort terms, outermost first. */
   sort?: SortTerm[];
-  /** `additive` is true for shift-click: append/adjust rather than replace. */
   onSort?: (column: string, additive: boolean) => void;
-  /** Overrides how a cell renders — the inline-editing UI plugs in here.
-   *  `columnIndex` is always the DATA index, never the on-screen position, so
-   *  reordering columns can never redirect an edit to the wrong column. */
   renderCell?: (rowIndex: number, columnIndex: number, value: string | null) => ReactNode;
-  /** Column widths/order/pins/hidden — owned by the caller (not DataGrid)
-   *  since GridToolbar's Columns popover reads and writes the same state. */
   layout?: GridLayout;
   onLayoutChange?: (layout: GridLayout) => void;
-  /** Rendered above the scrollable grid, inside the table wrapper — DbTab
-   *  plugs GridToolbar in here. */
   toolbar?: ReactNode;
-  /** Data row index (not the visual/virtualized position) whose row should
-   *  out-rank its siblings in paint order — e.g. a cell popover that needs to
-   *  escape its own row. Every virtualized row carries a `transform`
-   *  (the virtualizer's translateY), and `transform` creates a new stacking
-   *  context: a z-20 overlay inside that row is sealed inside it, so a LATER
-   *  row (a `position: absolute; z-index: auto` sibling, painted in DOM
-   *  order) still paints over it regardless of the overlay's own z-index.
-   *  Raising the row itself — not the overlay — is what actually escapes:
-   *  the rows' container has no stacking context of its own, so a raised
-   *  row's z-index competes directly with its siblings' `auto` and with the
-   *  sticky header's z-30. */
+  // Every virtualized row carries a `transform`, which creates a new stacking context — a z-index inside the row can't escape it.
+  // Raising the ROW itself (not an overlay inside it) is what lets it paint over a later sibling row and under the z-30 sticky header.
   raisedRowIndex?: number | null;
-  /** Extra controls appended to the row's actions column — DbTab plugs the
-   *  stage-delete toggle in here. Given the DATA row index, exactly like
-   *  `renderCell`, so a reorder or a filter can never redirect an action to a
-   *  different row than the one it was drawn on. */
   renderRowActions?: (rowIndex: number) => ReactNode;
 }
 
 export type CellKind = "null" | "unsupported" | "number" | "bool-true" | "bool-false" | "text";
 
-// The wire format has no column-type metadata, so "is this boolean" is the
-// same best-effort inference already used for numbers below (a text column
-// literally containing "true"/"false" would also get the pill) — an
-// accepted tradeoff for a value that's already a string by the time it
-// reaches the grid.
+// No column-type metadata on the wire, so "is this boolean" is a best-effort inference — a text column literally containing "true"/"false" also gets the pill.
 export function cellDisplay(value: string | null): { text: string; className: string; kind: CellKind } {
   if (value === null) return { text: "NULL", className: "italic text-text-faint", kind: "null" };
   if (value === "<unsupported type>") return { text: value, className: "italic text-warning", kind: "unsupported" };
@@ -93,8 +65,6 @@ export function CellValue({ value }: { value: string | null }) {
         disabled
         checked={kind === "bool-true"}
         aria-label={text}
-        // Drawn rather than native: a UA checkbox is ~16px and platform
-        // coloured, which reads as a form control dropped into a dense row.
         className="mx-auto block size-3.5 appearance-none rounded border border-text-faint checked:border-accent checked:bg-accent disabled:opacity-100"
       />
     );
@@ -191,12 +161,9 @@ export function DataGrid({
   const [dragColumn, setDragColumn] = useState<string | null>(null);
   const [copyMenuRow, setCopyMenuRow] = useState<number | null>(null);
   const copyMenuRef = useRef<HTMLDivElement | null>(null);
-  // The menu is an overlay inside a transformed row, so it can only escape its
-  // later siblings by raising the ROW — the same reason raisedRowIndex exists.
+  // copyMenuRow needs the same row-raising treatment as raisedRowIndex.
   const effectiveRaisedRow = copyMenuRow ?? raisedRowIndex;
-  // Live width during an in-progress resize drag, overlaid on `layout` for
-  // display only — onLayoutChange (which the caller may persist) fires once
-  // on release, not on every mousemove.
+  // Overlaid on `layout` for display only — onLayoutChange fires once on release, not on every mousemove.
   const [liveWidth, setLiveWidth] = useState<{ column: string; width: number } | null>(null);
   const effectiveLayout = liveWidth
     ? { ...layout, widths: { ...layout.widths, [liveWidth.column]: liveWidth.width } }
@@ -208,14 +175,10 @@ export function DataGrid({
 
   const isPinned = (column: string) => effectiveLayout.pinned.includes(column);
 
-  // On-screen order: the saved order, minus columns this table no longer has,
-  // plus any it gained — then pinned columns hoisted to the front so "pinned"
-  // and "leftmost" can't disagree.
+  // Saved order, reconciled against the current columns (drift removed, new ones appended), then pinned columns hoisted to the front.
   const visual = useMemo(() => visualColumns(columns, effectiveLayout), [columns, effectiveLayout]);
 
-  // Undragged, unpinned columns stay flexible (`minmax(…, 1fr)`, matching the
-  // mockup's auto-sizing `<table>`). Pinning forces a fixed width because a
-  // sticky offset has to be a number we can compute before layout runs.
+  // Unpinned columns stay flexible (minmax(…, 1fr)); pinning forces a fixed width since a sticky offset must be a precomputed number.
   const gridTemplateColumns = useMemo(
     () =>
       visual
@@ -228,22 +191,15 @@ export function DataGrid({
     [visual, effectiveLayout],
   );
 
-  // Left offset for each pinned column, accumulated across the pinned run.
   const offsets = useMemo(() => pinOffsets(visual, effectiveLayout), [visual, effectiveLayout]);
 
-  // Floor for the header+body wrapper below. Without it, a block-level `auto`
-  // width can't grow past its containing block even when the grid's own
-  // column minimums need more room — the grid silently overflows its box
-  // instead of the box (and its scrollbar) growing to fit. This is what let
-  // the header and body compute different widths and drift apart on scroll.
+  // A block-level `auto` width can't grow past its containing block on its own — without this explicit floor, the header and
+  // body wrapper would silently overflow their box instead of growing to fit the columns' real minimums, drifting apart on scroll.
   const minTableWidth = visual.reduce((sum, col) => sum + widthOf(col, effectiveLayout), 0) + ACTIONS_COLUMN_PX;
 
   const sortIndexOf = (column: string) => sort.findIndex((term) => term.column === column);
 
-  // Drag state lives outside React state — only the resulting width needs a
-  // re-render, not every mousemove. Mirrors QueryTab/ChatDock's own
-  // resize-drag wiring (window-level listeners added on mousedown, torn down
-  // on mouseup) rather than introducing a new pattern.
+  // Drag state lives outside React state — only the resulting width needs a re-render, not every mousemove.
   function beginColumnResize(column: string) {
     return (e: ReactMouseEvent<HTMLDivElement>) => {
       e.preventDefault();
@@ -256,8 +212,6 @@ export function DataGrid({
         latest = Math.max(MIN_RESIZED_COLUMN_PX, Math.round(startWidth + (ev.clientX - startX)));
         setLiveWidth({ column, width: latest });
       }
-      // Saved once on release rather than on every mousemove: a drag is one
-      // decision, and writing storage per frame would be dozens of writes for it.
       function onUp() {
         window.removeEventListener("mousemove", onMove);
         window.removeEventListener("mouseup", onUp);
@@ -277,8 +231,7 @@ export function DataGrid({
       ...effectiveLayout,
       pinned,
       order: visual,
-      // Pinning fixes the width, so capture whatever it currently is rather
-      // than snapping the column to the default on pin.
+      // Capture the current width on pin rather than snapping to the default — pinning fixes the width from here on.
       widths: pinned.includes(column) && !effectiveLayout.widths[column]
         ? { ...effectiveLayout.widths, [column]: measuredWidth(column) }
         : effectiveLayout.widths,
@@ -297,16 +250,12 @@ export function DataGrid({
     const to = visual.indexOf(targetColumn);
     if (from < 0 || to < 0) return;
     const next = visual.filter((c) => c !== column);
-    // Removing the column first shifts everything after it left by one, so a
-    // rightward move has to land AFTER the target to actually go anywhere —
-    // inserting at the target's new index would put it back where it started.
+    // Removing the column shifts everything after it left by one, so a rightward move must land AFTER the target's new index.
     const anchor = next.indexOf(targetColumn);
     next.splice(from < to ? anchor + 1 : anchor, 0, column);
     updateLayout({ ...effectiveLayout, order: next });
   }
 
-  /** Keyboard equivalent of the header drag — dragging alone would make
-   *  reordering mouse-only. */
   function nudgeColumn(column: string, delta: number) {
     const from = visual.indexOf(column);
     const to = from + delta;
@@ -355,9 +304,7 @@ export function DataGrid({
     }
   }
 
-  // Same dismissal idiom as GridToolbar's own popovers: a trigger's click
-  // already toggles the menu, so it's excluded here or its toggle would
-  // reopen what this just closed.
+  // The trigger is excluded here — its own click already toggles the menu, so this handler would immediately reopen what it just closed.
   useEffect(() => {
     if (copyMenuRow === null) return;
     function onPointerDown(event: PointerEvent) {
@@ -377,9 +324,7 @@ export function DataGrid({
     };
   }, [copyMenuRow]);
 
-  // Virtualization unmounts the row underneath an open menu once it scrolls
-  // out of the overscan window, which would otherwise leave the menu
-  // anchored to a row that no longer exists.
+  // Virtualization unmounts the row under an open menu once it scrolls out of the overscan window, orphaning the menu's anchor.
   useEffect(() => {
     if (copyMenuRow === null) return;
     const el = scrollRef.current;
@@ -387,10 +332,7 @@ export function DataGrid({
     function onScroll() {
       setCopyMenuRow(null);
     }
-    // Deferred by a frame on purpose. Clicking a trigger that is not fully in
-    // view focuses it, and the browser scrolls it into view AFTER the click
-    // handler runs — listening synchronously means that scroll dismisses the
-    // menu the same click just opened.
+    // Deferred a frame: a trigger not fully in view gets focus-scrolled AFTER the click handler runs, which would self-dismiss otherwise.
     const frame = requestAnimationFrame(() => el.addEventListener("scroll", onScroll));
     return () => {
       cancelAnimationFrame(frame);
@@ -399,29 +341,19 @@ export function DataGrid({
   }, [copyMenuRow]);
 
   return (
-    // No overflow-hidden here: GridToolbar's popovers are `position: absolute`
-    // against this ancestor's stacking context, and an overflow-hidden
-    // ancestor clips an absolutely-positioned descendant regardless of
-    // z-index. The clip that actually needs to happen (rounding the
-    // scrolling grid's corners) lives on the narrower wrapper below instead.
+    // No overflow-hidden here — it would clip GridToolbar's absolutely-positioned popovers regardless of z-index. The corner
+    // rounding that needs it lives on the narrower wrapper below instead.
     <div className="rounded-lg border border-border" role="table" aria-rowcount={rows.length}>
       {toolbar}
       <div className="overflow-hidden rounded-b-lg">
-        {/* Header and body share this one scrollable box (both axes) so a
-            horizontal scroll moves them together — a table/tbody or a
-            sibling header re-flows column widths independently the moment
-            rows are absolutely positioned for virtualization, which is what
-            let the header drift out of alignment with scrolled row content. */}
+        {/* Header and body share this one scrollable box (both axes): a separate table/header would re-flow column widths
+            independently once rows are absolutely positioned for virtualization, drifting out of alignment on scroll. */}
         <div ref={scrollRef} className="max-h-125 overflow-auto">
           <div style={{ minWidth: minTableWidth }}>
             <div
               style={{ display: "grid", gridTemplateColumns }}
-              // z-30 keeps the header above an expanded inline editor (z-20),
-              // which overflows its own cell and would otherwise ride over the
-              // header when its row is scrolled up under it. rounded-t-lg only
-              // when there's no toolbar above it: this row is then the topmost
-              // element inside the outer wrapper, which no longer clips to its
-              // own radius (see GridToolbar's matching comment).
+              // z-30 keeps the header above an expanded inline editor (z-20) that scrolls up under it. rounded-t-lg only when
+              // there's no toolbar above: only then is this row the outer wrapper's topmost element, clipped to its radius.
               className={`sticky top-0 z-30 border-b border-border bg-surface-2 font-mono ${toolbar ? "" : "rounded-t-lg"}`}
               role="row"
             >
@@ -438,18 +370,13 @@ export function DataGrid({
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={onHeaderDrop(col)}
                     style={pinned ? { position: "sticky", left: offsets[col], zIndex: 2 } : undefined}
-                    // `group` belongs on the cell, not the sort button: the pin
-                    // button is the button's SIBLING, so a group scoped to the
-                    // button would never reveal it on hover.
+                    // `group` on the cell, not the sort button — the pin button is the button's SIBLING and needs the hover scope too.
                     className={`group relative flex select-none items-center border-r border-border text-left text-[10.5px] font-semibold uppercase tracking-[0.04em] text-text-faint ${
                       pinned ? "bg-surface-2" : ""
                     } ${dragColumn === col ? "opacity-50" : ""}`}
                   >
-                    {/* `uppercase` is repeated on the button on purpose: the UA
-                        stylesheet sets `text-transform: none` on form controls,
-                        and Tailwind's preflight only re-inherits font/letter-
-                        spacing/color — so the parent's casing never reaches the
-                        label and every header renders lowercase without this. */}
+                    {/* `uppercase` repeated on the button on purpose — the UA stylesheet sets text-transform: none on form
+                        controls, and Tailwind's preflight doesn't re-inherit it, so headers render lowercase without this. */}
                     <button
                       type="button"
                       draggable
@@ -473,9 +400,7 @@ export function DataGrid({
                         </span>
                       ) : null}
                     </button>
-                    {/* `invisible` rather than opacity so an unrevealed pin
-                        can't be clicked, while the header still reserves its
-                        space and nothing shifts on hover. */}
+                    {/* `invisible`, not opacity — an unrevealed pin stays unclickable while the header still reserves its space. */}
                     <button
                       type="button"
                       onClick={() => togglePinned(col)}
@@ -487,9 +412,7 @@ export function DataGrid({
                     >
                       <PinIcon pinned={pinned} />
                     </button>
-                    {/* Drag to resize — mirrors the mockup's `.th-resize`. A
-                        sibling of the sort button (not nested inside it) so
-                        dragging never fires a sort click. */}
+                    {/* Sibling of the sort button, not nested inside it, so dragging never fires a sort click. */}
                     <div
                       aria-hidden
                       data-testid={`resize-handle-${col}`}
@@ -519,46 +442,30 @@ export function DataGrid({
                       style={{
                         display: "grid",
                         gridTemplateColumns,
-                        // Pinned to the same constant the virtualizer measures
-                        // with. Left to size itself, a row is only as tall as its
-                        // content — a bordered boolean pill made some rows 33px
-                        // and plain ones 31.5px while `virtualRow.start` advanced
-                        // by a flat 33px, so rows drifted apart by 1.5px gaps.
-                        // Cells stretch to this height and center their own
-                        // content, so a taller pill can't reintroduce that
-                        // variance and the column rules still span the full row.
+                        // Pinned to the constant the virtualizer measures with — left to size itself, a bordered boolean pill
+                        // once made rows 33px vs 31.5px while `virtualRow.start` advanced by a flat 33px, drifting rows apart.
                         height: ROW_HEIGHT_PX,
                         position: "absolute",
                         top: 0,
                         left: 0,
                         width: "100%",
                         transform: `translateY(${virtualRow.start}px)`,
-                        // See raisedRowIndex's doc comment: this row's own
-                        // transform makes it a stacking context, so an
-                        // overlay inside it can only escape later siblings by
-                        // raising the row, not by raising the overlay. Folds
-                        // in the copy menu's own row for the same reason.
+                        // This row's own transform is a stacking context (see raisedRowIndex above) — the copy menu's row needs the same raising.
                         zIndex: effectiveRaisedRow === dataRowIndex ? 20 : undefined,
                       }}
                     >
                       {visual.map((col) => {
-                        // Always the DATA index: reordering changes where a
-                        // column is drawn, never which value it holds or which
-                        // column an edit resolves to.
+                        // columnIndex stays the DATA index even as `col` iterates the reordered display — reordering must never redirect an edit.
                         const columnIndex = columns.indexOf(col);
                         const value = row[columnIndex] ?? null;
                         const pinned = isPinned(col);
-                        // A pinned cell slides over its neighbours, so it needs
-                        // its own opaque fill — including the row's hover fill,
-                        // or hovering would reveal a hole where it sits.
+                        // A pinned cell slides over its neighbours, so it needs its own opaque fill (including the row's hover fill) or hovering reveals a hole.
                         const pinnedClass = pinned ? "bg-bg group-hover/row:bg-surface-2" : "";
                         const pinnedStyle = pinned
                           ? { position: "sticky" as const, left: offsets[col], zIndex: 10 }
                           : undefined;
                         return renderCell ? (
-                          // `relative` so an expanded inline editor can position
-                          // itself against this cell and spill over the columns
-                          // to its right instead of being squeezed into one.
+                          // `relative` so an expanded inline editor can spill over the columns to its right instead of being squeezed into one.
                           <div
                             key={col}
                             role="cell"
@@ -574,9 +481,7 @@ export function DataGrid({
                             style={pinnedStyle}
                             className={`flex min-w-0 items-center border-r border-border px-3 text-text-muted ${pinnedClass}`}
                           >
-                            {/* The truncation lives on this span, not the cell:
-                                text-overflow has no effect on a flex container's
-                                own anonymous text child. */}
+                            {/* Truncation lives on this span, not the cell — text-overflow has no effect on a flex container's own anonymous text child. */}
                             <span className={`min-w-0 flex-1 truncate ${cellDisplay(value).className}`}>
                               <CellValue value={value} />
                             </span>

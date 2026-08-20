@@ -13,18 +13,16 @@ import {
 } from "../lib/pendingChanges";
 import { mergeSavedQueries, type SavedQuery } from "../lib/savedQueries";
 
-/** `query` is a real tab kind but absent from `TABS`: opening one needs a saved
- *  query, so it cannot come from the + menu. See §3b. */
+// `query` is a real tab kind but absent from `TABS`: opening one needs a saved query, so it cannot come from the + menu.
 export type ToolKind = "api" | "db" | "log" | "email" | "query";
 export type Pane = "left" | "right";
 export type ThemePref = "dark" | "light" | "system";
 export type AppRoute = "workspace" | "settings";
 export type SettingsPane = "general" | "appearance" | "provider" | "connections" | "mcp" | "archive";
-/** Spec §1. `chatOpen` still governs whether the dock is open at all. */
+// No "closed" variant — `chatOpen` governs whether the dock is open at all.
 export type DockPanel = "chat" | "pending" | "insert";
 
-/** Published by the toolbar button, because the dock renders outside
- *  `SplitContent`. Switching tables does NOT retarget an open panel. */
+// Switching tables does NOT retarget an already-open Insert panel.
 export interface InsertTarget {
   connectionId: string;
   table: QualifiedTable;
@@ -40,7 +38,6 @@ export interface Tab {
   state: Record<string, unknown>;
 }
 
-/** `splitOpen` is not stored — a right-pane tab existing is what "split" means. */
 export function isSplitOpen(tabs: Tab[]): boolean {
   return tabs.some((t) => t.pane === "right");
 }
@@ -68,11 +65,9 @@ interface AppState {
   theme: ThemePref;
   setTheme: (theme: ThemePref) => void;
   watchedTables: Set<string>;
-  /** Real `QualifiedTable` objects rather than derived `"schema.name"` keys, for
-   *  wire payloads that need the identity — a Postgres identifier may contain a dot. */
+  // Real `QualifiedTable` objects, not derived "schema.name" keys — a Postgres identifier may contain a dot.
   watchedTableList: QualifiedTable[];
   toggleWatchedTable: (table: QualifiedTable) => void;
-  /** Replaces watch state wholesale, e.g. after loading it from SQLite. */
   setWatchedTables: (tables: QualifiedTable[]) => void;
   chatOpen: boolean;
   setChatOpen: (open: boolean) => void;
@@ -80,15 +75,12 @@ interface AppState {
   setDockPanel: (panel: DockPanel) => void;
   insertTarget: InsertTarget | null;
   setInsertTarget: (target: InsertTarget | null) => void;
-  /** `setChatOpen` and `setDockPanel` refuse to tear the dock down while this is
-   *  set, so an Apply's outcome always has a panel to land in. */
+  // `setChatOpen`/`setDockPanel` refuse to tear the dock down while this is set, so an Apply's outcome always has a panel to land in.
   applyInFlight: boolean;
   setApplyInFlight: (inFlight: boolean) => void;
-  /** How a committed Apply reaches every mounted DbTab, including a split pane's.
-   *  A counter, not a boolean: two applies in a row are two distinct events. */
+  // A counter, not a boolean, so two applies in a row are two distinct events for every mounted DbTab.
   applyGeneration: number;
   bumpApplyGeneration: () => void;
-  /** Spec §10: global, not per-tab. Apply commits the set together. */
   pending: PendingChange[];
   stagePendingUpdate: (entry: UpdateChange) => void;
   togglePendingDelete: (
@@ -102,16 +94,11 @@ interface AppState {
     table: QualifiedTable,
     values: Record<string, string | null>,
   ) => void;
-  /** Spec §12. `table` is always null, and entries are always appended: there is
-   *  no stored value to upsert against. */
   addPendingSql: (connectionId: string, statement: string, previewedEffect: string) => void;
   discardPendingAt: (index: number) => void;
-  /** By identity, so a change staged during Apply's round trip survives. */
   removePendingEntries: (entries: PendingChange[]) => void;
-  /** Scoped to one connection, the exact inverse of Apply (§10). */
   discardAllPending: (connectionId: string | null) => void;
-  /** Global across connections: a query tab pins its connection, so it must resolve
-   *  its own name while the rail shows another. */
+  // Global across connections: a query tab pins its connection, so it must resolve its own name while the rail shows another.
   savedQueries: SavedQuery[];
   mergeSavedQueriesIntoStore: (list: SavedQuery[]) => void;
   patchSavedQuery: (id: string, patch: { name?: string; sql?: string }) => void;
@@ -156,8 +143,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       tabs: s.tabs.map((t) => (t.id === id ? { ...t, state: { ...t.state, ...patch } } : t)),
     })),
 
-  // Leaving the left pane empty is worse than declining; AppStrip opens the `+`
-  // menu targeting the right pane instead.
+  // Leaving the left pane empty is worse than declining — AppStrip opens the `+` menu targeting the right pane instead.
   splitActiveTab: () => {
     const s = get();
     const activeId = s.activeTabId.left;
@@ -204,8 +190,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       watchedTableList: tables,
     }),
   chatOpen: true,
-  // No-ops while an Apply is in flight, so every route that could unmount the
-  // Pending panel is closed by one invariant rather than by each caller.
   setChatOpen: (open) => set((s) => (s.applyInFlight && !open ? {} : { chatOpen: open })),
   dockPanel: "chat",
   setDockPanel: (dockPanel) =>
@@ -244,7 +228,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => ({ savedQueries: s.savedQueries.map((q) => (q.id === id ? { ...q, ...patch } : q)) })),
   removeSavedQuery: (id) => set((s) => ({ savedQueries: s.savedQueries.filter((q) => q.id !== id) })),
   route: "workspace",
-  // Settings replaces the workspace, dock included — same invariant as above.
   setRoute: (route) => set((s) => (s.applyInFlight && route !== "workspace" ? {} : { route })),
   settingsPane: "general",
   setSettingsPane: (settingsPane) => set({ settingsPane }),

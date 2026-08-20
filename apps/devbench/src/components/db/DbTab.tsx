@@ -22,14 +22,9 @@ import {
 import { stagedUpdateFor, hasStagedDelete } from "../../lib/pendingChanges";
 import { useAppStore } from "../../store/useAppStore";
 
-// A cell being edited. No phase and no in-flight flag: accepting an edit
-// mutates local state and returns — there is no request to be in flight, and
-// no transaction whose fate a response has to decide.
 type CellEdit = { rowIndex: number; columnIndex: number; draft: string | null };
 
-/** The backend's placeholder for a value `cell_to_string` cannot decode (see
- *  its own comment in `commands/db.rs`). It is a marker, never a value: it is
- *  not what the column holds, and it is not what a WHERE could match. */
+// Marker for a value cell_to_string couldn't decode — never a real value, never a WHERE match.
 const UNSUPPORTED = "<unsupported type>";
 
 function isEditableCell({
@@ -40,22 +35,12 @@ function isEditableCell({
   stagedDelete,
 }: {
   pkColumn: string | null;
-  /** The row's key, already refused (`null`) when it is NULL or undecodable. */
   pkValue: string | null;
   column: string;
   value: string | null;
   stagedDelete: boolean;
 }): boolean {
-  // A cell the grid can't even faithfully display (pk_column === null means no
-  // safe WHERE target on the table at all; pkValue === null means no usable
-  // key for THIS row; UNSUPPORTED means the value shown isn't really the value
-  // — editing it would mean overwriting something the user never actually saw)
-  // must not be editable.
-  //
-  // A row already staged for deletion is refused for a different reason: the
-  // update would be appended AFTER the delete, match zero rows at Apply, and
-  // be reported as "someone deleted it after this change was staged" — blaming
-  // a stranger for the user's own staged delete.
+  // Staged-delete rows are refused too: an update appended after the delete would match zero rows at Apply.
   return (
     pkColumn !== null &&
     pkValue !== null &&
@@ -118,63 +103,28 @@ export function DbTab({
   const togglePendingDelete = useAppStore((s) => s.togglePendingDelete);
 
   const [tableRows, setTableRows] = useState<TableRows | null>(null);
-  // The backend derives `columns` from the first returned row, so a filter that
-  // matches nothing comes back with none — which would empty every popover's
-  // column picker and leave "+ Add filter" building a condition on `undefined`.
-  // The toolbar reads this instead: the last shape this table actually returned.
+  // tableRows.columns comes back empty when a filter matches nothing; this holds the last non-empty shape.
   const [lastKnownColumns, setLastKnownColumns] = useState<string[]>([]);
-  // Column types, defaults and foreign-key targets for the selected table.
-  // Fetched once per table — the schema does not change when the page or the
-  // filter does.
   const [columnMeta, setColumnMeta] = useState<ColumnInfo[]>([]);
-  // Which cell's FK popover is open, and what the lookup for it returned.
-  // Keyed by cell rather than by value: the same value can appear in several
-  // rows, and only the one that was clicked should open.
   const [fkCell, setFkCell] = useState<{ rowIndex: number; columnIndex: number } | null>(null);
   const [fkRow, setFkRow] = useState<TableRows | null>(null);
   const [fkLoading, setFkLoading] = useState(false);
   const [fkError, setFkError] = useState<string | null>(null);
-  // Same shape as requestIdRef: a slow lookup that lands after the popover has
-  // closed (or reopened on another cell) must not paint its row into it.
   const fkRequestRef = useRef(0);
-  // A jump parks its pinned filter here for the table-switch effect to pick
-  // up. Declared with the other refs rather than beside handleJump because the
-  // table-switch effect above closes over it — a `const` declared after that
-  // effect would still work (the callback runs after render), but reading the
-  // component top-to-bottom should not require knowing that.
   const pendingJumpRef = useRef<{ key: string; filter: FilterCondition[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  // A list, outermost term first — "status, then newest first" is a normal
-  // thing to want from a grid, and the backend takes the whole ORDER BY.
   const [sort, setSort] = useState<SortTerm[]>([]);
   const [page, setPage] = useState(0);
   const [filter, setFilter] = useState<FilterCondition[]>([]);
   const [limit, setLimit] = useState(100);
-  // From the parallel invokeCountTableRows call below, not the fetched rows —
-  // the grid's own page never carries the true total.
   const [total, setTotal] = useState(0);
 
-  // Mirrors `limit`, but updated synchronously (unlike the state variable,
-  // which only takes effect on the next render). GridToolbar's rows-per-page
-  // control calls onLimitChange then onPageChange back-to-back in one
-  // handler — both are this render's closures, so onPageChange's own `limit`
-  // read would otherwise still see the pre-change value and fetch a page at
-  // the OLD size, which then wins the requestId race since it fires second.
   const limitRef = useRef(limit);
 
   const [editing, setEditing] = useState<CellEdit | null>(null);
-  // A staging refusal (currently only "this row's primary key is NULL")
-  // renders next to the grid, not in place of it — reusing `error`, which
-  // swaps the whole grid for an error box, would make one unusable cell look
-  // like the entire table failed to load.
   const [editError, setEditError] = useState<string | null>(null);
 
-  // Column widths/order/pins/hidden, scoped per connection+table exactly like
-  // DataGrid used to scope it internally — lifted up here since GridToolbar's
-  // Columns popover needs to read and write the same state the grid renders
-  // from. Same render-time key-swap as DataGrid had: an effect would let one
-  // render paint the previous table's layout before catching up.
   const layoutKey = `${activeConnectionId}:${table ? tableKey(table) : "null"}`;
   const [storedLayout, setStoredLayout] = useState(() => ({ key: layoutKey, layout: readLayout(layoutKey) }));
   if (storedLayout.key !== layoutKey) {
@@ -186,9 +136,6 @@ export function DbTab({
     writeLayout(layoutKey, next);
   }
 
-  // Bumped on every fetch so a slow, superseded response (e.g. a sort click
-  // fired just before a faster one) can be told apart from the latest and
-  // discarded instead of clobbering it when it eventually resolves.
   const requestIdRef = useRef(0);
 
   async function fetchRows(
@@ -202,8 +149,6 @@ export function DbTab({
     const requestId = ++requestIdRef.current;
     setLoading(true);
     setError(null);
-    // Fired in parallel: the count is the slow one and the grid should not
-    // block on it.
     void invokeCountTableRows(connId, t, activeFilter)
       .then((n) => {
         if (requestId === requestIdRef.current) setTotal(n);
@@ -223,36 +168,19 @@ export function DbTab({
       if (result.columns.length > 0) setLastKnownColumns(result.columns);
     } catch (err) {
       if (requestId !== requestIdRef.current) return;
-      // `tableRows` is deliberately left alone. A failing query is usually a
-      // filter the user just applied, and clearing the rows would unmount the
-      // toolbar along with them — taking away the Filter popover that is the
-      // only way to undo it. The error renders above the grid instead, and the
-      // stale rows stay visible and labelled by that error. On the very first
-      // load there is nothing to keep, so the error box stands alone.
+      // tableRows is deliberately left alone — clearing it would unmount the toolbar (and its Filter popover) needed to fix the error.
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       if (requestId === requestIdRef.current) setLoading(false);
     }
   }
 
-  // A new table may not even have the old one's sort column, and its rows
-  // start over at offset 0 — same reasoning one level up for a connection
-  // switch underneath an already-open table. Clearing `tableRows` here too
-  // (not just resetting sort/page/filter/total) drops the *previous* table's
-  // grid from the DOM for the duration of the switch — leaving it mounted
-  // would keep its stale toolbar/sort-column controls clickable against a
-  // table whose page 0 hasn't been fetched yet under the new selection.
   useEffect(() => {
-    // A stale edit can't survive a table/connection switch: its rowIndex and
-    // columnIndex are about to describe entirely different data once the new
-    // table's rows land.
     setEditing(null);
     setEditError(null);
     closeFk();
     setSort([]);
     setPage(0);
-    // A jump parks its pinned filter here rather than calling setFilter, which
-    // this effect would clear a render later. Anything else starts unfiltered.
     const jump = pendingJumpRef.current;
     const jumpFilter =
       jump && table && jump.key === tableKey(table) ? jump.filter : [];
@@ -270,78 +198,43 @@ export function DbTab({
       requestIdRef.current++;
       setLoading(false);
     }
-    // Keyed on the identity string, not `table` itself: a legacy string prop
-    // is re-wrapped into a fresh object by normalizeTable on every render, so
-    // depending on the object would re-run this effect (and re-fetch) every
-    // render instead of only on an actual table change.
+    // table is re-wrapped into a fresh object each render, so keying on tableKey(table) avoids re-fetching every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [table ? tableKey(table) : null, activeConnectionId]);
 
-  // Its own effect rather than a call inside fetchRows: the metadata is per
-  // table, and fetchRows also runs on every page, sort, filter and refresh.
   useEffect(() => {
     if (!table || !activeConnectionId) {
       setColumnMeta([]);
       return;
     }
     let cancelled = false;
-    // Cleared before the fetch starts, not just on catch/no-table: on a
-    // table switch, leaving the old table's metadata in place would let it
-    // render against the new table's rows until this resolves. Absent
-    // metadata degrades to a plain grid; stale metadata actively lies about
-    // the schema (wrong FK targets, wrong filter operators).
     setColumnMeta([]);
     invokeDescribeColumns(activeConnectionId, table)
       .then((meta) => {
         if (!cancelled) setColumnMeta(meta);
       })
       .catch(() => {
-        // No metadata degrades to text operators and no link icons, which is
-        // a usable grid. Taking the tab down because the catalog query failed
-        // would be worse than the feature simply being absent.
         if (!cancelled) setColumnMeta([]);
       });
     return () => {
       cancelled = true;
     };
-    // Keyed on the identity string for the same reason the fetch effect above
-    // is: a legacy string prop is re-wrapped into a fresh object every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [table ? tableKey(table) : null, activeConnectionId]);
 
-  // Apply commits in the dock, which cannot reach this grid, so a written
-  // commit arrives as a store signal instead. Keyed on that signal rather than
-  // on the pending set's size: a discard shrinks the set without changing the
-  // database (the staged overlay clearing is a re-render, and refetching it
-  // cost an open editor its draft), while an Apply that lands as a cell is
-  // staged mid-flight leaves the size unchanged and still needs the reload.
   const seenApplyRef = useRef(applyGeneration);
   useEffect(() => {
     if (seenApplyRef.current === applyGeneration) return;
     seenApplyRef.current = applyGeneration;
     if (!table || !activeConnectionId) return;
-    // The rows underneath an open editor are about to be replaced while
-    // editing.rowIndex stays put, so accepting would stage the draft against
-    // whatever row lands at that index — with that row's own old_value, which
-    // the backend's guard would accept. Every query-shape change does this.
     abandonEditForQueryChange();
     void fetchRows(table, activeConnectionId, filter, sort, page, limitRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [applyGeneration]);
 
-  // A query-shape change (sort, filter, page, limit, refresh) or a table switch
-  // drops an open editor: its rowIndex and columnIndex are about to describe
-  // different data. The PENDING SET is deliberately untouched — it is global by
-  // design (spec §10) and keyed by primary key, not by row position, so it
-  // survives every one of these.
   function abandonEditForQueryChange() {
     setEditing(null);
     setEditError(null);
-    // A filter/sort/page/limit/refresh replaces tableRows without clearing
-    // it first (unlike a table switch), so a popover anchored to a rowIndex
-    // from the old rows would silently repaint onto whatever row lands at
-    // that index in the new ones — and a lookup still in flight for it would
-    // paint into the wrong cell entirely.
     closeFk();
   }
 
@@ -366,22 +259,12 @@ export function DbTab({
       setFkRow(referenced);
     } catch (err) {
       if (requestId !== fkRequestRef.current) return;
-      // A failed lookup is not the same fact as a key pointing nowhere.
-      // Reporting it as "no matching row" would turn an outage into a claim
-      // about the data.
       setFkError(err instanceof Error ? err.message : String(err));
     } finally {
       if (requestId === fkRequestRef.current) setFkLoading(false);
     }
   }
 
-  // Spec §8: the jump is a table switch plus a pinned `column = value` filter.
-  // A filter rather than an offset means it lands on the row under any sort or
-  // page size, with no positional query.
-  //
-  // The filter cannot simply be handed to setFilter: the table-switch effect
-  // clears filter, sort, page and limit on every table change, and would wipe
-  // it a render later. It is parked in pendingJumpRef and consumed there.
   function handleJump(target: ForeignKeyRef, value: string) {
     if (!activeConnectionId) return;
     const targetTable: QualifiedTable = { schema: target.schema, name: target.table };
@@ -390,16 +273,9 @@ export function DbTab({
       { column: target.column, op: "eq", value, enabled: true },
     ];
 
-    // Layouts are keyed per table (gridLayout.ts, `layoutKey` above), so the
-    // source table's pins and hidden columns never travel to the target in
-    // the first place — there is nothing here that needs clearing.
-
     closeFk();
 
     if (table && targetKey === tableKey(table)) {
-      // A self-referencing key. `table` does not change, so the table-switch
-      // effect never runs — apply the jump here or the filter is parked and
-      // then dropped.
       abandonEditForQueryChange();
       setSort([]);
       setPage(0);
@@ -412,9 +288,6 @@ export function DbTab({
     onPatchState({ table: targetTable });
   }
 
-  // Plain click replaces the sort; shift-click builds one up. Cycling a term
-  // asc → desc → gone (rather than asc → desc → asc) is what makes it possible
-  // to drop a column back out of a multi-sort without clearing the whole thing.
   function handleSort(column: string, additive: boolean) {
     if (!table || !activeConnectionId) return;
     abandonEditForQueryChange();
@@ -444,15 +317,6 @@ export function DbTab({
     setEditing({ rowIndex, columnIndex, draft: currentValue });
   }
 
-  /** The row's primary key value, or null when there is nothing safe to key a
-   *  change by. Read from the CURRENT rows, so it is the stored value even
-   *  when the cell beside it is showing a staged one.
-   *
-   *  UNSUPPORTED is refused exactly as a NULL key is: it is the grid's
-   *  placeholder for a type `cell_to_string` could not decode (numeric, bytea,
-   *  an enum), not the key. Staging against it would build
-   *  `WHERE "id" = $2::numeric` with the literal marker as the parameter —
-   *  `invalid input syntax`, failing the whole set, naming nothing. */
   function pkValueForRow(rowIndex: number): string | null {
     if (!tableRows?.pk_column) return null;
     const pkIndex = tableRows.columns.indexOf(tableRows.pk_column);
@@ -475,36 +339,17 @@ export function DbTab({
       pk_column: tableRows.pk_column,
       pk_value: pkValue,
       column: tableRows.columns[columnIndex],
-      // ALWAYS the stored value from `tableRows`, never the staged one. See
-      // pendingChanges.ts: this is what makes the set a diff rather than a log,
-      // and what the backend's IS NOT DISTINCT FROM guard compares against.
       old_value: tableRows.rows[rowIndex][columnIndex] ?? null,
       new_value: next,
     });
   }
 
-  // Icon buttons here are neutral (`text-text-faint`), matching AppStrip's
-  // icon-button convention — DESIGN.md reserves semantic color for actual
-  // state, and a confirm/cancel affordance is generic interactivity, not
-  // state.
-  // (Deviates from the mockup, which fills these `.save`/`.cancel` buttons
-  // with success-bg/neutral-bg — same documented tradeoff as the connection
-  // rail's watch icon.) Sizing (20x20, 4px radius) still follows the
-  // mockup's `.cell-edit button`.
   const actionButtonClass =
     "grid h-5 w-5 shrink-0 place-items-center rounded text-text-faint hover:bg-surface-2 hover:text-text disabled:opacity-40";
-  // Accept carries the mockup's success hue (`.cell-edit .save`); cancel stays
-  // neutral, so the pair reads as which control accepts the edit and which
-  // abandons it rather than as two identical glyphs.
   const acceptButtonClass =
     "grid h-5 w-5 shrink-0 place-items-center rounded bg-success-bg text-success hover:brightness-125 disabled:opacity-40";
 
-  // A cell is usually far narrower than the value inside it, so the editor
-  // sizes to its content and floats over the columns to its right rather than
-  // cramming into one column's width. Absolute (against the `relative` cell
-  // DataGrid provides) so no neighbour reflows and the header stays aligned;
-  // opaque because it is genuinely covering the cells underneath. z-20 sits
-  // above sibling cells and below DataGrid's z-30 sticky header.
+  // z-20: above sibling cells, below DataGrid's z-30 sticky header.
   const expandedEditorClass =
     "absolute left-0 top-1/2 z-20 flex w-max min-w-full -translate-y-1/2 items-center gap-1 " +
     "rounded-sm border border-border bg-surface-2 px-3 py-1 shadow-lg";
@@ -529,9 +374,6 @@ export function DbTab({
     const staged = addressable
       ? stagedUpdateFor(pending, activeConnectionId, table, pkValue, column)
       : ({ staged: false } as const);
-    // The staged value is what the cell shows and what an edit of it starts
-    // from — spec §10 requires it, and a checkbox that snapped back to its
-    // stored value would look like the click did nothing.
     const shown = staged.staged ? staged.value : value;
 
     if (isEditingThisCell) {
@@ -553,9 +395,6 @@ export function DbTab({
             }}
             className="min-w-0 rounded border border-accent bg-bg px-1.5 py-0.75 text-xs text-text"
           />
-          {/* "Stage change", not "Preview": it writes nothing, and calling it
-              a preview would overstate what the button does in the other
-              direction from the retired one, which understated it. */}
           <button
             type="button"
             aria-label="Stage change"
@@ -578,10 +417,6 @@ export function DbTab({
 
     const { className, kind } = cellDisplay(shown);
 
-    // Spec §7: a boolean is the one type whose whole value space fits in a
-    // control, so the checkbox IS the editor — no text field, no confirm or
-    // cancel. NULL is not handled here: it falls through to the italic NULL
-    // text below, which is what keeps the three states distinct.
     if (kind === "bool-true" || kind === "bool-false") {
       const checked = kind === "bool-true";
       return (
@@ -634,11 +469,6 @@ export function DbTab({
       </button>
     );
 
-    // Spec §10: an inset --warning left bar. Semantic colour for real state —
-    // "changed but not written" — which is the only thing it is reserved for.
-    // Absolutely positioned against the `relative` cell DataGrid already
-    // provides for the expanded editor, so the grid needs no new prop and stays
-    // ignorant of the pending set.
     const stagedBar = staged.staged ? (
       <span
         aria-hidden
@@ -680,13 +510,8 @@ export function DbTab({
     );
   }
 
-  // The real Postgres type, not a guess from a sample value. Before the
-  // metadata lands (and if it never does) every column reads as text, whose
-  // operators are the ones that work on anything.
   const familyOf = (column: string) => familyOfColumn(columnMeta, column);
 
-  // Watch state is scoped per connection, not just per app. Re-hydrating
-  // whenever activeConnectionId changes keeps it in sync with the picker.
   useEffect(() => {
     if (!activeConnectionId) return;
     invokeListWatchedTables(activeConnectionId)
@@ -702,16 +527,12 @@ export function DbTab({
     try {
       await invokeSetWatchedTable(activeConnectionId, table, nextWatched);
     } catch {
-      // Roll the optimistic toggle back rather than leaving the UI claiming a
-      // table is watched when the correlation engine will not see it.
       onToggleWatch(table);
     }
   }
 
   return (
-    // min-w-0 here too: this root is itself a row's main-axis flex child
-    // (SplitContent's per-tab wrapper), so without it the same shrink-refusal
-    // just recurs one level higher than the content column below.
+    // min-w-0: flex's default min-width:auto would otherwise block shrinking below content width.
     <div className="flex h-full w-full min-h-0 min-w-0">
       <ConnectionRail
         connectionId={activeConnectionId}
@@ -725,10 +546,6 @@ export function DbTab({
         onOpenQuery={onOpenQuery}
         onCloseQueryTabs={onCloseQueryTabs}
       />
-      {/* min-w-0 overrides the flex default of min-width: auto, which refuses
-          to shrink below descendant content width — without it, a wide table
-          widens this column (and everything above it, up to the app window)
-          instead of scrolling inside DataGrid's own scroll container. */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {activeConnectionId ? (
           <div className="flex h-11 items-center border-b border-border px-3.5">
@@ -755,7 +572,6 @@ export function DbTab({
             <div className="text-sm text-text-faint">Select a connection to browse its data.</div>
           ) : (
             <>
-              {/* Above the grid, never instead of it — see fetchRows' catch. */}
               {error ? (
                 <div role="alert" className="mb-2 rounded-lg border border-border bg-danger-bg p-3 text-sm text-danger">
                   {error}
@@ -776,15 +592,9 @@ export function DbTab({
                     renderCell={renderCell}
                     layout={layout}
                     onLayoutChange={updateLayout}
-                    // Both overlays need to escape their own row's stacking
-                    // context. Every virtualized row carries a `transform`, so
-                    // an overlay's own z-index is sealed inside it and a LATER
-                    // row paints over it — the editor had this bug too, not
-                    // just the FK popover. Raising the ROW is the only fix.
+                    // Every virtualized row carries a `transform`, sealing its own z-index inside it — raising the row is the only way an overlay escapes a later row painting over it.
                     raisedRowIndex={fkCell?.rowIndex ?? editing?.rowIndex ?? null}
                     renderRowActions={(rowIndex) => {
-                      // Spec §11: a delete needs a single-column primary key,
-                      // the same rule that governs whether a cell is editable.
                       const pkColumn = tableRows?.pk_column;
                       if (!table || !pkColumn || !activeConnectionId) return null;
                       const pkValue = pkValueForRow(rowIndex);
@@ -793,9 +603,6 @@ export function DbTab({
                       return (
                         <button
                           type="button"
-                          // Named by the row it acts on: one of these is drawn
-                          // per row, and identical names would make every one
-                          // of them indistinguishable to a screen reader.
                           aria-label={
                             staged
                               ? `Undo staged delete of row ${pkValue}`
@@ -815,9 +622,6 @@ export function DbTab({
                     }}
                     toolbar={
                       <GridToolbar
-                        // Not tableRows.columns: a filter matching zero rows
-                        // returns none, which would blank every popover's
-                        // column picker (see lastKnownColumns).
                         columns={tableRows.columns.length > 0 ? tableRows.columns : lastKnownColumns}
                         rows={tableRows.rows}
                         layout={layout}
@@ -846,11 +650,7 @@ export function DbTab({
                         limit={limit}
                         onLimitChange={(next) => {
                           abandonEditForQueryChange();
-                          // Deliberately no fetch: the toolbar always follows this
-                          // with onPageChange(1), which fetches page 0 at the new
-                          // size via the ref set just below. Fetching here as well
-                          // would bill every page-size change a second row query
-                          // and count, and the requestId race discards its result.
+                          // No fetch here — the toolbar always follows with onPageChange(1), which fetches at the new size.
                           limitRef.current = next;
                           setLimit(next);
                           setPage(0);
@@ -863,9 +663,6 @@ export function DbTab({
                           if (!table || !activeConnectionId) return;
                           setInsertTarget({ connectionId: activeConnectionId, table, columns: columnMeta });
                           setDockPanel("insert");
-                          // The dock has to be open for the panel to be seen
-                          // at all — opening the panel into a closed dock
-                          // would read as the button doing nothing.
                           setChatOpen(true);
                         }}
                         familyOf={familyOf}

@@ -1,10 +1,7 @@
 import { tableKey } from "./tableIdentity";
 import type { QualifiedTable } from "./tauri";
 
-/** Wire-compatible with the Rust `PendingChange`; snake_case because serde reads
- *  the names as written. `connection_id` is frontend-only — the set is GLOBAL
- *  while a connection is not, so without it a change staged against dev would
- *  apply against staging the moment the picker moved. */
+// connection_id is frontend-only — without it, a change staged against dev would apply against staging once the picker moved.
 export type PendingChange =
   | {
       kind: "update";
@@ -13,8 +10,7 @@ export type PendingChange =
       pk_column: string;
       pk_value: string;
       column: string;
-      /** ALWAYS the stored value, never the staged one: what makes the set a diff
-       *  rather than a log, and what `IS NOT DISTINCT FROM` compares against. */
+      // ALWAYS the stored value, never the staged one — what `IS NOT DISTINCT FROM` compares against.
       old_value: string | null;
       new_value: string | null;
     }
@@ -41,7 +37,6 @@ export type PendingChange =
 
 export type UpdateChange = Extract<PendingChange, { kind: "update" }>;
 
-/** Wire-compatible with the Rust `ConflictReport`. */
 export interface ConflictReport {
   index: number;
   table: string;
@@ -49,11 +44,10 @@ export interface ConflictReport {
   column: string | null;
   expected: string | null;
   found: string | null;
-  /** Distinct from `found: null`, which is a row present holding NULL. */
+  // Distinct from `found: null`, which is a row present holding NULL.
   row_missing: boolean;
 }
 
-/** Wire-compatible with the Rust `ApplyOutcome`. */
 export interface ApplyOutcome {
   applied: number;
   conflict: ConflictReport | null;
@@ -71,9 +65,7 @@ function updateKey(
   return `${connectionId}\u0000${tableKey(table)}\u0000${pkValue}\u0000${column}`;
 }
 
-/** Spec §10. On this wire `null` IS the SQL NULL and "NULL" is four ordinary
- *  characters, so identity comparison already is the typed comparison, and the
- *  text-cell-holding-"NULL" failure the spec warns about cannot arise. */
+// `null` IS the SQL NULL; the string "NULL" is four ordinary characters, so identity comparison already is the typed comparison.
 export function sameStoredValue(a: string | null, b: string | null): boolean {
   return a === b;
 }
@@ -90,8 +82,7 @@ export function discardAt(pending: PendingChange[], index: number): PendingChang
   return pending.filter((_, i) => i !== index);
 }
 
-/** By identity: Apply must drop what it SENT and nothing else, since the set may
- *  have grown during the round trip. */
+// By identity, not value: the set may have grown during the round trip, and Apply must drop only what it SENT.
 export function removeEntries(
   pending: PendingChange[],
   entries: PendingChange[],
@@ -99,7 +90,6 @@ export function removeEntries(
   return pending.filter((p) => !entries.includes(p));
 }
 
-/** With no connection selected nothing is "mine", so nothing is discarded. */
 export function entriesForOtherConnections(
   pending: PendingChange[],
   connectionId: string | null,
@@ -108,8 +98,6 @@ export function entriesForOtherConnections(
   return pending.filter((p) => p.connection_id !== connectionId);
 }
 
-/** Spec §10: upsert-or-delete, not append. A cell set back to its stored value
- *  removes its entry, so toggling a checkbox twice does not read "Pending 2". */
 export function stageUpdate(pending: PendingChange[], entry: UpdateChange): PendingChange[] {
   const at = updateIndex(
     pending,
@@ -122,8 +110,7 @@ export function stageUpdate(pending: PendingChange[], entry: UpdateChange): Pend
   return pending.map((p, i) => (i === at ? entry : p));
 }
 
-/** A staged NULL and "nothing staged" are different facts; collapsing them would
- *  make a cell staged to NULL render its stored value. */
+// A staged NULL and "nothing staged" are different facts — collapsing them would make a cell staged to NULL render its stored value.
 export function stagedUpdateFor(
   pending: PendingChange[],
   connectionId: string,
@@ -152,7 +139,6 @@ function deleteIndex(
   );
 }
 
-/** Staging the same row twice means "undo that": the row action is its only control. */
 export function toggleDelete(
   pending: PendingChange[],
   connectionId: string,
@@ -177,8 +163,7 @@ export function hasStagedDelete(
   return deleteIndex(pending, connectionId, table, pkValue) >= 0;
 }
 
-/** Position in the WHOLE set: a discard button addresses it directly, and a
- *  `ConflictReport`'s index is translated back to it by `PendingPanel`. */
+// Index into the WHOLE set, not the grouped view — a discard button and ConflictReport.index both address it directly.
 export interface IndexedChange {
   entry: PendingChange;
   index: number;
@@ -193,7 +178,6 @@ export interface PendingGroup {
   entries: IndexedChange[];
 }
 
-/** Spec §10: grouped by table; a `sql` entry has none, so it files on its own. */
 export function groupByTable(entries: IndexedChange[]): PendingGroup[] {
   const groups: PendingGroup[] = [];
   entries.forEach(({ entry, index }) => {

@@ -4,14 +4,13 @@ use tauri::State;
 
 use crate::local_db::LocalDb;
 
-/// Field names are the wire names; serde reads them exactly as written.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SavedQuery {
     pub id: String,
     pub connection_id: String,
     pub name: String,
     pub sql: String,
-    /// Epoch millis. Orders the rail, so a rename never reshuffles it.
+    // Epoch millis. Orders the rail, so a rename never reshuffles it.
     pub created_at: i64,
 }
 
@@ -29,8 +28,7 @@ pub async fn list_saved_queries_impl(
     pool: &SqlitePool,
     connection_id: &str,
 ) -> Result<Vec<SavedQuery>, String> {
-    // `id` breaks the tie: two queries created in one millisecond would otherwise
-    // reshuffle the rail between renders.
+    // `id` breaks the tie — two queries created in one millisecond would otherwise reshuffle the rail between renders.
     let rows = sqlx::query(
         "SELECT id, connection_id, name, sql, created_at FROM saved_queries \
          WHERE connection_id = ? ORDER BY created_at, id",
@@ -245,7 +243,6 @@ mod tests {
         assert!(list_saved_queries_impl(&db.pool, "default").await.unwrap().is_empty());
     }
 
-    // Nothing here interpolates, so a hostile NAME is stored and returned verbatim.
     #[tokio::test]
     async fn a_hostile_name_is_stored_verbatim_because_nothing_interpolates_it() {
         let (_dir, db) = db().await;

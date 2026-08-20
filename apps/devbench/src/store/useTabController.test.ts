@@ -67,9 +67,6 @@ describe("useTabController", () => {
     expect(useAppStore.getState().tabs.map((t) => t.id)).toEqual(["good"]);
   });
 
-  // A query tab is opened from the rail, never from the + menu, so its kind is
-  // absent from `TABS` — validating against that list would have discarded it
-  // here and lost the tab on every restart.
   it("hydrates a persisted query tab, whose kind the + menu cannot create", async () => {
     vi.spyOn(tauriLib, "invokeListTabs").mockResolvedValue([
       {
@@ -138,8 +135,6 @@ describe("useTabController", () => {
     await waitFor(() => expect(closeTab).toHaveBeenCalledWith("t-1"));
   });
 
-  // Spec: "URL edits are debounced into a single write, not one per keystroke."
-  // Applied generically to every patchTabState call, not just RequestBuilder's.
   it("debounces patchTabState into a single write after 300ms of quiet", async () => {
     vi.spyOn(tauriLib, "invokeListTabs").mockResolvedValue([
       { id: "t-1", session_id: null, kind: "api", pane: "left", ordinal: 0, state: null },
@@ -155,8 +150,6 @@ describe("useTabController", () => {
       result.current.patchTabState("t-1", { url: "/abc" });
     });
 
-    // The in-memory state is immediate — typing must feel instant even though
-    // the SQLite write is delayed.
     expect(useAppStore.getState().tabs[0].state).toEqual({ url: "/abc" });
     expect(setTabState).not.toHaveBeenCalled();
 
@@ -242,8 +235,6 @@ describe("useTabController", () => {
   });
 
   it("focuses an existing tab matched by state, not merely by kind", () => {
-    // Two query tabs are two documents. A kind-only lookup would focus the
-    // first one no matter which query was clicked.
     useAppStore.setState({
       tabs: [
         { id: "t1", kind: "query", pane: "left", ordinal: 0, state: { queryId: "q1", connectionId: "c1" } },
@@ -259,10 +250,6 @@ describe("useTabController", () => {
     expect(useAppStore.getState().activeTabId.left).toBe("t2");
   });
 
-  // §3b's pin. `match` means the tab was found BY its state, so patching that
-  // state would rewrite the very thing just matched on — here, silently
-  // repointing a query written against c1 at whatever connection happens to be
-  // active now.
   it("leaves a matched tab's state alone, rather than patching over what it matched on", () => {
     useAppStore.setState({
       tabs: [{ id: "t1", kind: "query", pane: "left", ordinal: 0, state: { queryId: "q1", connectionId: "c1" } }],

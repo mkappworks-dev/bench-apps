@@ -53,8 +53,6 @@ impl ConnectionRegistry {
 
         let connection_string = postgres_connection_string(&host, port as u16, &database, &username, password.as_deref(), &sslmode);
 
-        // Browsing, a query tab, and a held-open preview transaction can all be in
-        // flight on one connection at once.
         let pool = PgPoolOptions::new()
             .max_connections(5)
             .connect(&connection_string)
@@ -69,8 +67,7 @@ impl ConnectionRegistry {
     }
 }
 
-/// The one place a Postgres connection string is built. `password: None` or empty
-/// omits the credential segment, for local trust/peer-auth setups.
+// No password (empty or None) omits the credential segment — needed for local trust/peer-auth.
 pub fn postgres_connection_string(
     host: &str,
     port: u16,

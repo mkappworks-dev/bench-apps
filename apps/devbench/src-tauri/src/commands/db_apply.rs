@@ -10,7 +10,6 @@ use crate::connection_registry::ConnectionRegistry;
 use crate::local_db::LocalDb;
 use crate::secrets::SecretStore;
 
-/// One staged intention. Replayed in staging order.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PendingChange {
@@ -25,8 +24,7 @@ pub enum PendingChange {
     },
     Insert {
         table: QualifiedTable,
-        /// BTreeMap, not HashMap: the column list and VALUES list are built from one
-        /// iteration and must not drift apart.
+        /// BTreeMap, not HashMap: the column list and VALUES list must stay in the same order across one iteration.
         values: BTreeMap<String, Option<String>>,
     },
     Delete {
@@ -41,7 +39,6 @@ pub enum PendingChange {
     },
 }
 
-/// A staged entry that no longer matches the database.
 #[derive(Debug, Serialize, PartialEq)]
 pub struct ConflictReport {
     pub index: usize,
@@ -57,13 +54,10 @@ pub struct ConflictReport {
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct ApplyOutcome {
-    /// Entries applied, not rows touched.
     pub applied: usize,
     pub conflict: Option<ConflictReport>,
 }
 
-/// Validated even though it comes from the catalog, not user input: the same
-/// two-layer discipline this codebase applies to identifiers.
 async fn cast_type(
     pool: &PgPool,
     table: &QualifiedTable,
@@ -76,9 +70,7 @@ async fn cast_type(
     Ok(ty)
 }
 
-/// Read inside the aborted transaction, so the conflict reports what this entry
-/// actually collided with. `::text` is safe here only because the row is already
-/// located by its primary key — there is no index to defeat.
+// `::text` is safe here only because the row is already located by its primary key — there is no index to defeat.
 async fn read_current(
     tx: &mut Transaction<'_, Postgres>,
     table: &QualifiedTable,
@@ -236,7 +228,6 @@ pub async fn apply_changes(
 mod tests {
     use super::*;
 
-    // No shared pool helper in this codebase; each test module builds its own.
     async fn test_pool() -> PgPool {
         let host = std::env::var("PGHOST").unwrap_or_else(|_| "localhost".into());
         let database = std::env::var("PGDATABASE").unwrap_or_else(|_| "devbench_test".into());
@@ -383,8 +374,7 @@ mod tests {
         sqlx::query("DROP TABLE apply_sql_effect").execute(&pool).await.unwrap();
     }
 
-    // sqlx binds every value as TEXT and Postgres has no assignment cast from text
-    // to integer or boolean, so an uncast `SET "n" = $1` is a hard error off text.
+    // sqlx binds every value as TEXT; Postgres has no assignment cast from text to int/bool, so an uncast SET is a hard error.
     #[tokio::test]
     async fn casts_values_for_non_text_columns() {
         let pool = test_pool().await;
@@ -424,7 +414,6 @@ mod tests {
         assert_eq!(conflict.index, 1);
         assert_eq!(conflict.column.as_deref(), Some("status"));
         assert_eq!(conflict.expected.as_deref(), Some("stale_expectation"));
-        // Inside the aborted transaction: what the second entry actually collided with.
         assert_eq!(conflict.found.as_deref(), Some("first"));
         assert!(!conflict.row_missing);
 
@@ -435,8 +424,7 @@ mod tests {
         sqlx::query("DROP TABLE apply_conflict").execute(&pool).await.unwrap();
     }
 
-    // `=` against NULL is NULL, never true, so every staged edit of a NULL cell
-    // would report a conflict that did not happen.
+    // `=` against NULL is NULL, never true — this is why the guard uses IS NOT DISTINCT FROM.
     #[tokio::test]
     async fn stages_over_a_null_without_reporting_a_conflict() {
         let pool = test_pool().await;
@@ -464,7 +452,6 @@ mod tests {
         sqlx::query("INSERT INTO apply_atomic (status) VALUES ('before')")
             .execute(&pool).await.unwrap();
 
-        // A database error, not a conflict: Err rather than an ApplyOutcome.
         let result = apply_changes_impl(&pool, &[
             update("apply_atomic", "1", "status", Some("before"), Some("after")),
             update("apply_atomic", "1", "status", Some("after"), None),

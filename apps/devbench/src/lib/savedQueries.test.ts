@@ -13,9 +13,6 @@ describe("mergeSavedQueries", () => {
     expect(after[0].name).toBe("new");
   });
 
-  // The rail loads one connection's list; a query tab pinned to another
-  // connection has already put its own entry here. A merge that replaced the
-  // array would blank that tab's label.
   it("leaves another connection's entries untouched", () => {
     const before = [q("a", "c1", "dev", 1), q("b", "c2", "staging", 1)];
     const after = mergeSavedQueries(before, [q("a", "c1", "dev renamed", 1)]);

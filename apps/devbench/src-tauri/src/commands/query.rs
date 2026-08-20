@@ -55,9 +55,6 @@ fn is_multiple_commands(err: &sqlx::Error) -> bool {
     matches!(err, sqlx::Error::Database(db) if db.message().contains(MULTIPLE_COMMANDS))
 }
 
-/// `raw_sql`'s Either stream is the only way to get rows AND the completion tag
-/// from one execution; neither it nor `fetch_all` can tell a zero-row SELECT
-/// from a zero-row UPDATE, which is what `describe_result_columns` is for.
 /// `raw_sql` speaks the simple protocol, which would accept several `;`-separated
 /// commands including `COMMIT` — the refusal above is what keeps that safe.
 async fn execute_with_honest_result(
@@ -160,7 +157,6 @@ mod tests {
             &input.host, input.port, &input.database, &input.username, input.password.as_deref(), &input.sslmode,
         );
         sqlx::postgres::PgPoolOptions::new()
-            // Capped so the suite's parallel tests can't exhaust max_connections.
             .max_connections(4)
             .connect(&connection_string)
             .await
@@ -404,8 +400,7 @@ mod tests {
         sqlx::query("DROP TABLE preview_rollback_test").execute(&raw).await.unwrap();
     }
 
-    // Unrefused, the trailing COMMIT commits the preview's own transaction and
-    // the write is permanent — measured, not theorised.
+    // Unrefused, the trailing COMMIT would commit the preview's own transaction, making the write permanent.
     #[tokio::test]
     async fn a_multi_command_run_is_refused_and_writes_nothing() {
         let raw = raw_pool().await;
