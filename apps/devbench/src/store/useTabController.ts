@@ -27,15 +27,18 @@ function isValidPane(pane: string): pane is Pane {
 
 /** Every kind ToolPane can render — deliberately NOT `TABS`, which is the +
  *  menu's offer list. A query tab is opened from the rail rather than created
- *  from the menu, but it still has to survive a restart like every other tab. */
-const RENDERABLE_KINDS: ToolKind[] = ["api", "db", "log", "email", "query"];
+ *  from the menu, but it still has to survive a restart like every other tab.
+ *  Keyed by `ToolKind` rather than listed in an array so that adding a sixth
+ *  kind fails to compile here, instead of silently dropping that kind's tabs
+ *  on the next restart — the bug this constant already exists to fix once. */
+const RENDERABLE_KINDS: Record<ToolKind, true> = { api: true, db: true, log: true, email: true, query: true };
 
 // A row with an unrecognized kind/pane can't be trusted to render — ToolPane's
 // switch has no default case for a bad kind (React throws), and a bad pane
 // value silently drops the tab from both AppStrip and SplitContent. Rather
 // than trust the cast, reject the row before it enters the store.
 function hydrateTab(row: TabRow): Tab | null {
-  if (!RENDERABLE_KINDS.includes(row.kind as ToolKind)) return null;
+  if (!Object.hasOwn(RENDERABLE_KINDS, row.kind)) return null;
   if (!isValidPane(row.pane)) return null;
   return { id: row.id, kind: row.kind as ToolKind, pane: row.pane, ordinal: row.ordinal, state: parseState(row.state) };
 }
@@ -148,7 +151,11 @@ export function useTabController() {
       .tabs.find((t) => t.pane === "left" && t.kind === kind && (match ? match(t) : true));
     if (existing) {
       setActiveTabIdInStore("left", existing.id);
-      if (statePatch) patchTabState(existing.id, statePatch);
+      // A `match` means the tab was found BY its state, so that state is its
+      // identity — patching it here would rewrite the thing just matched on.
+      // Deep links pass no matcher and still patch: focusing the DB tab and
+      // aiming it at a table is the whole point there.
+      if (statePatch && !match) patchTabState(existing.id, statePatch);
       return existing.id;
     }
     return addTab(kind, "left", statePatch ?? {});

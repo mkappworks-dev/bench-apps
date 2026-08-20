@@ -15,9 +15,13 @@ export function QueryTab({
   onToggleWatch: (table: QualifiedTable) => void;
 }) {
   const queryId = typeof tab.state.queryId === "string" ? tab.state.queryId : null;
-  // Pinned at open (§3b), read from tab state rather than from the store's
-  // active connection: moving the rail's picker must not retarget this tab.
-  const connectionId = typeof tab.state.connectionId === "string" ? tab.state.connectionId : null;
+  // Two connections, deliberately distinct. The PINNED one is part of the
+  // document's identity (§3b): captured at open, never patched, and what
+  // Tasks 6-7 will run this query against. It has no consumer in this
+  // skeleton yet. The ACTIVE one is only where the rail is browsing, which
+  // the user is free to move without retargeting this tab.
+  const pinnedConnectionId = typeof tab.state.connectionId === "string" ? tab.state.connectionId : null;
+  const activeConnectionId = useAppStore((s) => s.activeConnectionId);
   const savedQueries = useAppStore((s) => s.savedQueries);
   const setActiveConnectionId = useAppStore((s) => s.setActiveConnectionId);
   const query = savedQueryById(savedQueries, queryId);
@@ -25,7 +29,7 @@ export function QueryTab({
   return (
     <div className="flex h-full w-full min-h-0 min-w-0">
       <ConnectionRail
-        connectionId={connectionId}
+        connectionId={activeConnectionId}
         selected={null}
         watchedTables={watchedTables}
         onToggleWatch={onToggleWatch}

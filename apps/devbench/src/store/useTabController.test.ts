@@ -258,4 +258,25 @@ describe("useTabController", () => {
     expect(id).toBe("t2");
     expect(useAppStore.getState().activeTabId.left).toBe("t2");
   });
+
+  // §3b's pin. `match` means the tab was found BY its state, so patching that
+  // state would rewrite the very thing just matched on — here, silently
+  // repointing a query written against c1 at whatever connection happens to be
+  // active now.
+  it("leaves a matched tab's state alone, rather than patching over what it matched on", () => {
+    useAppStore.setState({
+      tabs: [{ id: "t1", kind: "query", pane: "left", ordinal: 0, state: { queryId: "q1", connectionId: "c1" } }],
+      activeTabId: { left: "t1", right: null },
+    });
+
+    const { result } = renderHook(() => useTabController());
+    const id = result.current.focusOrCreateTab(
+      "query",
+      { queryId: "q1", connectionId: "c2" },
+      (t) => t.state.queryId === "q1",
+    );
+
+    expect(id).toBe("t1");
+    expect(useAppStore.getState().tabs[0].state).toEqual({ queryId: "q1", connectionId: "c1" });
+  });
 });
