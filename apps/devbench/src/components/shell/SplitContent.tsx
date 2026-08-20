@@ -14,6 +14,7 @@ export function SplitContent({
   onPatchState,
   onOpenDb,
   onOpenQuery,
+  onCloseQueryTabs,
   onOpenLog,
   onOpenEmail,
   emailFocusRequest,
@@ -24,6 +25,7 @@ export function SplitContent({
   onPatchState: (id: string, patch: Record<string, unknown>) => void;
   onOpenDb: (table: QualifiedTable) => void;
   onOpenQuery: (queryId: string) => void;
+  onCloseQueryTabs: (queryId: string) => void;
   onOpenLog: () => void;
   onOpenEmail: (emailId: number | null) => void;
   emailFocusRequest: { tabId: string; emailId: number | null } | null;
@@ -61,6 +63,7 @@ export function SplitContent({
           onPatchState={(patch) => onPatchState(tab.id, patch)}
           onOpenDb={onOpenDb}
           onOpenQuery={onOpenQuery}
+          onCloseQueryTabs={onCloseQueryTabs}
           onOpenLog={onOpenLog}
           onOpenEmail={onOpenEmail}
           emailFocusId={emailFocusRequest?.tabId === tab.id ? emailFocusRequest.emailId : null}

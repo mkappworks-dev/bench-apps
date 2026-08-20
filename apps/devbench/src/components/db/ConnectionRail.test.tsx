@@ -25,6 +25,7 @@ describe("ConnectionRail", () => {
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
         onOpenQuery={() => {}}
+        onCloseQueryTabs={() => {}}
       />,
     );
 
@@ -47,6 +48,7 @@ describe("ConnectionRail", () => {
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
         onOpenQuery={() => {}}
+        onCloseQueryTabs={() => {}}
       />,
     );
 
@@ -74,6 +76,7 @@ describe("ConnectionRail", () => {
         onSelectTable={() => {}}
         onConnectionChange={onConnectionChange}
         onOpenQuery={() => {}}
+        onCloseQueryTabs={() => {}}
       />,
     );
 
@@ -106,6 +109,7 @@ describe("ConnectionRail", () => {
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
         onOpenQuery={() => {}}
+        onCloseQueryTabs={() => {}}
       />,
     );
 
@@ -131,6 +135,7 @@ describe("ConnectionRail", () => {
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
         onOpenQuery={() => {}}
+        onCloseQueryTabs={() => {}}
       />,
     );
 
@@ -151,6 +156,7 @@ describe("ConnectionRail", () => {
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
         onOpenQuery={() => {}}
+        onCloseQueryTabs={() => {}}
       />,
     );
 
@@ -174,6 +180,7 @@ describe("ConnectionRail", () => {
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
         onOpenQuery={() => {}}
+        onCloseQueryTabs={() => {}}
       />,
     );
 
@@ -194,6 +201,7 @@ describe("ConnectionRail", () => {
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
         onOpenQuery={() => {}}
+        onCloseQueryTabs={() => {}}
       />,
     );
 
@@ -217,6 +225,7 @@ describe("ConnectionRail", () => {
         onSelectTable={onSelectTable}
         onConnectionChange={() => {}}
         onOpenQuery={() => {}}
+        onCloseQueryTabs={() => {}}
       />,
     );
 
@@ -248,6 +257,7 @@ describe("ConnectionRail", () => {
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
         onOpenQuery={() => {}}
+        onCloseQueryTabs={() => {}}
       />,
     );
 
@@ -274,6 +284,7 @@ describe("ConnectionRail", () => {
         onSelectTable={() => {}}
         onConnectionChange={() => {}}
         onOpenQuery={() => {}}
+        onCloseQueryTabs={() => {}}
       />,
     );
     await waitFor(() => screen.getByText("orders"));
@@ -296,6 +307,7 @@ describe("ConnectionRail", () => {
         initialSegment="tables"
         activeQueryId={null}
         onOpenQuery={() => {}}
+        onCloseQueryTabs={() => {}}
         {...overrides}
       />,
     );
@@ -392,6 +404,67 @@ describe("ConnectionRail", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete query doomed" }));
 
     await waitFor(() => expect(del).toHaveBeenCalledWith("q1"));
-    expect(useAppStore.getState().savedQueries.find((q) => q.id === "q1")).toBeUndefined();
+    // The store follows the database now, so the removal lands after the
+    // invoke resolves rather than optimistically before it.
+    await waitFor(() => expect(useAppStore.getState().savedQueries.find((q) => q.id === "q1")).toBeUndefined());
+  });
+
+  // Fix 4. The trash button sits in the query tab's OWN rail, one click from
+  // the document it would otherwise leave behind: name field and editor both
+  // fall back to "" and cannot take a keystroke, and the tab row survives a
+  // restart in SQLite.
+  it("asks its host to close any tab showing the query it deleted", async () => {
+    const onCloseQueryTabs = vi.fn();
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeListSavedQueries").mockResolvedValue([
+      { id: "q1", connection_id: "c1", name: "doomed", sql: "", created_at: 1 },
+    ]);
+    vi.spyOn(tauriLib, "invokeDeleteSavedQuery").mockResolvedValue(undefined);
+
+    renderRail({ initialSegment: "queries", onCloseQueryTabs });
+    await waitFor(() => expect(screen.getByText("doomed")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Delete query doomed" }));
+
+    await waitFor(() => expect(onCloseQueryTabs).toHaveBeenCalledWith("q1"));
+  });
+
+  // Fix 8. Removing optimistically and swallowing the failure left the row
+  // alive in SQLite and back on the next list, with the rail meanwhile
+  // claiming it was gone — and would have closed the tab over a deletion
+  // that never happened.
+  it("keeps the query, its tab and an error message when the delete fails", async () => {
+    const onCloseQueryTabs = vi.fn();
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeListSavedQueries").mockResolvedValue([
+      { id: "q1", connection_id: "c1", name: "doomed", sql: "", created_at: 1 },
+    ]);
+    vi.spyOn(tauriLib, "invokeDeleteSavedQuery").mockRejectedValue(new Error("database is locked"));
+
+    renderRail({ initialSegment: "queries", onCloseQueryTabs });
+    await waitFor(() => expect(screen.getByText("doomed")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Delete query doomed" }));
+
+    await waitFor(() => expect(screen.getByText(/database is locked/)).toBeInTheDocument());
+    expect(useAppStore.getState().savedQueries.find((q) => q.id === "q1")).toBeDefined();
+    expect(screen.getByText("doomed")).toBeInTheDocument();
+    expect(onCloseQueryTabs).not.toHaveBeenCalled();
+  });
+
+  // Fix 8. `void createQuery()` made a failure an unhandled rejection with
+  // nothing on screen — the button simply did nothing.
+  it("surfaces a failed create rather than rejecting into nowhere", async () => {
+    const onOpenQuery = vi.fn();
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeListSavedQueries").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeCreateSavedQuery").mockRejectedValue(new Error("disk full"));
+
+    renderRail({ initialSegment: "queries", onOpenQuery });
+    fireEvent.click(await screen.findByRole("button", { name: "New query" }));
+
+    await waitFor(() => expect(screen.getByText(/disk full/)).toBeInTheDocument());
+    expect(onOpenQuery).not.toHaveBeenCalled();
   });
 });

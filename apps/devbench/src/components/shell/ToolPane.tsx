@@ -12,8 +12,11 @@ import { useAppStore } from "../../store/useAppStore";
  * Renders one tab instance. Every pane's every tab goes through this, which
  * is what keeps "any tool, any number of times, in either pane" true by
  * construction. `onOpenDb`/`onOpenLog`/`onOpenEmail` are the Rollup deep
- * links; only the "api" case uses them. `onOpenHistory` is the reverse deep
- * link (Email's "Sent by" chip); only the "email" case uses it. `emailFocusId`
+ * links; only the "api" case uses them. `onOpenQuery` and `onCloseQueryTabs`
+ * are the connection rail's two tab operations — it owns the saved-query
+ * record but not the tabs that display it — so both "db" and "query" take
+ * them. `onOpenHistory` is the reverse deep link (Email's "Sent by" chip);
+ * only the "email" case uses it. `emailFocusId`
  * and `historyFocusId` only matter to the "email"/"api" case respectively,
  * and only when this specific tab is the deep link's target (App.tsx resolves
  * that before this component ever sees it).
@@ -23,6 +26,7 @@ export function ToolPane({
   onPatchState,
   onOpenDb,
   onOpenQuery,
+  onCloseQueryTabs,
   onOpenLog,
   onOpenEmail,
   emailFocusId,
@@ -33,6 +37,7 @@ export function ToolPane({
   onPatchState: (patch: Record<string, unknown>) => void;
   onOpenDb: (table: QualifiedTable) => void;
   onOpenQuery: (queryId: string) => void;
+  onCloseQueryTabs: (queryId: string) => void;
   onOpenLog: () => void;
   onOpenEmail: (emailId: number | null) => void;
   emailFocusId: number | null;
@@ -68,6 +73,7 @@ export function ToolPane({
           table={normalizeTable(tab.state.table)}
           onPatchState={onPatchState}
           onOpenQuery={onOpenQuery}
+          onCloseQueryTabs={onCloseQueryTabs}
         />
       );
     case "log":
@@ -81,6 +87,7 @@ export function ToolPane({
         <QueryTab
           tab={tab}
           onOpenQuery={onOpenQuery}
+          onCloseQueryTabs={onCloseQueryTabs}
           watchedTables={watchedTables}
           onToggleWatch={toggleWatchedTable}
         />

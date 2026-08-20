@@ -22,6 +22,7 @@ function renderSplit(overrides: Partial<Parameters<typeof SplitContent>[0]> = {}
       onPatchState={() => {}}
       onOpenDb={() => {}}
       onOpenQuery={() => {}}
+      onCloseQueryTabs={() => {}}
       onOpenLog={() => {}}
       onOpenEmail={() => {}}
       emailFocusRequest={null}

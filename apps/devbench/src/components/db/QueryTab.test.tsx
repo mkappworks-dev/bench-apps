@@ -20,7 +20,7 @@ function seed(sql = "SELECT 1;") {
 
 function renderTab() {
   return render(
-    <QueryTab tab={TAB} onOpenQuery={() => {}} watchedTables={new Set()} onToggleWatch={() => {}} />,
+    <QueryTab tab={TAB} onOpenQuery={() => {}} onCloseQueryTabs={() => {}} watchedTables={new Set()} onToggleWatch={() => {}} />,
   );
 }
 
@@ -108,7 +108,7 @@ describe("QueryTab", () => {
         pending: [{ kind: "sql", connection_id: "c1", table: null, statement: "SELECT 1;", previewed_effect: "1 row affected" }],
       });
     });
-    rerender(<QueryTab tab={TAB} onOpenQuery={() => {}} watchedTables={new Set()} onToggleWatch={() => {}} />);
+    rerender(<QueryTab tab={TAB} onOpenQuery={() => {}} onCloseQueryTabs={() => {}} watchedTables={new Set()} onToggleWatch={() => {}} />);
     expect(screen.getByRole("button", { name: /Pending/ })).toBeInTheDocument();
   });
 

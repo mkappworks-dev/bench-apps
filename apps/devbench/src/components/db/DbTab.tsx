@@ -95,12 +95,14 @@ export function DbTab({
   table: tableProp,
   onPatchState,
   onOpenQuery,
+  onCloseQueryTabs,
 }: {
   watchedTables: Set<string>;
   onToggleWatch: (table: QualifiedTable) => void;
   table: QualifiedTable | string | null;
   onPatchState: (patch: { table: QualifiedTable }) => void;
   onOpenQuery: (queryId: string) => void;
+  onCloseQueryTabs: (queryId: string) => void;
 }) {
   const table = normalizeTable(tableProp);
   const activeConnectionId = useAppStore((s) => s.activeConnectionId);
@@ -721,6 +723,7 @@ export function DbTab({
         initialSegment="tables"
         activeQueryId={null}
         onOpenQuery={onOpenQuery}
+        onCloseQueryTabs={onCloseQueryTabs}
       />
       {/* min-w-0 overrides the flex default of min-width: auto, which refuses
           to shrink below descendant content width — without it, a wide table

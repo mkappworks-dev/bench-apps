@@ -29,6 +29,7 @@ export function ConnectionRail({
   initialSegment = "tables",
   activeQueryId = null,
   onOpenQuery,
+  onCloseQueryTabs,
 }: {
   connectionId: string | null;
   selected: QualifiedTable | null;
@@ -48,6 +49,12 @@ export function ConnectionRail({
    *  default for "open a query" — a silent no-op would let a host tab ship
    *  half-wired with the compiler none the wiser. */
   onOpenQuery: (queryId: string) => void;
+  /** Close any tab showing this query. Same reason as `onOpenQuery`: the rail
+   *  owns the saved-query record, not the tabs that display it — and a tab
+   *  whose query no longer exists is unusable (its fields fall back to `""`
+   *  and cannot take a keystroke, because `patchSavedQuery` has no row to
+   *  patch) yet still persists in SQLite across a restart. */
+  onCloseQueryTabs: (queryId: string) => void;
 }) {
   const [connections, setConnections] = useState<ConnectionSummary[]>([]);
   // Distinct from `connections.length === 0`: a failed fetch must not read as
@@ -56,6 +63,9 @@ export function ConnectionRail({
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [segment, setSegment] = useState<"tables" | "queries">(initialSegment);
+  // Failures of the two query mutations. Distinct from `error` above, which
+  // belongs to the tables fetch and would otherwise replace the whole list.
+  const [queryActionError, setQueryActionError] = useState<string | null>(null);
   const setRoute = useAppStore((s) => s.setRoute);
   const setSettingsPane = useAppStore((s) => s.setSettingsPane);
   const savedQueries = useAppStore((s) => s.savedQueries);
@@ -93,14 +103,29 @@ export function ConnectionRail({
 
   async function createQuery() {
     if (!connectionId) return;
-    const made = await invokeCreateSavedQuery(connectionId, "untitled query", "");
-    mergeSavedQueriesIntoStore([made]);
-    onOpenQuery(made.id);
+    try {
+      const made = await invokeCreateSavedQuery(connectionId, "untitled query", "");
+      setQueryActionError(null);
+      mergeSavedQueriesIntoStore([made]);
+      onOpenQuery(made.id);
+    } catch (err) {
+      setQueryActionError(`Couldn't create the query: ${messageOf(err)}`);
+    }
   }
 
+  // Database first, store second: removing optimistically and swallowing the
+  // failure left the row alive in SQLite and back on the next list, with the
+  // rail meanwhile claiming it was gone.
   async function deleteQuery(id: string) {
+    try {
+      await invokeDeleteSavedQuery(id);
+    } catch (err) {
+      setQueryActionError(`Couldn't delete the query: ${messageOf(err)}`);
+      return;
+    }
+    setQueryActionError(null);
     removeSavedQuery(id);
-    await invokeDeleteSavedQuery(id).catch(() => {});
+    onCloseQueryTabs(id);
   }
 
   const current = connections.find((c) => c.id === connectionId);
@@ -220,6 +245,11 @@ export function ConnectionRail({
         </div>
       ) : (
         <div className="flex flex-col gap-0.5 p-1.5">
+          {queryActionError ? (
+            <div className="mb-1 rounded-lg border border-border bg-danger-bg p-2.5 text-xs text-danger">
+              {queryActionError}
+            </div>
+          ) : null}
           {queries.map((q) => (
             <div
               key={q.id}
@@ -260,6 +290,10 @@ export function ConnectionRail({
       ) : null}
     </aside>
   );
+}
+
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 // Deliberately monochrome rather than the mockup's success-green "watched"

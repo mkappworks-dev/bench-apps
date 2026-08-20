@@ -24,7 +24,7 @@ function renderDb(table: tauriLib.QualifiedTable | string | null, onPatchState =
   return {
     onPatchState,
     ...render(
-      <DbTab watchedTables={new Set()} onToggleWatch={() => {}} table={table} onPatchState={onPatchState} onOpenQuery={() => {}} />,
+      <DbTab watchedTables={new Set()} onToggleWatch={() => {}} table={table} onPatchState={onPatchState} onOpenQuery={() => {}} onCloseQueryTabs={() => {}} />,
     ),
   };
 }
@@ -42,6 +42,7 @@ function DbTabHarness({ initialTable }: { initialTable: tauriLib.QualifiedTable 
       table={table}
       onPatchState={(patch) => setTable(patch.table)}
       onOpenQuery={() => {}}
+      onCloseQueryTabs={() => {}}
     />
   );
 }
@@ -177,6 +178,7 @@ describe("DbTab", () => {
         table={PAYMENTS}
         onPatchState={onPatchState}
         onOpenQuery={() => {}}
+        onCloseQueryTabs={() => {}}
       />,
     );
     await waitFor(() =>
@@ -210,6 +212,7 @@ describe("DbTab", () => {
         table={{ schema: "alt", name: "dup" }}
         onPatchState={onPatchState}
         onOpenQuery={() => {}}
+        onCloseQueryTabs={() => {}}
       />,
     );
     await waitFor(() => expect(screen.getByRole("button", { name: "Freeze id" })).toBeInTheDocument());
@@ -1136,6 +1139,7 @@ describe("DbTab", () => {
           table={PAYMENTS}
           onPatchState={onPatchState}
           onOpenQuery={() => {}}
+          onCloseQueryTabs={() => {}}
         />,
       );
 

@@ -64,6 +64,17 @@ export default function App() {
     tabController.focusOrCreateTab("query", { queryId, connectionId }, (t) => t.state.queryId === queryId);
   }
 
+  // Deleting a saved query has to take its document with it: the record is
+  // gone, so the tab's name field and editor fall back to "" and can no
+  // longer accept a keystroke — and the tab row would otherwise survive in
+  // SQLite and come back after a restart.
+  function onCloseQueryTabs(queryId: string) {
+    useAppStore
+      .getState()
+      .tabs.filter((t) => t.kind === "query" && t.state.queryId === queryId)
+      .forEach((t) => tabController.closeTab(t.id));
+  }
+
   // Fire-and-forget, checked once on mount: the normal (no `db_error`) case
   // never touches this state after the initial render, so a healthy startup
   // renders the workspace immediately with no wait and no flash.
@@ -159,6 +170,7 @@ export default function App() {
           onPatchState={tabController.patchTabState}
           onOpenDb={(table) => tabController.focusOrCreateTab("db", { table })}
           onOpenQuery={onOpenQuery}
+          onCloseQueryTabs={onCloseQueryTabs}
           onOpenLog={() => tabController.focusOrCreateTab("log")}
           onOpenEmail={(emailId) => {
             const targetId = tabController.focusOrCreateTab("email");

@@ -26,11 +26,13 @@ const WRITE_DEBOUNCE_MS = 300;
 export function QueryTab({
   tab,
   onOpenQuery,
+  onCloseQueryTabs,
   watchedTables,
   onToggleWatch,
 }: {
   tab: Tab;
   onOpenQuery: (queryId: string) => void;
+  onCloseQueryTabs: (queryId: string) => void;
   watchedTables: Set<string>;
   onToggleWatch: (table: QualifiedTable) => void;
 }) {
@@ -197,6 +199,7 @@ export function QueryTab({
         initialSegment="queries"
         activeQueryId={queryId}
         onOpenQuery={onOpenQuery}
+        onCloseQueryTabs={onCloseQueryTabs}
       />
       {/* The tint lives on the pane's chrome. The editor and results below
           re-assert --bg, because what you write and what comes back are
