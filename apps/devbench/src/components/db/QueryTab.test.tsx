@@ -111,4 +111,136 @@ describe("QueryTab", () => {
     rerender(<QueryTab tab={TAB} onOpenQuery={() => {}} watchedTables={new Set()} onToggleWatch={() => {}} />);
     expect(screen.getByRole("button", { name: /Pending/ })).toBeInTheDocument();
   });
+
+  const WRITE_PREVIEW = { preview_id: "p1", columns: [], rows: [], rows_affected: 3 };
+  const SELECT_PREVIEW = {
+    preview_id: "p2",
+    columns: ["id", "status"],
+    rows: [["1", "failed"]],
+    rows_affected: null,
+  };
+
+  it("runs the statement and rolls its transaction back without being asked", async () => {
+    const run = vi.spyOn(tauriLib, "invokePreviewQuery").mockResolvedValue(WRITE_PREVIEW);
+    const rollback = vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+
+    renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+
+    await waitFor(() => expect(rollback).toHaveBeenCalledWith("p1"));
+    expect(run).toHaveBeenCalledWith("c1", "SELECT 1;");
+    // Nothing about the result may read as written.
+    expect(screen.getByText(/rolled back/i)).toBeInTheDocument();
+  });
+
+  it("reports the affected count for a write and offers to stage it", async () => {
+    vi.spyOn(tauriLib, "invokePreviewQuery").mockResolvedValue(WRITE_PREVIEW);
+    vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+
+    renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+
+    await waitFor(() => expect(screen.getByText(/3 rows affected/)).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Add to pending" })).toBeEnabled();
+  });
+
+  // §12: re-running a SELECT at Apply writes nothing, so staging one would
+  // occupy a slot in the count without being able to change anything.
+  it("refuses to stage a statement that returned rows", async () => {
+    vi.spyOn(tauriLib, "invokePreviewQuery").mockResolvedValue(SELECT_PREVIEW);
+    vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+
+    renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+
+    await waitFor(() => expect(screen.getByRole("table")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Add to pending" })).toBeDisabled();
+  });
+
+  it("stages the statement with the effect the run reported", async () => {
+    vi.spyOn(tauriLib, "invokePreviewQuery").mockResolvedValue(WRITE_PREVIEW);
+    vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+
+    renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add to pending" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Add to pending" }));
+
+    expect(useAppStore.getState().pending).toEqual([
+      {
+        kind: "sql",
+        connection_id: "c1",
+        table: null,
+        statement: "SELECT 1;",
+        previewed_effect: "3 rows affected when run",
+      },
+    ]);
+    // The result is consumed by staging it; leaving it up invites a second
+    // click that would stage the same statement twice.
+    expect(screen.queryByRole("button", { name: "Add to pending" })).not.toBeInTheDocument();
+  });
+
+  it("discards the result and stages nothing", async () => {
+    vi.spyOn(tauriLib, "invokePreviewQuery").mockResolvedValue(WRITE_PREVIEW);
+    vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+
+    renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+    await waitFor(() => expect(screen.getByText(/3 rows affected/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+
+    expect(screen.queryByText(/3 rows affected/)).not.toBeInTheDocument();
+    expect(useAppStore.getState().pending).toEqual([]);
+  });
+
+  it("surfaces a failed run as an error and stages nothing", async () => {
+    vi.spyOn(tauriLib, "invokePreviewQuery").mockRejectedValue(new Error('column "nope" does not exist'));
+    const rollback = vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+
+    renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+
+    await waitFor(() => expect(screen.getByText(/column "nope" does not exist/)).toBeInTheDocument());
+    // A failed preview_query never returned a preview_id, so there is nothing
+    // to roll back and calling it would be a guaranteed "no open preview".
+    expect(rollback).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Add to pending" })).not.toBeInTheDocument();
+  });
+
+  it("runs on Cmd+Enter from inside the editor", async () => {
+    const run = vi.spyOn(tauriLib, "invokePreviewQuery").mockResolvedValue(WRITE_PREVIEW);
+    vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+
+    renderTab();
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "SQL" }), { key: "Enter", metaKey: true });
+
+    await waitFor(() => expect(run).toHaveBeenCalled());
+  });
+
+  // Coverage gap from the previous task's review: one timer per field, keyed,
+  // so an edit in one field cannot cancel a write already scheduled for the
+  // other.
+  it("keys the write debounce per field, so a SQL edit does not cancel a pending rename", async () => {
+    const rename = vi.spyOn(tauriLib, "invokeRenameSavedQuery").mockResolvedValue(undefined);
+    const setSql = vi.spyOn(tauriLib, "invokeSetSavedQuerySql").mockResolvedValue(undefined);
+    renderTab();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Query name" }), {
+      target: { value: "renamed" },
+    });
+    await act(async () => { vi.advanceTimersByTime(200); });
+    fireEvent.change(screen.getByRole("textbox", { name: "SQL" }), {
+      target: { value: "SELECT 2;" },
+    });
+
+    // The rename's timer started first and is unaffected by the SQL edit
+    // scheduled 200ms into it, so it still fires at the 300ms mark it was
+    // given rather than being pushed back or cancelled.
+    await act(async () => { vi.advanceTimersByTime(100); });
+    expect(rename).toHaveBeenCalledWith("q1", "renamed");
+    expect(setSql).not.toHaveBeenCalled();
+
+    await act(async () => { vi.advanceTimersByTime(200); });
+    expect(setSql).toHaveBeenCalledWith("q1", "SELECT 2;");
+  });
 });

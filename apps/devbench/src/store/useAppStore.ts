@@ -117,6 +117,11 @@ interface AppState {
     table: QualifiedTable,
     values: Record<string, string | null>,
   ) => void;
+  /** Spec §12. `table` is always null: a staged statement has no table, so it
+   *  files under its own heading rather than under one it might have touched
+   *  (§10, §18). Always appended — unlike a cell edit there is no stored
+   *  value to compare against, so there is nothing to upsert against. */
+  addPendingSql: (connectionId: string, statement: string, previewedEffect: string) => void;
   discardPendingAt: (index: number) => void;
   /** Drops exactly these entries, by identity. Apply's successful path uses
    *  it instead of `discardAllPending` so a change staged during the round
@@ -246,6 +251,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   addPendingInsert: (connectionId, table, values) =>
     set((s) => ({
       pending: [...s.pending, { kind: "insert", connection_id: connectionId, table, values }],
+    })),
+  addPendingSql: (connectionId, statement, previewedEffect) =>
+    set((s) => ({
+      pending: [
+        ...s.pending,
+        { kind: "sql", connection_id: connectionId, table: null, statement, previewed_effect: previewedEffect },
+      ],
     })),
   discardPendingAt: (index) => set((s) => ({ pending: discardAt(s.pending, index) })),
   removePendingEntries: (entries) =>
