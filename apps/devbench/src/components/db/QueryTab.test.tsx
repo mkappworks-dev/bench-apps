@@ -1,61 +1,100 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { QueryTab } from "./QueryTab";
 import * as tauriLib from "../../lib/tauri";
-import { useAppStore, type Tab } from "../../store/useAppStore";
+import { useAppStore } from "../../store/useAppStore";
+import type { Tab } from "../../store/useAppStore";
 
-const QUERY_TAB: Tab = {
-  id: "t-q",
-  kind: "query",
-  pane: "left",
-  ordinal: 0,
+const TAB: Tab = {
+  id: "t1", kind: "query", pane: "left", ordinal: 0,
   state: { queryId: "q1", connectionId: "c1" },
 };
+
+function seed(sql = "SELECT 1;") {
+  useAppStore.setState({
+    savedQueries: [{ id: "q1", connection_id: "c1", name: "failed orders", sql, created_at: 1 }],
+    pending: [],
+    activeConnectionId: "c1",
+  });
+}
+
+function renderTab() {
+  return render(
+    <QueryTab tab={TAB} onOpenQuery={() => {}} watchedTables={new Set()} onToggleWatch={() => {}} />,
+  );
+}
 
 describe("QueryTab", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    useAppStore.setState({
-      route: "workspace",
-      settingsPane: "general",
-      activeConnectionId: "c1",
-      savedQueries: [{ id: "q1", connection_id: "c1", name: "failed orders today", sql: "", created_at: 1 }],
-    });
-  });
-
-  function renderTab() {
-    return render(
-      <QueryTab tab={QUERY_TAB} onOpenQuery={() => {}} watchedTables={new Set()} onToggleWatch={() => {}} />,
-    );
-  }
-
-  // The other branch of the head's name. A restored tab renders before the
-  // rail's fetch has repopulated `savedQueries`, so the miss is a normal
-  // moment in the tab's life, not a broken state.
-  it("heads the pane with a fallback while its query row is not loaded yet", () => {
-    useAppStore.setState({ savedQueries: [] });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([]);
-
-    renderTab();
-
-    expect(screen.getByText("untitled query")).toBeInTheDocument();
+    vi.spyOn(tauriLib, "invokeListSavedQueries").mockResolvedValue([]);
+    seed();
   });
 
-  // The rail is a browser; the tab is a document. Moving the picker browses
-  // another connection, and the tab stays pinned to the one it was opened
-  // against — so the rail follows the store, not `tab.state.connectionId`.
-  // The name still resolves across the move because `mergeSavedQueries` merges
-  // into one global list rather than replacing it per connection.
-  it("browses the store's active connection, not the one its query is pinned to", async () => {
-    useAppStore.setState({ activeConnectionId: "c2" });
-    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
-    const listTables = vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([]);
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
+  it("shows the query name in an editable field, not as static text", () => {
+    renderTab();
+    const name = screen.getByRole("textbox", { name: "Query name" });
+    expect(name).toHaveValue("failed orders");
+  });
+
+  // The store updates on the keystroke so the tab label follows immediately;
+  // only the SQLite write waits. Nothing async writes back into the field
+  // while it has focus, which is what keeps the caret where it was.
+  it("renames into the store immediately and into the database once, debounced", async () => {
+    const rename = vi.spyOn(tauriLib, "invokeRenameSavedQuery").mockResolvedValue(undefined);
     renderTab();
 
-    await waitFor(() => expect(listTables).toHaveBeenCalledWith("c2"));
-    expect(listTables).not.toHaveBeenCalledWith("c1");
-    expect(screen.getByText("failed orders today")).toBeInTheDocument();
+    const name = screen.getByRole("textbox", { name: "Query name" });
+    fireEvent.change(name, { target: { value: "failed order" } });
+    fireEvent.change(name, { target: { value: "failed orders today" } });
+
+    expect(useAppStore.getState().savedQueries[0].name).toBe("failed orders today");
+    expect(rename).not.toHaveBeenCalled();
+
+    await act(async () => { vi.advanceTimersByTime(300); });
+    expect(rename).toHaveBeenCalledTimes(1);
+    expect(rename).toHaveBeenCalledWith("q1", "failed orders today");
+  });
+
+  it("saves edited SQL to the database once, debounced", async () => {
+    const setSql = vi.spyOn(tauriLib, "invokeSetSavedQuerySql").mockResolvedValue(undefined);
+    renderTab();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "SQL" }), {
+      target: { value: "SELECT 2;" },
+    });
+    expect(useAppStore.getState().savedQueries[0].sql).toBe("SELECT 2;");
+    expect(setSql).not.toHaveBeenCalled();
+
+    await act(async () => { vi.advanceTimersByTime(300); });
+    expect(setSql).toHaveBeenCalledWith("q1", "SELECT 2;");
+  });
+
+  it("gives the resize grip a separator role with a horizontal orientation", () => {
+    renderTab();
+    const grip = screen.getByRole("separator", { name: "Resize query editor" });
+    expect(grip).toHaveAttribute("aria-orientation", "horizontal");
+  });
+
+  // The pane strip's Pending button is global by design (§10 Scope) — it is
+  // the only route to entries staged on a connection you are not looking at.
+  it("shows the Pending button only when something is staged", () => {
+    const { rerender } = renderTab();
+    expect(screen.queryByRole("button", { name: /Pending/ })).not.toBeInTheDocument();
+
+    act(() => {
+      useAppStore.setState({
+        pending: [{ kind: "sql", connection_id: "c1", table: null, statement: "SELECT 1;", previewed_effect: "1 row affected when run" }],
+      });
+    });
+    rerender(<QueryTab tab={TAB} onOpenQuery={() => {}} watchedTables={new Set()} onToggleWatch={() => {}} />);
+    expect(screen.getByRole("button", { name: /Pending/ })).toBeInTheDocument();
   });
 });
