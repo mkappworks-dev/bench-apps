@@ -44,6 +44,20 @@ describe("QueryTab", () => {
     expect(name).toHaveValue("failed orders");
   });
 
+  // The name still resolves across the move because `mergeSavedQueries` merges
+  // into one global list rather than replacing it per connection.
+  it("browses the store's active connection, not the one its query is pinned to", async () => {
+    useAppStore.setState({ activeConnectionId: "c2" });
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+    const listTables = vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([]);
+
+    renderTab();
+
+    await waitFor(() => expect(listTables).toHaveBeenCalledWith("c2"));
+    expect(listTables).not.toHaveBeenCalledWith("c1");
+    expect(screen.getByRole("textbox", { name: "Query name" })).toHaveValue("failed orders");
+  });
+
   // The store updates on the keystroke so the tab label follows immediately;
   // only the SQLite write waits. Nothing async writes back into the field
   // while it has focus, which is what keeps the caret where it was.
