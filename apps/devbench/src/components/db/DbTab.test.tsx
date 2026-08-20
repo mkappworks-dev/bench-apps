@@ -223,7 +223,7 @@ describe("DbTab", () => {
   it("selecting a table in the schema tree patches state rather than fetching directly", () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: [], rows: [], pk_column: null });
     const { onPatchState } = renderDb(null);
-    // SchemaTree's own tests cover the tree UI; DbTab's contract is that
+    // ConnectionRail's own tests cover the rail UI; DbTab's contract is that
     // selecting a table calls onPatchState, not a direct fetch. Covered
     // end-to-end (two DB tabs, two tables) in SplitContent.test.tsx.
     expect(onPatchState).not.toHaveBeenCalled();

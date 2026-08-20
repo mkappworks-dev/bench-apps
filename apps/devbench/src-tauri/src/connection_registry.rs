@@ -54,9 +54,9 @@ impl ConnectionRegistry {
         let connection_string = postgres_connection_string(&host, port as u16, &database, &username, password.as_deref(), &sslmode);
 
         // A modest pool per connection, not the throwaway max_connections(1)
-        // this codebase used everywhere before: browsing, the query console,
-        // and a held-open preview transaction can all be in flight on the
-        // same connection at once now.
+        // this codebase used everywhere before: browsing, a query tab, and a
+        // held-open preview transaction can all be in flight on the same
+        // connection at once now.
         let pool = PgPoolOptions::new()
             .max_connections(5)
             .connect(&connection_string)

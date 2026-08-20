@@ -488,9 +488,9 @@ export function DbTab({
   // state, and a confirm/cancel affordance is generic interactivity, not
   // state.
   // (Deviates from the mockup, which fills these `.save`/`.cancel` buttons
-  // with success-bg/neutral-bg — same documented tradeoff as SchemaTree's
-  // watch-icon and the console toggle's aria-pressed highlighting.) Sizing
-  // (20x20, 4px radius) still follows the mockup's `.cell-edit button`.
+  // with success-bg/neutral-bg — same documented tradeoff as the connection
+  // rail's watch icon.) Sizing (20x20, 4px radius) still follows the
+  // mockup's `.cell-edit button`.
   const actionButtonClass =
     "grid h-5 w-5 shrink-0 place-items-center rounded text-text-faint hover:bg-surface-2 hover:text-text disabled:opacity-40";
   // Accept carries the mockup's success hue (`.cell-edit .save`); cancel stays
