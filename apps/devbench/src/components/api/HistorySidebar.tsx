@@ -84,10 +84,10 @@ export function HistorySidebar({
   const focusNotFound = Boolean(focusId) && !loading && !failed && !entries.some((e) => e.id === focusId);
 
   return (
-    <aside className="w-55 min-w-55 border-r border-border overflow-y-auto">
+    <aside aria-label="Request history" aria-busy={loading} className="api-history w-55 min-w-55 border-r border-border overflow-y-auto">
       <div className="border-b border-border p-2.5 text-xs font-bold text-text-muted">History</div>
       {focusNotFound ? (
-        <div className="border-b border-border p-2 text-xs text-text-faint">
+        <div className="border-b border-border p-2 text-xs text-text-muted">
           That request is older than what's shown here.
         </div>
       ) : null}
@@ -95,8 +95,10 @@ export function HistorySidebar({
         {entries.length === 0 ? (
           // A new session auto-selects itself, so an empty scoped list is the
           // first thing it shows — say so explicitly rather than nothing.
-          <div className="p-2 text-xs text-text-faint">
-            {failed
+          <div className="p-2 text-xs text-text-muted">
+            {loading
+              ? "Loading history…"
+              : failed
               ? "Couldn't load history."
               : sessionId
                 ? "No requests fired in this session yet."
@@ -111,15 +113,15 @@ export function HistorySidebar({
                 onSelect(entry);
               }}
               aria-current={selectedId === entry.id}
-              className={`flex flex-col gap-0.5 rounded-sm p-2 text-left hover:bg-surface-2 ${
+              className={`flex min-w-0 flex-col gap-0.5 rounded-sm p-2 text-left hover:bg-surface-2 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent ${
                 selectedId === entry.id ? "bg-surface-2" : ""
               }`}
             >
-              <div className="flex items-center gap-1.5">
-                <span className="w-10 text-xs font-bold text-text-muted">{entry.method}</span>
-                <span className="truncate font-mono text-xs text-text">{entry.url}</span>
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="w-10 shrink-0 font-mono text-xs font-bold text-text-muted">{entry.method}</span>
+                <span title={entry.url} className="min-w-0 truncate font-mono text-xs text-text">{entry.url}</span>
               </div>
-              <span className="text-xs text-text-faint">{entry.status_code}</span>
+              <span className="text-xs text-text-muted">{entry.status_code}</span>
             </button>
           ))
         )}

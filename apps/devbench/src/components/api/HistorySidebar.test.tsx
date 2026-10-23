@@ -273,3 +273,16 @@ describe("HistorySidebar", () => {
     expect(screen.getByRole("button", { name: /checkout/ })).toHaveAttribute("aria-current", "false");
   });
 });
+
+
+it("does not claim history is empty while its fetch is unresolved", async () => {
+  const pending = deferred<HistoryEntry[]>();
+  vi.spyOn(tauriLib, "invokeListHistory").mockReturnValue(pending.promise);
+  render(<HistorySidebar onSelect={() => {}} />);
+  expect(screen.getByText("Loading history…")).toBeInTheDocument();
+  expect(screen.queryByText("No requests yet.")).not.toBeInTheDocument();
+  expect(screen.queryByText("Couldn't load history.")).not.toBeInTheDocument();
+  pending.resolve([]);
+  await waitFor(() => expect(screen.getByText("No requests yet.")).toBeInTheDocument());
+  expect(screen.queryByText("Loading history…")).not.toBeInTheDocument();
+});
