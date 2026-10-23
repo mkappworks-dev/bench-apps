@@ -69,6 +69,21 @@ describe("DbTab", () => {
     expect(describeColumns).toHaveBeenCalledTimes(1);
   });
 
+  it("edits boolean-looking text as text while real boolean cells toggle", async () => {
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["id", "label", "paid"], column_types: ["int4", "text", "bool"],
+      rows: [["1", "true", "false"]], pk_column: "id",
+    });
+    renderDb(ORDERS);
+    const label = await screen.findByRole("button", { name: "true", exact: true });
+    expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+    fireEvent.click(label);
+    expect(screen.getByRole("textbox", { name: "Edit label" })).toHaveValue("true");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "paid" }));
+    expect(useAppStore.getState().pending).toEqual([expect.objectContaining({ column: "paid", old_value: "false", new_value: "true" })]);
+  });
+
   it("reuses counts across paging and sorting, and invalidates them on Refresh", async () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: ["id"], rows: [["1"]], pk_column: "id" });
     const count = vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(150);
@@ -1028,7 +1043,7 @@ describe("DbTab", () => {
 
     it("toggles a boolean in place and stages it, with no editor in between", async () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
-        columns: ["id", "paid"], rows: [["1", "false"]], pk_column: "id",
+        columns: ["id", "paid"], column_types: ["int4", "bool"], rows: [["1", "false"]], pk_column: "id",
       });
       useAppStore.setState({ pending: [] });
 
@@ -1051,7 +1066,7 @@ describe("DbTab", () => {
 
     it("toggling a boolean twice leaves no pending change", async () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
-        columns: ["id", "paid"], rows: [["1", "false"]], pk_column: "id",
+        columns: ["id", "paid"], column_types: ["int4", "bool"], rows: [["1", "false"]], pk_column: "id",
       });
       useAppStore.setState({ pending: [] });
 
@@ -1066,7 +1081,7 @@ describe("DbTab", () => {
 
     it("renders a boolean read-only when the table has no single-column primary key", async () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
-        columns: ["id", "paid"], rows: [["1", "true"]], pk_column: null,
+        columns: ["id", "paid"], column_types: ["int4", "bool"], rows: [["1", "true"]], pk_column: null,
       });
 
       renderDb(ORDERS);
@@ -1076,7 +1091,7 @@ describe("DbTab", () => {
 
     it("keeps NULL visually distinct from false in a boolean column", async () => {
       vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
-        columns: ["id", "paid"], rows: [["1", null], ["2", "false"]], pk_column: "id",
+        columns: ["id", "paid"], column_types: ["int4", "bool"], rows: [["1", null], ["2", "false"]], pk_column: "id",
       });
 
       renderDb(ORDERS);
@@ -1215,7 +1230,7 @@ describe("DbTab", () => {
 
   it("stops accepting cell edits on a row already staged for deletion", async () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
-      columns: ["id", "status", "paid"], rows: [["42", "pending", "false"]], pk_column: "id",
+      columns: ["id", "status", "paid"], column_types: ["int4", "text", "bool"], rows: [["42", "pending", "false"]], pk_column: "id",
     });
     useAppStore.setState({ pending: [] });
 

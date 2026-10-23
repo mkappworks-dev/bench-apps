@@ -418,7 +418,8 @@ export function DbTab({
       );
     }
 
-    const { className, kind } = cellDisplay(shown);
+    const udt = tableRows?.column_types?.[columnIndex] ?? columnMeta.find((info) => info.name === column)?.udt;
+    const { className, kind } = cellDisplay(shown, udt);
 
     if (kind === "bool-true" || kind === "bool-false") {
       const checked = kind === "bool-true";
@@ -462,7 +463,7 @@ export function DbTab({
         } ${editable ? "hover:cursor-text hover:bg-surface-2" : ""}`}
       >
         <span className={`min-w-0 flex-1 truncate ${alignClass}`}>
-          <CellValue value={shown} />
+          <CellValue value={shown} udt={udt} />
         </span>
         {editable ? (
           <span aria-hidden className="hidden shrink-0 text-[10.5px] text-text-faint group-hover:inline">

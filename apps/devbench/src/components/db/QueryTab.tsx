@@ -264,7 +264,7 @@ export function QueryTab({
                 </div>
               )}
               {result.preview.rows_affected === null ? (
-                <DataGrid columns={result.preview.columns} rows={result.preview.rows} />
+                <DataGrid columns={result.preview.columns} columnTypes={result.preview.column_types} rows={result.preview.rows} />
               ) : (
                 <div className="text-xs text-text-faint">
                   {result.preview.rows_affected} row{result.preview.rows_affected === 1 ? "" : "s"} affected

@@ -207,6 +207,7 @@ export function invokeDbConnectAndListTables(connectionId: string): Promise<Tabl
 
 export interface TableRows {
   columns: string[];
+  column_types?: string[];
   rows: (string | null)[][];
   pk_column: string | null;
 }
@@ -306,6 +307,7 @@ export function invokeSetWatchedTable(connectionId: string, table: QualifiedTabl
 export interface QueryPreview {
   preview_id: string;
   columns: string[];
+  column_types?: string[];
   rows: (string | null)[][];
   rows_affected: number | null;
 }

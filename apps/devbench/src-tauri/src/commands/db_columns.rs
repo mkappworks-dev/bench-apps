@@ -3,7 +3,7 @@ use sqlx::{PgPool, Row};
 use tauri::State;
 
 use crate::commands::db::{
-    cell_to_string, get_column_type, get_primary_key_column, validate_identifier_labeled, TableRows,
+    cell_to_string, column_types, get_column_type, get_primary_key_column, validate_identifier_labeled, TableRows,
 };
 use crate::commands::qualified_table::QualifiedTable;
 use crate::connection_registry::ConnectionRegistry;
@@ -232,7 +232,7 @@ pub async fn get_referenced_row_impl(
     // the type mean something different depending on who built it.
     let pk_column = get_primary_key_column(pool, &target_table).await.ok();
 
-    Ok(Some(TableRows { columns, rows: vec![values], pk_column }))
+    Ok(Some(TableRows { columns, column_types: column_types(row.columns()), rows: vec![values], pk_column }))
 }
 
 #[tauri::command]

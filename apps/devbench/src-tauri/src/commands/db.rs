@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sqlx::{Column, PgPool, Row};
+use sqlx::{Column, PgPool, Row, TypeInfo};
 use tauri::State;
 
 use crate::connection_registry::ConnectionRegistry;
@@ -42,11 +42,16 @@ pub async fn db_connect_and_list_tables(
 #[derive(Debug, Serialize)]
 pub struct TableRows {
     pub columns: Vec<String>,
+    pub column_types: Vec<String>,
     pub rows: Vec<Vec<Option<String>>>,
     /// `Some(column)` when the table has exactly one primary-key column —
     /// the same rule `get_primary_key_column` already enforces for watching.
     /// `None` means the grid renders this table read-only.
     pub pk_column: Option<String>,
+}
+
+pub(crate) fn column_types(columns: &[sqlx::postgres::PgColumn]) -> Vec<String> {
+    columns.iter().map(|column| column.type_info().name().to_ascii_lowercase()).collect()
 }
 
 pub(crate) fn cell_to_string(row: &sqlx::postgres::PgRow, index: usize) -> Option<String> {
@@ -234,7 +239,8 @@ pub async fn list_table_rows_impl(
         .map(|row| (0..columns.len()).map(|i| cell_to_string(row, i)).collect())
         .collect();
 
-    Ok(TableRows { columns, rows: out_rows, pk_column })
+    let column_types = rows.first().map(|row| column_types(row.columns())).unwrap_or_default();
+    Ok(TableRows { columns, column_types, rows: out_rows, pk_column })
 }
 
 pub async fn count_table_rows_impl(

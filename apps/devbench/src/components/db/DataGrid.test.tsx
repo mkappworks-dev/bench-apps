@@ -35,6 +35,14 @@ function ControlledGrid({
 }
 
 describe("DataGrid", () => {
+  it.each([undefined, ["text"]])("keeps boolean-looking strings as text with column types %j", (columnTypes) => {
+    render(<DataGrid columns={["label"]} rows={[["true"], ["false"], [null]]} columnTypes={columnTypes} />);
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.getByText("true")).toBeInTheDocument();
+    expect(screen.getByText("false")).toBeInTheDocument();
+    expect(screen.getByText("NULL")).toBeInTheDocument();
+  });
+
   it("distinguishes copy controls by data-row number when no labels are supplied", () => {
     render(<DataGrid columns={["value"]} rows={[["a"], ["b"]]} />);
     expect(screen.getByRole("button", { name: "Copy row 1" })).toBeInTheDocument();
@@ -67,7 +75,7 @@ describe("DataGrid", () => {
   });
 
   it("renders a boolean as a checkbox reflecting its value", () => {
-    render(<DataGrid columns={["paid"]} rows={[["true"], ["false"]]} />);
+    render(<DataGrid columns={["paid"]} columnTypes={["bool"]} rows={[["true"], ["false"]]} />);
     const boxes = screen.getAllByRole("checkbox");
     expect(boxes).toHaveLength(2);
     expect(boxes[0]).toBeChecked();
@@ -76,7 +84,7 @@ describe("DataGrid", () => {
   });
 
   it("keeps NULL distinct from false in a boolean column", () => {
-    render(<DataGrid columns={["paid"]} rows={[["false"], [null]]} />);
+    render(<DataGrid columns={["paid"]} columnTypes={["bool"]} rows={[["false"], [null]]} />);
     expect(screen.getAllByRole("checkbox")).toHaveLength(1);
     expect(screen.getByText("NULL")).toBeInTheDocument();
   });
