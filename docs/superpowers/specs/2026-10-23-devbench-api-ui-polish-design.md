@@ -1,6 +1,6 @@
 # DevBench API UI polish
 
-Status: Draft for review; implementation has not started.
+Status: Approved and implemented; automated/DOM checks pass. Screenshot, native viewport resize, and native browser zoom verification remain incomplete; see the matching report.
 
 ## Intent and visual authority
 

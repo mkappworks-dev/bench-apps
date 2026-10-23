@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invokeRunCorrelatedRequest, type CorrelationResult, type QualifiedTable, type HeaderPair } from "../../lib/tauri";
 import { Menu, ChevronIcon } from "../ui/Menu";
 import { RequestTabs, type ReqTab } from "./composer/RequestTabs";
@@ -43,6 +43,10 @@ export function RequestBuilder({
   const [activeReqTab, setActiveReqTab] = useState<ReqTab>("headers");
   const [paramsDraft, setParamsDraft] = useState<{ url: string; rows: KeyValueRow[] } | null>(null);
   const [sending, setSending] = useState(false);
+
+  useEffect(() => {
+    setParamsDraft((draft) => draft?.url === url ? draft : null);
+  }, [url]);
 
   const { base, params: parsedParams, fragment } = splitUrlAndParams(url);
   const params = paramsDraft?.url === url ? paramsDraft.rows : parsedParams;

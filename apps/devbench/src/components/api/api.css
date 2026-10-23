@@ -73,3 +73,8 @@
 @media (prefers-reduced-motion: reduce) {
   .api-root :where(button, input, textarea, [role="separator"] > span) { transition: none; }
 }
+
+/* The rollup's faint copy is supporting text, so it needs text contrast here. */
+.api-root .text-text-faint {
+  color: var(--text-muted);
+}

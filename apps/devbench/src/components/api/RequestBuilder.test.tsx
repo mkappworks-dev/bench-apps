@@ -366,4 +366,16 @@ describe("RequestBuilder", () => {
     expect(screen.getAllByPlaceholderText("key")).toHaveLength(1);
   });
 
+  it("drops stale draft rows when the controlled URL changes externally", () => {
+    const props = { connectionId: "c1", watchedTables: [], onResult: () => {}, method: "GET", onPatchState: () => {} };
+    const { rerender } = render(<RequestBuilder {...props} url="/a" />);
+    fireEvent.click(screen.getByRole("tab", { name: "Params" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add param" }));
+    expect(screen.getByPlaceholderText("key")).toHaveValue("");
+    rerender(<RequestBuilder {...props} url="/b" />);
+    expect(screen.queryByPlaceholderText("key")).not.toBeInTheDocument();
+    rerender(<RequestBuilder {...props} url="/a" />);
+    expect(screen.queryByPlaceholderText("key")).not.toBeInTheDocument();
+  });
+
 });
