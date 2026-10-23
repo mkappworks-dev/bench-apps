@@ -97,6 +97,7 @@ export function RequestBuilder({
     <div className="flex flex-col gap-2.5 rounded-t-lg border border-b-0 border-border bg-surface p-3">
       <div className="flex gap-2">
         <Menu
+          closeOnSelect
           label="Method"
           options={METHODS}
           value={method}

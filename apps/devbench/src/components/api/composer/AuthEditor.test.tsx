@@ -1,4 +1,5 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { useState } from "react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { AuthEditor, DEFAULT_AUTH, authPreview, resolveAuthHeader, resolveAuthQueryParam } from "./AuthEditor";
 
@@ -91,7 +92,46 @@ describe("AuthEditor", () => {
   it("calls onChange with the new type when the type select changes", () => {
     const onChange = vi.fn();
     render(<AuthEditor auth={DEFAULT_AUTH} onChange={onChange} />);
-    fireEvent.change(screen.getByLabelText("Auth type"), { target: { value: "bearer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Auth type" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Bearer Token" }));
     expect(onChange).toHaveBeenCalledWith({ ...DEFAULT_AUTH, type: "bearer" });
   });
+});
+
+
+it("never previews a reversible Basic credential", () => {
+  const auth = { ...DEFAULT_AUTH, type: "basic" as const, username: "u", password: "p" };
+  expect(authPreview(auth)).toBe("Adds header  Authorization: Basic ••••");
+  expect(resolveAuthHeader(auth)).toEqual({ key: "Authorization", value: "Basic dTpw" });
+});
+
+it("labels auth fields and preserves values when switching auth modes", async () => {
+  function Editor() {
+    const [auth, onChange] = useState(DEFAULT_AUTH);
+    return <AuthEditor {...{ auth, onChange }} />;
+  }
+  render(<Editor />);
+  const picker = screen.getByRole("button", { name: "Auth type" });
+  async function select(name: string) {
+    fireEvent.click(picker);
+    fireEvent.click(await screen.findByRole("menuitemradio", { name }));
+    await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
+  }
+  await select("Bearer Token");
+  fireEvent.change(screen.getByLabelText("Token"), { target: { value: "test-token" } });
+  await select("Basic Auth");
+  expect(screen.getByLabelText("Username")).toBeInTheDocument();
+  expect(screen.getByLabelText("Password")).toHaveAttribute("type", "password");
+  await select("API Key");
+  expect(screen.getByLabelText("Key name")).toHaveValue("X-Api-Key");
+  expect(screen.getByLabelText("Key value")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Add to" }));
+  fireEvent.click(screen.getByRole("menuitemradio", { name: "Query param" }));
+  await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
+  expect(screen.getByRole("button", { name: "Add to" })).toHaveTextContent("Query param");
+  await select("Bearer Token");
+  expect(screen.getByLabelText("Token")).toHaveValue("test-token");
+  fireEvent.click(picker);
+  fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+  await waitFor(() => expect(picker).toHaveFocus());
 });

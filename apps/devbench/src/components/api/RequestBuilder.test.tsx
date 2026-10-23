@@ -231,7 +231,8 @@ describe("RequestBuilder", () => {
     fireEvent.change(valueInput, { target: { value: "true" } });
 
     fireEvent.click(screen.getByText("Auth"));
-    fireEvent.change(screen.getByLabelText("Auth type"), { target: { value: "bearer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Auth type" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Bearer Token" }));
     fireEvent.change(screen.getByPlaceholderText("Bearer token"), { target: { value: "abc123" } });
 
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
@@ -300,7 +301,8 @@ describe("RequestBuilder", () => {
     render(<Composer onResult={onResult} />);
     fireEvent.change(screen.getByPlaceholderText("/api/orders"), { target: { value: "/api/orders" } });
     fireEvent.click(screen.getByText("Body"));
-    fireEvent.change(screen.getByLabelText("Body type"), { target: { value: "json" } });
+    fireEvent.click(screen.getByRole("button", { name: "Body type" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "JSON" }));
     fireEvent.change(screen.getByPlaceholderText("Raw request body"), { target: { value: '{"a":1}' } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(onResult).toHaveBeenCalled());

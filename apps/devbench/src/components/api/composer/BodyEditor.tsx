@@ -1,3 +1,5 @@
+import { Menu, ChevronIcon } from "../../ui/Menu";
+
 export type BodyType = "none" | "json" | "text";
 
 export function BodyEditor({
@@ -14,22 +16,20 @@ export function BodyEditor({
   const disabled = bodyType === "none";
   return (
     <div>
-      <select
-        value={bodyType}
-        onChange={(e) => onBodyTypeChange(e.target.value as BodyType)}
-        aria-label="Body type"
-        className="mb-2.5 rounded-sm border border-border bg-surface-2 px-2 py-1.5 font-bold text-text"
-      >
-        <option value="none">None</option>
-        <option value="json">JSON</option>
-        <option value="text">Text</option>
-      </select>
+      <div className="mb-2.5 flex flex-wrap items-center gap-2.5">
+        <Menu closeOnSelect label="Body type" options={[{ value: "none", label: "None" }, { value: "json", label: "JSON" }, { value: "text", label: "Text" }]}
+          value={bodyType} onSelect={(value) => onBodyTypeChange(value as BodyType)}
+          trigger={<>{bodyType === "json" ? "JSON" : bodyType === "text" ? "Text" : "None"}<ChevronIcon /></>}
+          triggerClassName="api-picker flex h-8.5 w-35 items-center justify-between gap-2 rounded-sm border border-border bg-surface px-2.5 text-sm font-semibold text-text hover:border-text-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent" />
+        {disabled ? <span className="text-xs text-text-muted">This request sends no body.</span> : null}
+      </div>
       <textarea
+        aria-label="Request body"
         value={disabled ? "" : body}
         onChange={(e) => onBodyChange(e.target.value)}
         disabled={disabled}
         placeholder={disabled ? "No body for this request" : "Raw request body"}
-        className="min-h-35 w-full rounded-lg border border-border bg-surface p-2.5 font-mono text-sm text-text disabled:bg-bg disabled:text-text-faint"
+        className="api-body min-h-35 w-full rounded-lg border border-border bg-surface p-2.5 font-mono text-sm text-text disabled:bg-bg disabled:text-text-muted placeholder:text-text-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       />
     </div>
   );

@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { Menu } from "./Menu";
 
@@ -53,4 +53,12 @@ describe("Menu", () => {
     );
     expect(screen.getByRole("menu")).toBeInTheDocument();
   });
+});
+
+
+it("closes a single-choice picker when closeOnSelect is enabled", async () => {
+  render(<Menu label="Body type" options={OPTIONS} value="api" onSelect={() => {}} trigger="API" closeOnSelect />);
+  fireEvent.click(screen.getByRole("button", { name: "Body type" }));
+  fireEvent.click(screen.getByRole("menuitemradio", { name: /DB/ }));
+  await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
 });
