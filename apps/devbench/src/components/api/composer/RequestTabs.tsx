@@ -1,3 +1,4 @@
+import { Tabs } from "../../ui/Tabs";
 import { KeyValueEditor, type KeyValueRow } from "./KeyValueEditor";
 import { BodyEditor, type BodyType } from "./BodyEditor";
 import { AuthEditor, type AuthState } from "./AuthEditor";
@@ -39,39 +40,28 @@ export function RequestTabs({
   onAuthChange: (auth: AuthState) => void;
 }) {
   return (
-    <div>
-      <div className="flex gap-4.5 border-b border-border">
+    <Tabs.Root value={activeTab} onValueChange={(value) => onTabChange(value as ReqTab)}>
+      <Tabs.List aria-label="Request" activateOnFocus className="flex gap-4.5 border-b border-border">
         {TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => onTabChange(tab.id)}
-            aria-selected={activeTab === tab.id}
-            className={`border-b-2 px-0.5 py-2 text-sm font-semibold ${
-              activeTab === tab.id ? "border-accent text-text" : "border-transparent text-text-faint"
-            }`}
-          >
+          <Tabs.Tab key={tab.id} value={tab.id}
+            className="border-b-2 border-transparent px-0.5 py-2 text-sm font-semibold text-text-muted transition-colors hover:text-text data-[active]:border-accent data-[active]:text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
             {tab.label}
-          </button>
+          </Tabs.Tab>
         ))}
-      </div>
-      <div className="pt-3">
-        {activeTab === "params" ? (
-          <KeyValueEditor
-            rows={params}
-            onChange={onParamsChange}
-            addLabel="Add param"
-            emptyLabel="No query params. Add one, or type them straight into the URL above."
-          />
-        ) : null}
-        {activeTab === "headers" ? (
-          <KeyValueEditor rows={headers} onChange={onHeadersChange} showEnabled addLabel="Add header" emptyLabel="No headers set." />
-        ) : null}
-        {activeTab === "body" ? (
-          <BodyEditor bodyType={bodyType} body={body} onBodyTypeChange={onBodyTypeChange} onBodyChange={onBodyChange} />
-        ) : null}
-        {activeTab === "auth" ? <AuthEditor auth={auth} onChange={onAuthChange} /> : null}
-      </div>
-    </div>
+      </Tabs.List>
+      <Tabs.Panel value="params" className="pt-3">
+        <KeyValueEditor rows={params} onChange={onParamsChange} rowKind="param" addLabel="Add param"
+          emptyLabel="No query params. Add one, or type them straight into the URL above." />
+      </Tabs.Panel>
+      <Tabs.Panel value="headers" className="pt-3">
+        <KeyValueEditor rows={headers} onChange={onHeadersChange} showEnabled rowKind="header" addLabel="Add header" emptyLabel="No headers set." />
+      </Tabs.Panel>
+      <Tabs.Panel value="body" className="pt-3">
+        <BodyEditor body={body} bodyType={bodyType} onBodyChange={onBodyChange} onBodyTypeChange={onBodyTypeChange} />
+      </Tabs.Panel>
+      <Tabs.Panel value="auth" className="pt-3">
+        <AuthEditor auth={auth} onChange={onAuthChange} />
+      </Tabs.Panel>
+    </Tabs.Root>
   );
 }

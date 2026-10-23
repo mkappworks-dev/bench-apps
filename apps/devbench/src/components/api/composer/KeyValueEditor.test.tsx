@@ -1,6 +1,9 @@
 import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeAll, afterAll } from "vitest";
 import { KeyValueEditor } from "./KeyValueEditor";
+
+beforeAll(() => vi.stubGlobal("PointerEvent", MouseEvent));
+afterAll(() => vi.unstubAllGlobals());
 
 describe("KeyValueEditor", () => {
   it("shows the empty-state label when there are no rows", () => {
@@ -28,7 +31,7 @@ describe("KeyValueEditor", () => {
         emptyLabel="No headers set."
       />,
     );
-    fireEvent.click(screen.getAllByLabelText("Remove")[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: /Remove param/ })[0]);
     expect(onChange).toHaveBeenCalledWith([{ key: "b", value: "2", enabled: true }]);
   });
 
@@ -78,9 +81,9 @@ describe("KeyValueEditor", () => {
     const handle = screen.getByTestId("rows-resize-handle");
     const box = screen.getByTestId("rows-box");
     expect(box).toHaveStyle({ height: "168px" });
-    fireEvent.mouseDown(handle, { clientY: 100 });
-    fireEvent.mouseMove(window, { clientY: 200 });
-    fireEvent.mouseUp(window);
+    fireEvent.pointerDown(handle, { clientY: 100 });
+    fireEvent.pointerMove(window, { clientY: 200 });
+    fireEvent.pointerUp(window);
     expect(box).toHaveStyle({ height: "268px" });
   });
 
@@ -94,13 +97,56 @@ describe("KeyValueEditor", () => {
         emptyLabel="No headers set."
       />,
     );
-    fireEvent.mouseDown(screen.getByTestId("rows-resize-handle"), { clientY: 100 });
+    fireEvent.pointerDown(screen.getByTestId("rows-resize-handle"), { clientY: 100 });
     removeSpy.mockClear();
 
     unmount();
 
-    expect(removeSpy).toHaveBeenCalledWith("mousemove", expect.any(Function));
-    expect(removeSpy).toHaveBeenCalledWith("mouseup", expect.any(Function));
+    expect(removeSpy).toHaveBeenCalledWith("pointermove", expect.any(Function));
+    expect(removeSpy).toHaveBeenCalledWith("pointerup", expect.any(Function));
     removeSpy.mockRestore();
+  });
+});
+
+
+describe("row editor accessibility", () => {
+  function editor() {
+    return render(<KeyValueEditor rows={[{ key: "status", value: "pending" }]} onChange={() => {}} addLabel="Add param" emptyLabel="No params." />);
+  }
+  it("names each row and supports keyboard height adjustment within bounds", () => {
+    editor();
+    expect(screen.getByRole("textbox", { name: "Param 1 key" })).toHaveValue("status");
+    expect(screen.getByRole("textbox", { name: "Param 1 value" })).toHaveValue("pending");
+    expect(screen.getByRole("button", { name: "Remove param 1" })).toBeInTheDocument();
+    const grip = screen.getByRole("separator", { name: "Resize params" });
+    expect(grip).toHaveAttribute("aria-valuenow", "168");
+    expect(grip).toHaveAttribute("aria-valuemin", "64");
+    expect(grip).toHaveAttribute("aria-valuemax", "420");
+    fireEvent.keyDown(grip, { key: "ArrowDown" });
+    expect(grip).toHaveAttribute("aria-valuenow", "184");
+    fireEvent.keyDown(grip, { key: "ArrowUp" });
+    expect(grip).toHaveAttribute("aria-valuenow", "168");
+    fireEvent.keyDown(grip, { key: "Home" });
+    fireEvent.keyDown(grip, { key: "ArrowUp" });
+    expect(grip).toHaveAttribute("aria-valuenow", "64");
+    fireEvent.keyDown(grip, { key: "End" });
+    fireEvent.keyDown(grip, { key: "ArrowDown" });
+    expect(grip).toHaveAttribute("aria-valuenow", "420");
+  });
+  it("clamps pointer resize and ends it on cancellation or lost capture", () => {
+    editor();
+    const grip = screen.getByRole("separator");
+    fireEvent.pointerDown(grip, { clientY: 100 });
+    fireEvent.pointerMove(window, { clientY: 1000 });
+    expect(grip).toHaveAttribute("aria-valuenow", "420");
+    fireEvent.pointerCancel(window);
+    fireEvent.pointerMove(window, { clientY: 0 });
+    expect(grip).toHaveAttribute("aria-valuenow", "420");
+    fireEvent.pointerDown(grip, { clientY: 100 });
+    fireEvent.pointerMove(window, { clientY: -1000 });
+    expect(grip).toHaveAttribute("aria-valuenow", "64");
+    fireEvent.lostPointerCapture(grip);
+    fireEvent.pointerMove(window, { clientY: 500 });
+    expect(grip).toHaveAttribute("aria-valuenow", "64");
   });
 });

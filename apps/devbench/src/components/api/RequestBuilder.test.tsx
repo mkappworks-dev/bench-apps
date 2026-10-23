@@ -319,7 +319,7 @@ describe("RequestBuilder", () => {
         }} />;
     }
     render(<PersistedComposer />);
-    fireEvent.click(screen.getByRole("button", { name: "Params" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Params" }));
     expect(screen.getByPlaceholderText("key")).toHaveValue("status");
     expect(screen.getByPlaceholderText("value")).toHaveValue("pending");
 
