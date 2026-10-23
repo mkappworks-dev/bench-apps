@@ -1,0 +1,361 @@
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { PendingPanel } from "./PendingPanel";
+import { useAppStore } from "../../store/useAppStore";
+import * as tauriLib from "../../lib/tauri";
+import type { PendingChange } from "../../lib/pendingChanges";
+
+const ORDERS = { schema: "public", name: "orders" };
+const USERS = { schema: "public", name: "users" };
+
+const UPDATE: PendingChange = {
+  kind: "update", connection_id: "c1", table: ORDERS, pk_column: "id", pk_value: "1",
+  column: "status", old_value: "pending", new_value: "shipped",
+};
+const DELETE: PendingChange = {
+  kind: "delete", connection_id: "c1", table: USERS, pk_column: "id", pk_value: "9",
+};
+const OTHER_CONNECTION: PendingChange = {
+  kind: "update", connection_id: "c2", table: ORDERS, pk_column: "id", pk_value: "42",
+  column: "status", old_value: "pending", new_value: "cancelled",
+};
+
+function seed(pending: PendingChange[]) {
+  useAppStore.setState({ pending });
+}
+
+function renderPanel(connectionId: string | null = "c1", onConflictIndex = vi.fn()) {
+  return {
+    onConflictIndex,
+    ...render(
+      <PendingPanel
+        connectionId={connectionId}
+        onClose={() => {}}
+        onConflictIndex={onConflictIndex}
+      />,
+    ),
+  };
+}
+
+describe("PendingPanel", () => {
+  beforeEach(() => {
+    useAppStore.setState({ pending: [] });
+    useAppStore.getState().setApplyInFlight(false);
+  });
+
+  it("says nothing is staged, and offers no Apply, when the set is empty", () => {
+    renderPanel();
+    expect(screen.getByText(/nothing staged/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^apply/i })).toBeNull();
+  });
+
+  it("groups entries by table and labels each entry's kind", () => {
+    seed([UPDATE, DELETE]);
+    renderPanel();
+    expect(screen.getByText("public.orders")).toBeTruthy();
+    expect(screen.getByText("public.users")).toBeTruthy();
+    expect(screen.getByText("update")).toBeTruthy();
+    expect(screen.getByText("delete")).toBeTruthy();
+  });
+
+  it("renders a staged sql entry's effect exactly once, not doubled", () => {
+    useAppStore.getState().addPendingSql("c1", "UPDATE orders SET status = 'x';", "3 rows affected");
+    renderPanel();
+    expect(screen.getByText("· 3 rows affected when run")).toBeTruthy();
+    expect(screen.queryByText(/when run when run/)).toBeNull();
+  });
+
+  it("shows an update as old then new, so the diff is readable without the grid", () => {
+    seed([UPDATE]);
+    renderPanel();
+    expect(screen.getByText("pending")).toBeTruthy();
+    expect(screen.getByText("shipped")).toBeTruthy();
+    expect(screen.getByText("id = 1")).toBeTruthy();
+  });
+
+  it("counts the whole set on the Apply button", () => {
+    seed([UPDATE, DELETE]);
+    renderPanel();
+    expect(screen.getByRole("button", { name: "Apply 2" })).toBeTruthy();
+  });
+
+  it("discards one entry by its position in the whole set", () => {
+    seed([UPDATE, DELETE]);
+    renderPanel();
+    fireEvent.click(screen.getAllByRole("button", { name: /^discard this/i })[0]);
+    expect(useAppStore.getState().pending).toEqual([DELETE]);
+  });
+
+  it("discards everything at once", () => {
+    seed([UPDATE, DELETE]);
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: "Discard all" }));
+    expect(useAppStore.getState().pending).toEqual([]);
+  });
+
+  it("discards this connection's entries and leaves another connection's standing", () => {
+    useAppStore.setState({
+      pending: [
+        { kind: "delete", connection_id: "c1", table: { schema: "public", name: "orders" }, pk_column: "id", pk_value: "1" },
+        { kind: "delete", connection_id: "c2", table: { schema: "public", name: "orders" }, pk_column: "id", pk_value: "2" },
+      ],
+    });
+
+    renderPanel("c1");
+    fireEvent.click(screen.getByRole("button", { name: "Discard all" }));
+
+    const left = useAppStore.getState().pending;
+    expect(left).toHaveLength(1);
+    expect(left[0].connection_id).toBe("c2");
+  });
+
+  it("sends the whole ordered set in one call and clears it on success", async () => {
+    seed([UPDATE, DELETE]);
+    const apply = vi.spyOn(tauriLib, "invokeApplyChanges").mockResolvedValue({ applied: 2, conflict: null });
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply 2" }));
+
+    await waitFor(() => expect(apply).toHaveBeenCalledWith("c1", [UPDATE, DELETE]));
+    await waitFor(() => expect(useAppStore.getState().pending).toEqual([]));
+  });
+
+  it("keeps the set and reports what it expected versus what it found on a conflict", async () => {
+    seed([UPDATE]);
+    vi.spyOn(tauriLib, "invokeApplyChanges").mockResolvedValue({
+      applied: 0,
+      conflict: {
+        index: 0, table: "public.orders", description: "id = 1", column: "status",
+        expected: "pending", found: "cancelled", row_missing: false,
+      },
+    });
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
+
+    await screen.findByRole("alert");
+    expect(screen.getByRole("alert").textContent).toContain("cancelled");
+    expect(useAppStore.getState().pending).toEqual([UPDATE]);
+  });
+
+  it("signals an apply only when the commit actually wrote", async () => {
+    seed([UPDATE]);
+    vi.spyOn(tauriLib, "invokeApplyChanges").mockResolvedValue({ applied: 1, conflict: null });
+    const before = useAppStore.getState().applyGeneration;
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
+
+    await waitFor(() => expect(useAppStore.getState().applyGeneration).toBe(before + 1));
+  });
+
+  it("does not signal an apply when the transaction rolled back", async () => {
+    seed([UPDATE]);
+    vi.spyOn(tauriLib, "invokeApplyChanges").mockResolvedValue({
+      applied: 0,
+      conflict: {
+        index: 0, table: "public.orders", description: "id = 1", column: "status",
+        expected: "pending", found: "cancelled", row_missing: false,
+      },
+    });
+    const before = useAppStore.getState().applyGeneration;
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
+
+    await screen.findByRole("alert");
+    expect(useAppStore.getState().applyGeneration).toBe(before);
+  });
+
+  it("reports a conflict against the entry's position in the whole set, not the sent subset", async () => {
+    // UPDATE is connection c1; it sits at whole-set index 1, sent index 0.
+    seed([OTHER_CONNECTION, UPDATE]);
+    vi.spyOn(tauriLib, "invokeApplyChanges").mockResolvedValue({
+      applied: 0,
+      conflict: {
+        index: 0, table: "public.orders", description: "id = 1", column: "status",
+        expected: "pending", found: "cancelled", row_missing: false,
+      },
+    });
+    const { onConflictIndex } = renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
+
+    await screen.findByRole("alert");
+    expect(onConflictIndex).toHaveBeenCalledWith(1);
+  });
+
+  it("says the row is gone rather than reporting a NULL it did not find", async () => {
+    seed([DELETE]);
+    vi.spyOn(tauriLib, "invokeApplyChanges").mockResolvedValue({
+      applied: 0,
+      conflict: {
+        index: 0, table: "public.users", description: "id = 9", column: null,
+        expected: null, found: null, row_missing: true,
+      },
+    });
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
+
+    await screen.findByRole("alert");
+    expect(screen.getByRole("alert").textContent).toMatch(/no longer exists|already gone|no row/i);
+  });
+
+  it("keeps the set when the call itself fails", async () => {
+    seed([UPDATE]);
+    vi.spyOn(tauriLib, "invokeApplyChanges").mockRejectedValue(new Error("connection refused"));
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
+
+    await screen.findByRole("alert");
+    expect(screen.getByRole("alert").textContent).toContain("connection refused");
+    expect(useAppStore.getState().pending).toEqual([UPDATE]);
+  });
+
+  describe("more than one connection in the set", () => {
+    it("sends only the entries staged against this connection, and counts only those", async () => {
+      seed([UPDATE, OTHER_CONNECTION, DELETE]);
+      const apply = vi
+        .spyOn(tauriLib, "invokeApplyChanges")
+        .mockResolvedValue({ applied: 2, conflict: null });
+      renderPanel();
+
+      fireEvent.click(screen.getByRole("button", { name: "Apply 2" }));
+
+      await waitFor(() => expect(apply).toHaveBeenCalledWith("c1", [UPDATE, DELETE]));
+      await waitFor(() => expect(useAppStore.getState().pending).toEqual([OTHER_CONNECTION]));
+    });
+
+    it("still shows the other connection's entries, marked as not part of this Apply", () => {
+      seed([UPDATE, OTHER_CONNECTION]);
+      renderPanel();
+
+      expect(screen.getByText(/staged on another connection/i)).toBeTruthy();
+      expect(screen.getByText(/connection c2/i)).toBeTruthy();
+      expect(screen.getByText("cancelled")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Apply 1" })).toBeTruthy();
+    });
+
+    it("offers nothing to apply when the whole set belongs to another connection", () => {
+      seed([OTHER_CONNECTION]);
+      renderPanel();
+      expect((screen.getByRole("button", { name: /^apply/i }) as HTMLButtonElement).disabled).toBe(true);
+    });
+  });
+
+  it.each([
+    ["false", "true", "false"],
+    ["A", "B", "C"],
+  ])("locks a submitted cell until Apply settles (%s → %s, later %s)", async (oldValue, sentValue, laterValue) => {
+    const sent = { ...UPDATE, old_value: oldValue, new_value: sentValue };
+    seed([sent]);
+    let finish!: (outcome: tauriLib.ApplyOutcome) => void;
+    vi.spyOn(tauriLib, "invokeApplyChanges").mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
+    act(() => { useAppStore.getState().stagePendingUpdate({ ...sent, new_value: laterValue }); });
+    expect(useAppStore.getState().pending).toEqual([sent]);
+    await act(async () => { finish({ applied: 1, conflict: null }); });
+    expect(useAppStore.getState().pending).toEqual([]);
+    act(() => { useAppStore.getState().stagePendingUpdate({ ...sent, old_value: sentValue, new_value: laterValue }); });
+    expect(useAppStore.getState().pending).toEqual([{ ...sent, old_value: sentValue, new_value: laterValue }]);
+  });
+
+  // A wholesale clear would destroy a newcomer staged mid-flight — the post-Apply refetch would then silently repaint the stored value over it.
+  it("keeps a change staged during Apply and clears only what it sent", async () => {
+    seed([UPDATE]);
+    let resolveApply: (outcome: tauriLib.ApplyOutcome) => void = () => {};
+    vi.spyOn(tauriLib, "invokeApplyChanges").mockReturnValue(
+      new Promise((resolve) => {
+        resolveApply = resolve;
+      }),
+    );
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
+    await screen.findByRole("button", { name: "Applying…" });
+
+    const staged: PendingChange = {
+      kind: "update", connection_id: "c1", table: ORDERS, pk_column: "id", pk_value: "7",
+      column: "paid", old_value: "false", new_value: "true",
+    };
+    act(() => {
+      useAppStore.getState().stagePendingUpdate(staged);
+    });
+    expect(useAppStore.getState().pending).toHaveLength(2);
+
+    await act(async () => {
+      resolveApply({ applied: 1, conflict: null });
+    });
+
+    await waitFor(() => expect(useAppStore.getState().pending).toEqual([staged]));
+  });
+
+  it("cannot be closed while an Apply is in flight", async () => {
+    seed([UPDATE]);
+    let resolveApply: (outcome: tauriLib.ApplyOutcome) => void = () => {};
+    vi.spyOn(tauriLib, "invokeApplyChanges").mockReturnValue(
+      new Promise((resolve) => {
+        resolveApply = resolve;
+      }),
+    );
+    renderPanel();
+
+    const close = screen.getByRole("button", { name: "Close pending changes" }) as HTMLButtonElement;
+    expect(close.disabled).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
+    await screen.findByRole("button", { name: "Applying…" });
+    expect((screen.getByRole("button", { name: "Close pending changes" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(useAppStore.getState().applyInFlight).toBe(true);
+
+    await act(async () => {
+      resolveApply({ applied: 1, conflict: null });
+    });
+
+    await waitFor(() => expect(useAppStore.getState().applyInFlight).toBe(false));
+  });
+
+  it("says an insert with no values will be rejected rather than rendering blank", () => {
+    seed([{ kind: "insert", connection_id: "c1", table: ORDERS, values: {} }]);
+    renderPanel();
+    expect(screen.getByText(/no values/i)).toBeTruthy();
+  });
+
+  // Moving this cleanup to the success branch would leave the dock and Settings locked forever after a failed Apply, and pass the rest of the suite.
+  it("releases the in-flight lock when the transaction rolls back", async () => {
+    seed([UPDATE]);
+    vi.spyOn(tauriLib, "invokeApplyChanges").mockResolvedValue({
+      applied: 0,
+      conflict: {
+        index: 0, table: "public.orders", description: "id = 1", column: "status",
+        expected: "pending", found: "cancelled", row_missing: false,
+      },
+    });
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
+
+    await screen.findByRole("alert");
+    expect(useAppStore.getState().applyInFlight).toBe(false);
+    expect(
+      (screen.getByRole("button", { name: "Close pending changes" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+
+  it("releases the in-flight lock when the call itself fails", async () => {
+    seed([UPDATE]);
+    vi.spyOn(tauriLib, "invokeApplyChanges").mockRejectedValue(new Error("connection refused"));
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
+
+    await screen.findByRole("alert");
+    expect(useAppStore.getState().applyInFlight).toBe(false);
+    expect(
+      (screen.getByRole("button", { name: "Close pending changes" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+});

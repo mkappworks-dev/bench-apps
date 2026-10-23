@@ -1,11 +1,11 @@
 import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppStrip } from "./AppStrip";
-import type { Tab } from "../../store/useAppStore";
+import { useAppStore, type Tab } from "../../store/useAppStore";
 
 const TWO_LEFT_TABS: Tab[] = [
   { id: "t-api", kind: "api", pane: "left", ordinal: 0, state: {} },
-  { id: "t-db", kind: "db", pane: "left", ordinal: 1, state: { table: "orders" } },
+  { id: "t-db", kind: "db", pane: "left", ordinal: 1, state: { table: { schema: "public", name: "orders" } } },
 ];
 
 const BASE = {
@@ -20,7 +20,23 @@ const BASE = {
   onToggleChat: () => {},
 };
 
+const QUERY_TAB: Tab[] = [
+  { id: "t-q", kind: "query", pane: "left", ordinal: 0, state: { queryId: "q1", connectionId: "c1" } },
+];
+
+function seedQuery() {
+  useAppStore.setState({
+    savedQueries: [{ id: "q1", connection_id: "c1", name: "failed orders today", sql: "", created_at: 1 }],
+  });
+}
+
 describe("AppStrip", () => {
+  // Several cases below assert on every rendered tab, so a query left behind
+  // by an earlier case would show up in their lists.
+  beforeEach(() => {
+    useAppStore.setState({ savedQueries: [] });
+  });
+
   it("carries the product lockup in the column beside the traffic lights", () => {
     render(<AppStrip {...BASE} />);
     expect(screen.getByText("Dev Bench")).toBeInTheDocument();
@@ -48,6 +64,17 @@ describe("AppStrip", () => {
   it("labels a DB tab with its table as a subtitle", () => {
     render(<AppStrip {...BASE} />);
     expect(screen.getByRole("tab", { name: /DB/ })).toHaveTextContent("orders");
+  });
+
+  // Regression: a tab persisted before schemas existed stores `table` as a
+  // bare string, not `{schema, name}` — both the subtitle and the close
+  // button's accessible name must resolve it the same way as the qualified
+  // shape above, not go blank for it.
+  it("labels a DB tab from a legacy bare-string table the same as a qualified one", () => {
+    const tabs: Tab[] = [{ id: "t-db", kind: "db", pane: "left", ordinal: 0, state: { table: "orders" } }];
+    render(<AppStrip {...BASE} tabs={tabs} activeTabId={{ left: "t-db", right: null }} />);
+    expect(screen.getByRole("tab", { name: /DB/ })).toHaveTextContent("orders");
+    expect(screen.getByRole("button", { name: /close db orders/i })).toBeInTheDocument();
   });
 
   it("selects a tab on click", () => {
@@ -187,5 +214,32 @@ describe("AppStrip", () => {
     expect(onToggleChat).toHaveBeenCalled();
     rerender(<AppStrip {...BASE} chatOpen={false} onToggleChat={onToggleChat} />);
     expect(screen.getByRole("button", { name: /toggle ai chat/i })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  // This toggle unmounts the whole dock, Pending panel included. Mid-Apply
+  // that would throw away the only place the outcome can be reported, so it
+  // says it is unavailable rather than silently refusing.
+  it("cannot toggle the dock away while its occupant is mid-flight", () => {
+    const onToggleChat = vi.fn();
+    render(<AppStrip {...BASE} onToggleChat={onToggleChat} chatToggleDisabled />);
+    const button = screen.getByRole("button", { name: /toggle ai chat/i }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(onToggleChat).not.toHaveBeenCalled();
+  });
+
+  it("labels a query tab with the saved query's name in mono", () => {
+    seedQuery();
+    render(<AppStrip {...BASE} tabs={QUERY_TAB} activeTabId={{ left: "t-q", right: null }} />);
+
+    const label = screen.getByText("failed orders today");
+    expect(label.className).toContain("font-mono");
+  });
+
+  it("names the close button for a query tab by its query, not by its kind", () => {
+    seedQuery();
+    render(<AppStrip {...BASE} tabs={QUERY_TAB} activeTabId={{ left: "t-q", right: null }} />);
+
+    expect(screen.getByRole("button", { name: "Close query failed orders today" })).toBeInTheDocument();
   });
 });

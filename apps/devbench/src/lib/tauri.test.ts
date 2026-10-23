@@ -1,12 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  invokeApplyChanges,
+  invokeUpdateConnection,
+  invokeDeleteConnection,
   invokeClearEmails,
   invokeCollectCorrelationWindow,
+  invokeCountTableRows,
   invokeListEmails,
   invokeListHistory,
+  invokeListTableRows,
   invokeRunCorrelatedRequest,
+  invokeSetWatchedTable,
 } from "./tauri";
+import type { PendingChange } from "./pendingChanges";
+import { tableCountCache } from "./tableCountCache";
 
 /**
  * Asserts raw `invoke` payloads rather than spying on the wrappers, because
@@ -24,14 +32,57 @@ import {
 
 const invoked = vi.mocked(invoke);
 
+describe("count invalidation at the IPC boundary", () => {
+  const table = { schema: "public", name: "count_invalidation" };
+  const input = { name: "dev", engine: "postgres", host: "localhost", port: 5432, database: "demo", username: "postgres", sslmode: "disable" };
+
+  it.each(["apply", "update", "delete"] as const)("invalidates only the affected connection after successful %s", async (operation) => {
+    tableCountCache.invalidateConnection("cache-c1");
+    tableCountCache.invalidateConnection("cache-c2");
+    await tableCountCache.get(null, "cache-c1", table, [], () => Promise.resolve(1));
+    await tableCountCache.get(null, "cache-c2", table, [], () => Promise.resolve(2));
+    invoked.mockResolvedValueOnce({ applied: 1, conflict: null });
+    if (operation === "apply") await invokeApplyChanges("cache-c1", []);
+    if (operation === "update") await invokeUpdateConnection("cache-c1", input);
+    if (operation === "delete") await invokeDeleteConnection("cache-c1");
+    expect(await tableCountCache.get(null, "cache-c1", table, [], () => Promise.resolve(10))).toBe(10);
+    expect(await tableCountCache.get(null, "cache-c2", table, [], () => Promise.resolve(20))).toBe(2);
+  });
+
+  it("keeps a valid cached count after a rejected Apply", async () => {
+    tableCountCache.invalidateConnection("cache-c1");
+    await tableCountCache.get(null, "cache-c1", table, [], () => Promise.resolve(1));
+    invoked.mockRejectedValueOnce(new Error("offline"));
+    await expect(invokeApplyChanges("cache-c1", [])).rejects.toThrow("offline");
+    expect(await tableCountCache.get(null, "cache-c1", table, [], () => Promise.resolve(10))).toBe(1);
+  });
+});
+
+describe("invokeApplyChanges", () => {
+  it("sends only Rust change fields for every variant without mutating staged entries", async () => {
+    const table = { schema: "public", name: "orders" };
+    const wireChanges = [
+      { kind: "update", table, pk_column: "id", pk_value: "42", column: "notes", old_value: null, new_value: "a'b" },
+      { kind: "insert", table, values: { notes: null, status: "pending" } },
+      { kind: "delete", table, pk_column: "id", pk_value: "7" },
+      { kind: "sql", table: null, statement: "UPDATE orders SET notes = NULL", previewed_effect: "2 rows affected" },
+    ] as const;
+    const changes: PendingChange[] = wireChanges.map((change) => ({ ...change, connection_id: "c1" }));
+    const before = structuredClone(changes);
+
+    await invokeApplyChanges("c1", changes);
+
+    expect(invoked).toHaveBeenLastCalledWith("apply_changes", { connectionId: "c1", changes: wireChanges });
+    expect(changes).toEqual(before);
+  });
+});
+
 /** The `[command, payload]` pair of the most recent `invoke` call. */
 function lastInvoke(): [string, Record<string, unknown>] {
   const call = invoked.mock.calls.at(-1);
   if (!call) throw new Error("invoke was never called");
   return [call[0] as string, call[1] as Record<string, unknown>];
 }
-
-const connection = { host: "localhost", port: 5432, database: "d", username: "u", password: "p" };
 
 describe("invokeListHistory", () => {
   beforeEach(() => {
@@ -72,11 +123,11 @@ describe("invokeRunCorrelatedRequest", () => {
     invoked.mockClear();
   });
 
-  it("sends the session id alongside the request, connection, and watched tables", async () => {
+  it("sends the session id alongside the request, connection id, and watched tables", async () => {
     await invokeRunCorrelatedRequest({
       request: { method: "GET", url: "/api/orders" },
-      connection,
-      watchedTables: ["orders"],
+      connectionId: "c1",
+      watchedTables: [{ schema: "public", name: "orders" }],
       sessionId: "sess-1",
     });
 
@@ -84,12 +135,12 @@ describe("invokeRunCorrelatedRequest", () => {
     expect(command).toBe("run_correlated_request");
     expect(payload).toStrictEqual({
       request: { method: "GET", url: "/api/orders" },
-      connection,
-      watchedTables: ["orders"],
+      connectionId: "c1",
+      watchedTables: [{ schema: "public", name: "orders" }],
       sessionId: "sess-1",
     });
     expect(Object.keys(payload).sort()).toEqual([
-      "connection",
+      "connectionId",
       "request",
       "sessionId",
       "watchedTables",
@@ -99,14 +150,14 @@ describe("invokeRunCorrelatedRequest", () => {
   it("sends an explicit null session id when the send is unattributed", async () => {
     await invokeRunCorrelatedRequest({
       request: { method: "GET", url: "/api/orders" },
-      connection,
+      connectionId: "c1",
       watchedTables: [],
     });
 
     const [, payload] = lastInvoke();
     expect(payload).toStrictEqual({
       request: { method: "GET", url: "/api/orders" },
-      connection,
+      connectionId: "c1",
       watchedTables: [],
       sessionId: null,
     });
@@ -192,5 +243,94 @@ describe("invokeClearEmails", () => {
     expect(payload).toStrictEqual({ sessionId: null });
     expect(payload.sessionId).toBeNull();
     expect(JSON.stringify(payload)).toBe('{"sessionId":null}');
+  });
+});
+
+describe("invokeCountTableRows", () => {
+  beforeEach(() => {
+    invoked.mockClear();
+    invoked.mockResolvedValue(0);
+  });
+
+  it("sends the same filter shape the row query uses", async () => {
+    await invokeCountTableRows("c1", { schema: "public", name: "orders" }, [
+      { column: "status", op: "eq", value: "paid", enabled: true },
+    ]);
+    expect(lastInvoke()).toEqual([
+      "count_table_rows",
+      {
+        connectionId: "c1",
+        table: { schema: "public", name: "orders" },
+        filter: [{ column: "status", op: "eq", value: "paid", enabled: true }],
+      },
+    ]);
+  });
+
+  it("defaults to no filter", async () => {
+    await invokeCountTableRows("c1", { schema: "public", name: "orders" });
+    expect(lastInvoke()[1]).toEqual({ connectionId: "c1", table: { schema: "public", name: "orders" }, filter: [] });
+  });
+});
+
+describe("invokeListTableRows with a filter", () => {
+  beforeEach(() => {
+    invoked.mockClear();
+    invoked.mockResolvedValue({ columns: [], rows: [], pk_column: null });
+  });
+
+  it("passes filter and orderBy through as separate lists", async () => {
+    await invokeListTableRows("c1", { schema: "public", name: "orders" }, {
+      filter: [{ column: "paid", op: "is_true", value: null, enabled: true }],
+      orderBy: [{ column: "id", descending: true, enabled: true }],
+      limit: 25,
+      offset: 50,
+    });
+    expect(lastInvoke()[1]).toEqual({
+      connectionId: "c1",
+      table: { schema: "public", name: "orders" },
+      filter: [{ column: "paid", op: "is_true", value: null, enabled: true }],
+      orderBy: [{ column: "id", descending: true, enabled: true }],
+      limit: 25,
+      offset: 50,
+    });
+  });
+});
+
+describe("qualified table wrappers", () => {
+  beforeEach(() => {
+    invoked.mockClear();
+    invoked.mockResolvedValue({ columns: [], rows: [], pk_column: null });
+  });
+
+  it("sends the table as a {schema, name} object", async () => {
+    await invokeListTableRows("c1", { schema: "alt", name: "orders" }, { limit: 25 });
+    expect(lastInvoke()[1]).toEqual({
+      connectionId: "c1",
+      table: { schema: "alt", name: "orders" },
+      filter: [],
+      orderBy: [],
+      limit: 25,
+      offset: 0,
+    });
+  });
+
+  it("sends the same table shape to the count", async () => {
+    invoked.mockResolvedValue(0);
+    await invokeCountTableRows("c1", { schema: "alt", name: "orders" });
+    expect(lastInvoke()[1]).toEqual({
+      connectionId: "c1",
+      table: { schema: "alt", name: "orders" },
+      filter: [],
+    });
+  });
+
+  it("sends the same table shape when watching", async () => {
+    invoked.mockResolvedValue(undefined);
+    await invokeSetWatchedTable("c1", { schema: "public", name: "orders" }, true);
+    expect(lastInvoke()[1]).toEqual({
+      connectionId: "c1",
+      table: { schema: "public", name: "orders" },
+      watched: true,
+    });
   });
 });

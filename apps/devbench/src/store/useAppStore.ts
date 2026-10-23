@@ -1,21 +1,46 @@
 import { create } from "zustand";
+import type { QualifiedTable } from "../lib/tauri";
+import type { ColumnInfo } from "../components/db/grid/columnMeta";
+import { tableKey } from "../lib/tableIdentity";
+import {
+  discardAt,
+  entriesForOtherConnections,
+  removeEntries,
+  stageUpdate,
+  stagedUpdateFor,
+  hasStagedDelete,
+  toggleDelete,
+  type PendingChange,
+  type UpdateChange,
+} from "../lib/pendingChanges";
+import { mergeSavedQueries, type SavedQuery } from "../lib/savedQueries";
+import { queryRollbackKey, readQueryRollbackFailures, writeQueryRollbackFailures, type QueryRollbackFailure, type QueryRollbackFailures } from "../lib/queryRollbackFailures";
 
-export type ToolKind = "api" | "db" | "log" | "email";
+// `query` is a real tab kind but absent from `TABS`: opening one needs a saved query, so it cannot come from the + menu.
+export type ToolKind = "api" | "db" | "log" | "email" | "query";
 export type Pane = "left" | "right";
 export type ThemePref = "dark" | "light" | "system";
 export type AppRoute = "workspace" | "settings";
+export type SettingsPane = "general" | "appearance" | "provider" | "connections" | "mcp" | "archive";
+// No "closed" variant — `chatOpen` governs whether the dock is open at all.
+export type DockPanel = "chat" | "pending" | "insert";
+
+// Switching tables does NOT retarget an already-open Insert panel.
+export interface InsertTarget {
+  connectionId: string;
+  table: QualifiedTable;
+  columns: ColumnInfo[];
+}
 
 export interface Tab {
   id: string;
   kind: ToolKind;
   pane: Pane;
   ordinal: number;
-  /** Identifying selection only — never fetched data. See the shell spec's
-   *  "Tab persistence" table for what each kind is allowed to hold. */
+  /** Identifying selection only — never fetched data. */
   state: Record<string, unknown>;
 }
 
-/** `splitOpen` is not stored — a right-pane tab existing is what "split" means. */
 export function isSplitOpen(tabs: Tab[]): boolean {
   return tabs.some((t) => t.pane === "right");
 }
@@ -43,15 +68,57 @@ interface AppState {
   theme: ThemePref;
   setTheme: (theme: ThemePref) => void;
   watchedTables: Set<string>;
-  toggleWatchedTable: (table: string) => void;
-  /** Replaces watch state wholesale, e.g. after loading it from SQLite. */
-  setWatchedTables: (tables: string[]) => void;
+  // Real `QualifiedTable` objects, not derived "schema.name" keys — a Postgres identifier may contain a dot.
+  watchedTableList: QualifiedTable[];
+  toggleWatchedTable: (table: QualifiedTable) => void;
+  setWatchedTables: (tables: QualifiedTable[]) => void;
   chatOpen: boolean;
   setChatOpen: (open: boolean) => void;
+  dockPanel: DockPanel;
+  setDockPanel: (panel: DockPanel) => void;
+  insertTarget: InsertTarget | null;
+  setInsertTarget: (target: InsertTarget | null) => void;
+  // `setChatOpen`/`setDockPanel` refuse to tear the dock down while this is set, so an Apply's outcome always has a panel to land in.
+  applyInFlight: boolean;
+  applyingEntries: PendingChange[];
+  setApplyInFlight: (inFlight: boolean, entries?: PendingChange[]) => void;
+  queryRollbackFailures: QueryRollbackFailures;
+  recordQueryRollbackFailure: (queryId: string, connectionId: string, message: string) => void;
+  clearQueryRollbackFailure: (queryId: string, connectionId: string, expected: QueryRollbackFailure | undefined) => void;
+  // A counter, not a boolean, so two applies in a row are two distinct events for every mounted DbTab.
+  applyGeneration: number;
+  bumpApplyGeneration: () => void;
+  pending: PendingChange[];
+  stagePendingUpdate: (entry: UpdateChange) => void;
+  togglePendingDelete: (
+    connectionId: string,
+    table: QualifiedTable,
+    pkColumn: string,
+    pkValue: string,
+  ) => void;
+  addPendingInsert: (
+    connectionId: string,
+    table: QualifiedTable,
+    values: Record<string, string | null>,
+  ) => void;
+  addPendingSql: (connectionId: string, statement: string, previewedEffect: string) => void;
+  discardPendingAt: (index: number) => void;
+  removePendingEntries: (entries: PendingChange[]) => void;
+  discardAllPending: (connectionId: string | null) => void;
+  // Global across connections: a query tab pins its connection, so it must resolve its own name while the rail shows another.
+  savedQueries: SavedQuery[];
+  mergeSavedQueriesIntoStore: (list: SavedQuery[]) => void;
+  patchSavedQuery: (id: string, patch: { name?: string; sql?: string }) => void;
+  removeSavedQuery: (id: string) => void;
   route: AppRoute;
   setRoute: (route: AppRoute) => void;
+  /** Lives here so a deep link can land on the pane it means. */
+  settingsPane: SettingsPane;
+  setSettingsPane: (pane: SettingsPane) => void;
   activeSessionId: string | null;
   setActiveSessionId: (id: string | null) => void;
+  activeConnectionId: string | null;
+  setActiveConnectionId: (id: string | null) => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -83,9 +150,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       tabs: s.tabs.map((t) => (t.id === id ? { ...t, state: { ...t.state, ...patch } } : t)),
     })),
 
-  // Moving would leave the left pane empty, which is worse than doing
-  // nothing — the caller (AppStrip) opens the `+` menu targeting the right
-  // pane instead when this declines (shell spec, "Tab instances").
+  // Leaving the left pane empty is worse than declining — AppStrip opens the `+` menu targeting the right pane instead.
   splitActiveTab: () => {
     const s = get();
     const activeId = s.activeTabId.left;
@@ -113,18 +178,85 @@ export const useAppStore = create<AppState>((set, get) => ({
   theme: "dark",
   setTheme: (theme) => set({ theme }),
   watchedTables: new Set(),
+  watchedTableList: [],
   toggleWatchedTable: (table) =>
     set((state) => {
-      const next = new Set(state.watchedTables);
-      if (next.has(table)) next.delete(table);
-      else next.add(table);
-      return { watchedTables: next };
+      const key = tableKey(table);
+      const watching = !state.watchedTables.has(key);
+      const nextSet = new Set(state.watchedTables);
+      if (watching) nextSet.add(key);
+      else nextSet.delete(key);
+      const nextList = watching
+        ? [...state.watchedTableList, table]
+        : state.watchedTableList.filter((t) => tableKey(t) !== key);
+      return { watchedTables: nextSet, watchedTableList: nextList };
     }),
-  setWatchedTables: (tables) => set({ watchedTables: new Set(tables) }),
+  setWatchedTables: (tables) =>
+    set({
+      watchedTables: new Set(tables.map(tableKey)),
+      watchedTableList: tables,
+    }),
   chatOpen: true,
-  setChatOpen: (open) => set({ chatOpen: open }),
+  setChatOpen: (open) => set((s) => (s.applyInFlight && !open ? {} : { chatOpen: open })),
+  dockPanel: "chat",
+  setDockPanel: (dockPanel) =>
+    set((s) => (s.applyInFlight && dockPanel !== "pending" ? {} : { dockPanel })),
+  insertTarget: null,
+  setInsertTarget: (insertTarget) => set({ insertTarget }),
+  applyInFlight: false,
+  applyingEntries: [],
+  setApplyInFlight: (applyInFlight, entries = []) => set({ applyInFlight, applyingEntries: applyInFlight ? [...entries] : [] }),
+  queryRollbackFailures: readQueryRollbackFailures(),
+  recordQueryRollbackFailure: (queryId, connectionId, message) => set((s) => {
+    const queryRollbackFailures = { ...s.queryRollbackFailures, [queryRollbackKey(queryId, connectionId)]: { queryId, connectionId, message } };
+    writeQueryRollbackFailures(queryRollbackFailures);
+    return { queryRollbackFailures };
+  }),
+  clearQueryRollbackFailure: (queryId, connectionId, expected) => set((s) => {
+    const key = queryRollbackKey(queryId, connectionId);
+    if (!expected || s.queryRollbackFailures[key] !== expected) return s;
+    const queryRollbackFailures = { ...s.queryRollbackFailures };
+    delete queryRollbackFailures[key];
+    writeQueryRollbackFailures(queryRollbackFailures);
+    return { queryRollbackFailures };
+  }),
+  applyGeneration: 0,
+  bumpApplyGeneration: () => set((s) => ({ applyGeneration: s.applyGeneration + 1 })),
+  pending: [],
+  stagePendingUpdate: (entry) => set((s) => stagedUpdateFor(s.applyingEntries, entry.connection_id, entry.table, entry.pk_value, entry.column).staged
+    ? s : { pending: stageUpdate(s.pending, entry) }),
+  togglePendingDelete: (connectionId, table, pkColumn, pkValue) =>
+    set((s) => hasStagedDelete(s.applyingEntries, connectionId, table, pkValue)
+      ? s : { pending: toggleDelete(s.pending, connectionId, table, pkColumn, pkValue) }),
+  // Two inserts into one table are two rows; nothing here to upsert against.
+  addPendingInsert: (connectionId, table, values) =>
+    set((s) => ({
+      pending: [...s.pending, { kind: "insert", connection_id: connectionId, table, values }],
+    })),
+  addPendingSql: (connectionId, statement, previewedEffect) =>
+    set((s) => ({
+      pending: [
+        ...s.pending,
+        { kind: "sql", connection_id: connectionId, table: null, statement, previewed_effect: previewedEffect },
+      ],
+    })),
+  discardPendingAt: (index) => set((s) => ({ pending: discardAt(s.pending, index) })),
+  removePendingEntries: (entries) =>
+    set((s) => ({ pending: removeEntries(s.pending, entries) })),
+  discardAllPending: (connectionId) =>
+    set((s) => ({ pending: entriesForOtherConnections(s.pending, connectionId) })),
+  savedQueries: [],
+  mergeSavedQueriesIntoStore: (list) =>
+    set((s) => ({ savedQueries: mergeSavedQueries(s.savedQueries, list) })),
+  patchSavedQuery: (id, patch) =>
+    set((s) => ({ savedQueries: s.savedQueries.map((q) => (q.id === id ? { ...q, ...patch } : q)) })),
+  removeSavedQuery: (id) => set((s) => ({ savedQueries: s.savedQueries.filter((q) => q.id !== id) })),
   route: "workspace",
-  setRoute: (route) => set({ route }),
+  setRoute: (route) => set((s) => (s.applyInFlight && route !== "workspace" ? {} : { route })),
+  settingsPane: "general",
+  setSettingsPane: (settingsPane) => set({ settingsPane }),
   activeSessionId: null,
   setActiveSessionId: (id) => set({ activeSessionId: id }),
+  activeConnectionId: null,
+  setActiveConnectionId: (id) => set({ activeConnectionId: id }),
 }));

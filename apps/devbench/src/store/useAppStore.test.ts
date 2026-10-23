@@ -9,6 +9,18 @@ function reset() {
 }
 
 describe("useAppStore", () => {
+  it("does not clear a newer rollback failure when an older run succeeds", () => {
+    const store = useAppStore.getState();
+    store.recordQueryRollbackFailure("q1", "c1", "first failure");
+    const key = '["c1","q1"]';
+    const previous = useAppStore.getState().queryRollbackFailures[key];
+    store.recordQueryRollbackFailure("q1", "c1", "newer failure");
+    store.clearQueryRollbackFailure("q1", "c1", previous);
+    expect(useAppStore.getState().queryRollbackFailures[key]?.message).toBe("newer failure");
+    store.clearQueryRollbackFailure("q1", "c1", useAppStore.getState().queryRollbackFailures[key]);
+    expect(useAppStore.getState().queryRollbackFailures[key]).toBeUndefined();
+  });
+
   it("defaults to dark theme and no tabs", () => {
     reset();
     const state = useAppStore.getState();
@@ -17,11 +29,22 @@ describe("useAppStore", () => {
     expect(state.activeTabId).toEqual({ left: null, right: null });
   });
 
-  it("toggleWatchedTable adds and removes a table", () => {
-    useAppStore.getState().toggleWatchedTable("orders");
-    expect(useAppStore.getState().watchedTables.has("orders")).toBe(true);
-    useAppStore.getState().toggleWatchedTable("orders");
-    expect(useAppStore.getState().watchedTables.has("orders")).toBe(false);
+  it("toggleWatchedTable adds and removes a table, keeping the key set and the object list in sync", () => {
+    const orders = { schema: "public", name: "orders" };
+    useAppStore.getState().toggleWatchedTable(orders);
+    expect(useAppStore.getState().watchedTables.has("public.orders")).toBe(true);
+    expect(useAppStore.getState().watchedTableList).toEqual([orders]);
+    useAppStore.getState().toggleWatchedTable(orders);
+    expect(useAppStore.getState().watchedTables.has("public.orders")).toBe(false);
+    expect(useAppStore.getState().watchedTableList).toEqual([]);
+  });
+
+  it("setWatchedTables replaces both the key set and the object list wholesale", () => {
+    const orders = { schema: "public", name: "orders" };
+    const users = { schema: "alt", name: "users" };
+    useAppStore.getState().setWatchedTables([orders, users]);
+    expect(useAppStore.getState().watchedTables).toEqual(new Set(["public.orders", "alt.users"]));
+    expect(useAppStore.getState().watchedTableList).toEqual([orders, users]);
   });
 
   it("opens the chat dock by default and can close it", () => {
@@ -185,5 +208,122 @@ describe("useAppStore", () => {
       useAppStore.getState().replaceTabs([]);
       expect(useAppStore.getState().activeTabId).toEqual({ left: null, right: null });
     });
+  });
+
+  it("starts on chat and switches the dock's occupant", () => {
+    expect(useAppStore.getState().dockPanel).toBe("chat");
+    useAppStore.getState().setDockPanel("pending");
+    expect(useAppStore.getState().dockPanel).toBe("pending");
+    useAppStore.getState().setDockPanel("chat");
+  });
+
+  it("holds one global pending set across tables, and discarding it clears everything staged against the given connection", () => {
+    useAppStore.setState({ pending: [] });
+    useAppStore.getState().stagePendingUpdate({
+      kind: "update",
+      connection_id: "c1",
+      table: { schema: "public", name: "orders" },
+      pk_column: "id",
+      pk_value: "1",
+      column: "status",
+      old_value: "pending",
+      new_value: "shipped",
+    });
+    useAppStore.getState().togglePendingDelete("c1", { schema: "public", name: "users" }, "id", "9");
+    expect(useAppStore.getState().pending).toHaveLength(2);
+    useAppStore.getState().discardAllPending("c1");
+    expect(useAppStore.getState().pending).toEqual([]);
+  });
+
+  it("stamps every staged entry with the connection it was staged against", () => {
+    useAppStore.setState({ pending: [] });
+    useAppStore.getState().togglePendingDelete("dev", { schema: "public", name: "users" }, "id", "9");
+    useAppStore.getState().addPendingInsert("staging", { schema: "public", name: "orders" }, { status: "new" });
+    expect(useAppStore.getState().pending.map((p) => p.connection_id)).toEqual(["dev", "staging"]);
+    useAppStore.setState({ pending: [] });
+  });
+
+  it("removes exactly the entries handed to it, by identity", () => {
+    useAppStore.setState({ pending: [] });
+    useAppStore.getState().togglePendingDelete("c1", { schema: "public", name: "users" }, "id", "9");
+    useAppStore.getState().togglePendingDelete("c1", { schema: "public", name: "users" }, "id", "10");
+    const [first, second] = useAppStore.getState().pending;
+    useAppStore.getState().removePendingEntries([first]);
+    expect(useAppStore.getState().pending).toEqual([second]);
+    useAppStore.setState({ pending: [] });
+  });
+
+  it("refuses to close the dock or leave the pending panel while an Apply is in flight", () => {
+    useAppStore.getState().setChatOpen(true);
+    useAppStore.getState().setDockPanel("pending");
+    useAppStore.getState().setApplyInFlight(true);
+
+    useAppStore.getState().setChatOpen(false);
+    useAppStore.getState().setDockPanel("chat");
+    useAppStore.getState().setDockPanel("insert");
+    expect(useAppStore.getState().chatOpen).toBe(true);
+    expect(useAppStore.getState().dockPanel).toBe("pending");
+
+    useAppStore.getState().setRoute("settings");
+    expect(useAppStore.getState().route).toBe("workspace");
+
+    useAppStore.getState().setApplyInFlight(false);
+    useAppStore.getState().setDockPanel("chat");
+    useAppStore.getState().setRoute("settings");
+    expect(useAppStore.getState().dockPanel).toBe("chat");
+    expect(useAppStore.getState().route).toBe("settings");
+    useAppStore.getState().setRoute("workspace");
+  });
+
+  it("merges a connection's saved queries without dropping another connection's", () => {
+    useAppStore.setState({
+      savedQueries: [{ id: "b", connection_id: "c2", name: "staging", sql: "", created_at: 1 }],
+    });
+    useAppStore.getState().mergeSavedQueriesIntoStore([
+      { id: "a", connection_id: "c1", name: "dev", sql: "", created_at: 1 },
+    ]);
+    expect(useAppStore.getState().savedQueries.map((q) => q.id).sort()).toEqual(["a", "b"]);
+  });
+
+  it("patches a saved query in place, leaving its other fields alone", () => {
+    useAppStore.setState({
+      savedQueries: [{ id: "a", connection_id: "c1", name: "old", sql: "SELECT 1;", created_at: 7 }],
+    });
+    useAppStore.getState().patchSavedQuery("a", { name: "new" });
+    const [only] = useAppStore.getState().savedQueries;
+    expect(only).toEqual({ id: "a", connection_id: "c1", name: "new", sql: "SELECT 1;", created_at: 7 });
+  });
+
+  it("removes a saved query by id", () => {
+    useAppStore.setState({
+      savedQueries: [
+        { id: "a", connection_id: "c1", name: "keep", sql: "", created_at: 1 },
+        { id: "b", connection_id: "c1", name: "drop", sql: "", created_at: 2 },
+      ],
+    });
+    useAppStore.getState().removeSavedQuery("b");
+    expect(useAppStore.getState().savedQueries.map((q) => q.id)).toEqual(["a"]);
+  });
+
+  it("stages a sql change with no table, under its own heading", () => {
+    useAppStore.setState({ pending: [] });
+    useAppStore.getState().addPendingSql("c1", "UPDATE orders SET status = 'x';", "3 rows affected");
+
+    expect(useAppStore.getState().pending).toEqual([
+      {
+        kind: "sql",
+        connection_id: "c1",
+        table: null,
+        statement: "UPDATE orders SET status = 'x';",
+        previewed_effect: "3 rows affected",
+      },
+    ]);
+  });
+
+  it("appends a second sql change rather than replacing the first", () => {
+    useAppStore.setState({ pending: [] });
+    useAppStore.getState().addPendingSql("c1", "SELECT 1;", "1 row affected");
+    useAppStore.getState().addPendingSql("c1", "SELECT 1;", "1 row affected");
+    expect(useAppStore.getState().pending).toHaveLength(2);
   });
 });

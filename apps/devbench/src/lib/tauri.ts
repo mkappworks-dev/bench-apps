@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { tableCountCache } from "./tableCountCache";
 
 export interface DbInitError {
   db_path: string;
@@ -47,6 +48,7 @@ export function invokeListHistory(sessionId?: string | null): Promise<HistoryEnt
 }
 
 export interface TableDiff {
+  schema: string;
   table: string;
   inserted: number;
   updated: number;
@@ -63,23 +65,15 @@ export interface CorrelationResult {
   history_id: string | null;
 }
 
-export interface DbConnectInput {
-  host: string;
-  port: number;
-  database: string;
-  username: string;
-  password: string;
-}
-
 export function invokeRunCorrelatedRequest(args: {
   request: FireRequestInput;
-  connection: DbConnectInput;
-  watchedTables: string[];
+  connectionId: string;
+  watchedTables: QualifiedTable[];
   sessionId?: string | null;
 }): Promise<CorrelationResult> {
   return invoke("run_correlated_request", {
     request: args.request,
-    connection: args.connection,
+    connectionId: args.connectionId,
     watchedTables: args.watchedTables,
     sessionId: args.sessionId ?? null,
   });
@@ -195,34 +189,135 @@ export function invokeCollectCorrelationWindow(
   return invoke("collect_correlation_window", { correlationId, historyId });
 }
 
+/** Wire-compatible with the Rust `QualifiedTable`. A table's full identity —
+ *  a bare name is ambiguous once more than one schema is in play. */
+export interface QualifiedTable {
+  schema: string;
+  name: string;
+}
+
 export interface TableInfo {
   schema: string;
   name: string;
 }
 
-export function invokeDbConnectAndListTables(connection: DbConnectInput): Promise<TableInfo[]> {
-  return invoke("db_connect_and_list_tables", { input: connection });
+export function invokeDbConnectAndListTables(connectionId: string): Promise<TableInfo[]> {
+  return invoke("db_connect_and_list_tables", { connectionId });
 }
 
 export interface TableRows {
   columns: string[];
+  column_types?: string[];
   rows: (string | null)[][];
+  pk_column: string | null;
 }
 
-export function invokeListTableRows(connection: DbConnectInput, table: string): Promise<TableRows> {
-  return invoke("list_table_rows", { input: connection, table });
+export type { FilterCondition, FilterOp, SortTerm } from "../components/db/grid/types";
+import type { FilterCondition, SortTerm } from "../components/db/grid/types";
+
+export function invokeListTableRows(
+  connectionId: string,
+  table: QualifiedTable,
+  options?: { filter?: FilterCondition[]; orderBy?: SortTerm[]; limit?: number; offset?: number },
+): Promise<TableRows> {
+  return invoke("list_table_rows", {
+    connectionId,
+    table,
+    filter: options?.filter ?? [],
+    orderBy: options?.orderBy ?? [],
+    limit: options?.limit ?? 100,
+    offset: options?.offset ?? 0,
+  });
 }
 
-export function invokeListWatchedTables(connection: DbConnectInput): Promise<string[]> {
-  return invoke("list_watched_tables", { connection });
+export function invokeCountTableRows(
+  connectionId: string,
+  table: QualifiedTable,
+  filter: FilterCondition[] = [],
+): Promise<number> {
+  return invoke("count_table_rows", { connectionId, table, filter });
 }
 
-export function invokeSetWatchedTable(
-  connection: DbConnectInput,
-  table: string,
-  watched: boolean,
-): Promise<void> {
-  return invoke("set_watched_table", { connection, table, watched });
+export type { ColumnInfo, ForeignKeyRef } from "../components/db/grid/columnMeta";
+import type { ColumnInfo } from "../components/db/grid/columnMeta";
+
+export function invokeDescribeColumns(
+  connectionId: string,
+  table: QualifiedTable,
+): Promise<ColumnInfo[]> {
+  return invoke("describe_columns", { connectionId, table });
+}
+
+export type { PendingChange, ApplyOutcome, ConflictReport } from "./pendingChanges";
+import type { ApplyOutcome, PendingChange } from "./pendingChanges";
+
+export function invokeApplyChanges(
+  connectionId: string,
+  changes: PendingChange[],
+): Promise<ApplyOutcome> {
+  const wireChanges = changes.map(({ connection_id: _, ...change }) => change);
+  return invoke<ApplyOutcome>("apply_changes", { connectionId, changes: wireChanges }).then((outcome) => {
+    if (outcome.applied > 0) tableCountCache.invalidateConnection(connectionId);
+    return outcome;
+  });
+}
+
+/** `null` means the key points at no row — spec §8's "No matching row in …",
+ *  which is a fact to report, not a failure. */
+export function invokeGetReferencedRow(
+  connectionId: string,
+  table: QualifiedTable,
+  column: string,
+  value: string,
+): Promise<TableRows | null> {
+  return invoke("get_referenced_row", { connectionId, table, column, value });
+}
+
+export type { SavedQuery } from "./savedQueries";
+import type { SavedQuery } from "./savedQueries";
+
+export function invokeListSavedQueries(connectionId: string): Promise<SavedQuery[]> {
+  return invoke("list_saved_queries", { connectionId });
+}
+
+export function invokeCreateSavedQuery(connectionId: string, name: string, sql: string): Promise<SavedQuery> {
+  return invoke("create_saved_query", { connectionId, name, sql });
+}
+
+export function invokeRenameSavedQuery(id: string, name: string): Promise<void> {
+  return invoke("rename_saved_query", { id, name });
+}
+
+export function invokeSetSavedQuerySql(id: string, sql: string): Promise<void> {
+  return invoke("set_saved_query_sql", { id, sql });
+}
+
+export function invokeDeleteSavedQuery(id: string): Promise<void> {
+  return invoke("delete_saved_query", { id });
+}
+
+export function invokeListWatchedTables(connectionId: string): Promise<QualifiedTable[]> {
+  return invoke("list_watched_tables", { connectionId });
+}
+
+export function invokeSetWatchedTable(connectionId: string, table: QualifiedTable, watched: boolean): Promise<void> {
+  return invoke("set_watched_table", { connectionId, table, watched });
+}
+
+export interface QueryPreview {
+  preview_id: string;
+  columns: string[];
+  column_types?: string[];
+  rows: (string | null)[][];
+  rows_affected: number | null;
+}
+
+export function invokePreviewQuery(connectionId: string, sql: string): Promise<QueryPreview> {
+  return invoke("preview_query", { connectionId, sql });
+}
+
+export function invokeRollbackPreview(previewId: string): Promise<void> {
+  return invoke("rollback_preview", { previewId });
 }
 
 export interface Session {
@@ -366,4 +461,63 @@ export function invokeSetTabState(id: string, state: string): Promise<void> {
 
 export function invokeMoveTab(id: string, pane: string, ordinal: number): Promise<void> {
   return invoke("move_tab", { id, pane, ordinal });
+}
+
+export interface ConnectionSummary {
+  id: string;
+  name: string;
+  engine: string;
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  sslmode: string;
+  /** The password itself is never sent to the frontend — only whether one is stored. */
+  has_password: boolean;
+}
+
+export interface ConnectionInput {
+  name: string;
+  engine: string;
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  sslmode: string;
+  password?: string | null;
+}
+
+export function invokeListConnections(): Promise<ConnectionSummary[]> {
+  return invoke("list_connections");
+}
+
+export function invokeCreateConnection(input: ConnectionInput): Promise<ConnectionSummary> {
+  return invoke("create_connection", { input });
+}
+
+export function invokeUpdateConnection(id: string, input: ConnectionInput): Promise<ConnectionSummary> {
+  return invoke<ConnectionSummary>("update_connection", { id, input }).then((connection) => {
+    tableCountCache.invalidateConnection(id);
+    return connection;
+  });
+}
+
+export function invokeDeleteConnection(id: string): Promise<void> {
+  return invoke<void>("delete_connection", { id }).then(() => tableCountCache.invalidateConnection(id));
+}
+
+export function invokeSetConnectionPassword(id: string, password: string): Promise<void> {
+  return invoke("set_connection_password", { id, password });
+}
+
+export function invokeClearConnectionPassword(id: string): Promise<void> {
+  return invoke("clear_connection_password", { id });
+}
+
+export function invokeTestConnection(input: ConnectionInput): Promise<void> {
+  return invoke("test_connection", { input });
+}
+
+export function invokeTestSavedConnection(id: string): Promise<void> {
+  return invoke("test_saved_connection", { id });
 }

@@ -18,6 +18,25 @@ describe("App shell", () => {
     vi.restoreAllMocks();
   });
 
+  it("surfaces an unresolved rollback after its query tab has closed", () => {
+    useAppStore.setState({ route: "workspace", queryRollbackFailures: {
+      '["c1","q1"]': { queryId: "q1", connectionId: "c1", message: "uncertain transaction" },
+    } });
+    render(<App />);
+    expect(screen.getByRole("alert")).toHaveTextContent("uncertain transaction");
+    useAppStore.setState({ queryRollbackFailures: {} });
+  });
+
+  it("keeps rollback warnings visible in settings when their query tab is active", () => {
+    useAppStore.setState({ route: "settings", tabs: [{ id: "qt", kind: "query", pane: "left", ordinal: 0, state: { queryId: "q1", connectionId: "c1" } }],
+      activeTabId: { left: "qt", right: null }, queryRollbackFailures: {
+        '["c1","q1"]': { queryId: "q1", connectionId: "c1", message: "uncertain transaction" },
+      } });
+    render(<App />);
+    expect(screen.getByRole("alert")).toHaveTextContent("uncertain transaction");
+    useAppStore.setState({ route: "workspace", tabs: [], activeTabId: { left: null, right: null }, queryRollbackFailures: {} });
+  });
+
   it("renders the three-column workspace", () => {
     render(<App />);
     expect(screen.getByRole("complementary", { name: "Sessions" })).toBeInTheDocument();
@@ -60,17 +79,25 @@ describe("App shell", () => {
   // this on mount so the default tab is never out of sync with storage.
   it("hydrates watched tables on mount even while the default api tab is active", async () => {
     vi.spyOn(tauriLib, "invokeGetSettings").mockResolvedValue(settings);
-    vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue(["orders", "users"]);
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([
+      { id: "c1", name: "Local Dev", engine: "postgres", host: "localhost", port: 5432, database: "devbench_test", username: "postgres", sslmode: "disable", has_password: true },
+    ]);
+    const listWatched = vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue([
+      { schema: "public", name: "orders" },
+      { schema: "public", name: "users" },
+    ]);
 
     render(<App />);
 
     await waitFor(() => {
       const watched = useAppStore.getState().watchedTables;
-      expect(watched.has("orders")).toBe(true);
-      expect(watched.has("users")).toBe(true);
+      expect(watched.has("public.orders")).toBe(true);
+      expect(watched.has("public.users")).toBe(true);
     });
+    expect(listWatched).toHaveBeenCalledWith("c1");
 
     useAppStore.getState().setWatchedTables([]);
+    useAppStore.getState().setActiveConnectionId(null);
   });
 
   // Bug: nothing at the app level ever called invokeGetSettings, so a
@@ -136,6 +163,41 @@ describe("App shell", () => {
       screen.getByText("migration 5 was previously applied but has been modified"),
     ).toBeInTheDocument();
     expect(screen.queryByRole("complementary", { name: "Sessions" })).not.toBeInTheDocument();
+  });
+
+  // Fix 4 end to end: the trash button lives in the query tab's OWN rail, so
+  // deleting the saved query has to take the document with it. Left open, the
+  // tab's name field and editor fall back to "" and cannot accept a
+  // keystroke, and the row persists in SQLite across a restart.
+  it("closes a query's tab when the query is deleted from the rail, and persists the close", async () => {
+    vi.spyOn(tauriLib, "invokeGetStartupStatus").mockResolvedValue({ db_error: null });
+    vi.spyOn(tauriLib, "invokeGetSettings").mockResolvedValue(settings);
+    vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeDbConnectAndListTables").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeListSavedQueries").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeListTabs").mockResolvedValue([
+      { id: "qt", session_id: null, kind: "query", pane: "left", ordinal: 0, state: '{"queryId":"q1","connectionId":"c1"}' },
+    ]);
+    vi.spyOn(tauriLib, "invokeDeleteSavedQuery").mockResolvedValue(undefined);
+    const closeTab = vi.spyOn(tauriLib, "invokeCloseTab").mockResolvedValue(undefined);
+
+    useAppStore.setState({
+      activeConnectionId: "c1",
+      savedQueries: [{ id: "q1", connection_id: "c1", name: "doomed", sql: "SELECT 1;", created_at: 1 }],
+    });
+
+    render(<App />);
+    await waitFor(() => expect(useAppStore.getState().tabs.map((t) => t.id)).toEqual(["qt"]));
+    expect(screen.getByRole("textbox", { name: "Query name" })).toHaveValue("doomed");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete query doomed" }));
+
+    await waitFor(() => expect(useAppStore.getState().tabs).toHaveLength(0));
+    expect(closeTab).toHaveBeenCalledWith("qt");
+    expect(screen.queryByRole("textbox", { name: "Query name" })).not.toBeInTheDocument();
+
+    useAppStore.setState({ activeConnectionId: null, savedQueries: [] });
   });
 
   it("renders the normal workspace, with no error screen, when the startup check reports no error", async () => {

@@ -8,7 +8,7 @@ export interface MenuOption {
 }
 
 const ITEM_CLASS =
-  "flex w-full cursor-pointer items-center gap-2.5 rounded-sm px-2.5 py-1.5 text-left text-sm " +
+  "flex w-full cursor-pointer items-center gap-2.25 rounded-sm px-2.25 py-1.75 text-left text-[13.5px] " +
   "text-text-muted transition-colors duration-150 outline-none " +
   "data-[highlighted]:bg-surface-2 data-[highlighted]:text-text";
 
@@ -22,6 +22,9 @@ export function Menu({
   align = "start",
   open,
   onOpenChange,
+  footerLabel,
+  footerIcon,
+  onFooterSelect,
 }: {
   label: string;
   options: MenuOption[];
@@ -30,6 +33,11 @@ export function Menu({
   trigger: React.ReactNode;
   triggerClassName?: string;
   align?: "start" | "end";
+  /** An action below a separator, for the mockup's "Manage connections…"
+   *  shape: a way out of the picker that isn't one of the values. */
+  footerLabel?: string;
+  footerIcon?: React.ReactNode;
+  onFooterSelect?: () => void;
   /** Omit for the normal click-to-open case. Set only when a caller must
    *  open the menu without the user clicking its trigger (AppStrip's
    *  Split-declined flow). */
@@ -42,7 +50,7 @@ export function Menu({
     isPicker ? (
       <BaseMenu.RadioItem key={option.value} value={option.value} className={ITEM_CLASS}>
         <OptionBody option={option} />
-        <BaseMenu.RadioItemIndicator className="ml-auto text-text">
+        <BaseMenu.RadioItemIndicator className="ml-auto text-text-faint">
           <CheckIcon />
         </BaseMenu.RadioItemIndicator>
       </BaseMenu.RadioItem>
@@ -63,13 +71,20 @@ export function Menu({
         <BaseMenu.Positioner sideOffset={6} align={align} className="z-50">
           <BaseMenu.Popup
             aria-label={label}
-            className="min-w-52 rounded-lg border border-border p-1.5 shadow-lg backdrop-blur-xl backdrop-saturate-150"
+            className="min-w-55 rounded-lg border p-1.25 backdrop-blur-xl backdrop-saturate-150"
             style={{
               background: "color-mix(in srgb, var(--surface) 72%, transparent)",
-              boxShadow: "inset 0 1px 0 0 rgb(255 255 255 / 0.06)",
+              // Hairline glass border, not the opaque --border: a translucent
+              // panel reads as lit from its own edge rather than cut out.
+              borderColor: "var(--glass-border)",
+              // Elevation and the inner top highlight together. Setting only
+              // the inset here (with `shadow-lg` doing the rest) silently
+              // dropped the elevation entirely — an inline boxShadow replaces
+              // the utility's value rather than adding to it.
+              boxShadow: "var(--shadow), var(--glass-hi)",
             }}
           >
-            <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-text-faint">
+            <div className="px-2.25 pb-1.25 pt-1.5 text-[10.5px] font-bold uppercase tracking-[0.06em] text-text-faint">
               {label}
             </div>
             {isPicker ? (
@@ -79,6 +94,15 @@ export function Menu({
             ) : (
               body
             )}
+            {footerLabel && onFooterSelect ? (
+              <>
+                <div className="mx-0.75 my-1.25 h-px bg-border" />
+                <BaseMenu.Item className={ITEM_CLASS} onClick={onFooterSelect}>
+                  {footerIcon ? <span className="shrink-0 text-text-faint">{footerIcon}</span> : null}
+                  <span>{footerLabel}</span>
+                </BaseMenu.Item>
+              </>
+            ) : null}
           </BaseMenu.Popup>
         </BaseMenu.Positioner>
       </BaseMenu.Portal>
@@ -90,10 +114,10 @@ function OptionBody({ option }: { option: MenuOption }) {
   return (
     <>
       {option.icon ? <span className="shrink-0 text-text-faint">{option.icon}</span> : null}
-      <span>
-        <span className="block font-medium text-text">{option.label}</span>
+      <span className="min-w-0">
+        <span className="block truncate font-semibold text-text">{option.label}</span>
         {option.description ? (
-          <span className="block text-xs text-text-faint">{option.description}</span>
+          <span className="block truncate font-normal text-xs text-text-faint">{option.description}</span>
         ) : null}
       </span>
     </>
