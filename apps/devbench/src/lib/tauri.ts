@@ -253,7 +253,8 @@ export function invokeApplyChanges(
   connectionId: string,
   changes: PendingChange[],
 ): Promise<ApplyOutcome> {
-  return invoke("apply_changes", { connectionId, changes });
+  const wireChanges = changes.map(({ connection_id: _, ...change }) => change);
+  return invoke("apply_changes", { connectionId, changes: wireChanges });
 }
 
 /** `null` means the key points at no row — spec §8's "No matching row in …",
