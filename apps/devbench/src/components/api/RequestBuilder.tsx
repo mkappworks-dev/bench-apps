@@ -94,8 +94,8 @@ export function RequestBuilder({
   }
 
   return (
-    <div className="flex flex-col gap-2.5 rounded-t-lg border border-b-0 border-border bg-surface p-3">
-      <div className="flex gap-2">
+    <div className="api-composer flex min-w-0 flex-col gap-2.5">
+      <div className="api-request-bar flex min-w-0 gap-2">
         <Menu
           closeOnSelect
           label="Method"
@@ -108,22 +108,24 @@ export function RequestBuilder({
               <ChevronIcon />
             </>
           }
-          triggerClassName="flex h-9 w-28 shrink-0 items-center justify-between gap-2 rounded-sm border border-border bg-surface px-3 font-mono text-sm font-semibold text-text transition-colors duration-150 hover:border-text-faint hover:bg-surface-2"
+          triggerClassName="api-method flex h-9 w-28 shrink-0 items-center justify-between gap-2 rounded-sm border border-border bg-surface px-3 font-mono text-sm font-semibold text-text transition-colors duration-150 hover:border-text-faint hover:bg-surface-2"
         />
         <input
+          aria-label="Request URL"
           value={url}
           onChange={(e) => {
             setParamsDraft(null);
             onPatchState({ url: e.target.value });
           }}
           placeholder="/api/orders"
-          className="flex-1 rounded-sm border border-border bg-bg px-2.5 py-2 font-mono text-text"
+          className="api-url h-9 min-w-0 flex-1 rounded-sm border border-border bg-bg px-2.5 font-mono text-sm text-text placeholder:text-text-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         />
         <button
+          type="button"
           onClick={handleSend}
           disabled={sending || !connectionId}
           title={!connectionId ? "Select a connection first" : undefined}
-          className="min-w-21 rounded-sm bg-accent px-4 font-bold text-accent-on disabled:opacity-60"
+          className="api-send h-9 min-w-21 shrink-0 rounded-sm bg-accent px-4 text-sm font-semibold text-accent-on transition-colors hover:bg-accent-strong disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           {sending ? "Sending…" : "Send"}
         </button>

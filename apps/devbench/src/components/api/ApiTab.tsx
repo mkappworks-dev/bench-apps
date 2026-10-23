@@ -1,3 +1,4 @@
+import "./api.css";
 import { useEffect, useRef, useState } from "react";
 import { RequestBuilder } from "./RequestBuilder";
 import { ResponseViewer, type SentRequest } from "./ResponseViewer";
@@ -174,39 +175,43 @@ export function ApiTab({
   }
 
   return (
-    <div className="-m-6 flex h-full">
-      <HistorySidebar
-        onSelect={handleHistorySelect}
-        refreshKey={historyRefreshKey}
-        sessionId={activeSessionId}
-        focusId={focusHistoryId}
-      />
-      <div className="mx-auto flex max-w-180 flex-1 flex-col gap-4 overflow-y-auto p-6">
-        <RequestBuilder
-          connectionId={activeConnectionId}
-          watchedTables={watchedTableList}
+    <div className="api-root">
+      <div className="api-layout">
+        <HistorySidebar
+          onSelect={handleHistorySelect}
+          refreshKey={historyRefreshKey}
           sessionId={activeSessionId}
-          method={typeof tab.state.method === "string" ? tab.state.method : "GET"}
-          url={typeof tab.state.url === "string" ? tab.state.url : ""}
-          onPatchState={onPatchState}
-          onSendStart={handleSendStart}
-          onResult={handleResult}
-          onError={handleError}
+          focusId={focusHistoryId}
         />
-        {error ? (
-          <div className="rounded-lg border border-border bg-danger-bg p-3 text-sm text-danger">{error}</div>
-        ) : null}
-        <ResponseViewer result={result?.response ?? null} sentRequest={result?.sentRequest ?? null} />
-        {result || sending ? (
-          <div>
-            <div className="m-0.5 text-[11.5px] font-bold uppercase tracking-wide text-text-faint">
-              What happened
-            </div>
-            <div className="rounded-lg border border-border bg-surface">
-              <Rollup data={result?.rollup ?? null} loading={sending} onOpenDb={onOpenDb} onOpenLog={onOpenLog} onOpenEmail={onOpenEmail} />
-            </div>
+        <div className="api-main">
+          <div className="api-main-inner">
+            <RequestBuilder
+              connectionId={activeConnectionId}
+              watchedTables={watchedTableList}
+              sessionId={activeSessionId}
+              method={typeof tab.state.method === "string" ? tab.state.method : "GET"}
+              url={typeof tab.state.url === "string" ? tab.state.url : ""}
+              onPatchState={onPatchState}
+              onSendStart={handleSendStart}
+              onResult={handleResult}
+              onError={handleError}
+            />
+            {error ? (
+              <div role="alert" className="rounded-lg border border-border bg-danger-bg p-3 text-sm text-danger [overflow-wrap:anywhere]">{error}</div>
+            ) : null}
+            <ResponseViewer result={result?.response ?? null} sentRequest={result?.sentRequest ?? null} />
+            {result || sending ? (
+              <div>
+                <div className="m-0.5 text-[11.5px] font-bold uppercase tracking-wide text-text-faint">
+                  What happened
+                </div>
+                <div className="rounded-lg border border-border bg-surface">
+                  <Rollup data={result?.rollup ?? null} loading={sending} onOpenDb={onOpenDb} onOpenLog={onOpenLog} onOpenEmail={onOpenEmail} />
+                </div>
+              </div>
+            ) : null}
           </div>
-        ) : null}
+        </div>
       </div>
     </div>
   );

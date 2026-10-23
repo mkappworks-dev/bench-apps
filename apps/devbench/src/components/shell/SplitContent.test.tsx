@@ -186,4 +186,38 @@ describe("SplitContent", () => {
     );
     expect(within(leftMain).getByRole("button", { name: /checkout/ })).toHaveAttribute("aria-current", "false");
   });
+  it("keeps each mounted API tab's URL, header draft, and selected panel independent", async () => {
+    useAppStore.setState({ tabs: [
+      { id: "a", kind: "api", pane: "left", ordinal: 0, state: { url: "/a" } },
+      { id: "b", kind: "api", pane: "left", ordinal: 1, state: { url: "/b" } },
+    ], activeTabId: { left: "a", right: null } });
+    vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([]);
+    renderSplit({ onPatchState: (id, patch) => useAppStore.getState().patchTabState(id, patch) });
+    const main = screen.getByRole("main");
+    const [first, second] = Array.from(main.children).map((element) => within(element as HTMLElement));
+    let active = first;
+    fireEvent.change(active.getByRole("textbox"), { target: { value: "/a?x=1" } });
+    fireEvent.click(active.getByRole("button", { name: "Add header" }));
+    fireEvent.change(active.getByRole("textbox", { name: "Header 1 key" }), { target: { value: "X-Tab-A" } });
+    act(() => useAppStore.getState().setActiveTabId("left", "b"));
+    active = second;
+    expect(active.getByRole("textbox")).toHaveValue("/b");
+    fireEvent.click(active.getByRole("button", { name: "Add header" }));
+    fireEvent.change(active.getByRole("textbox", { name: "Header 1 key" }), { target: { value: "X-Tab-B" } });
+    fireEvent.click(active.getByRole("tab", { name: "Body" }));
+    act(() => useAppStore.getState().setActiveTabId("left", "a"));
+    active = first;
+    expect(active.getByRole("textbox", { name: "Header 1 key" })).toHaveValue("X-Tab-A");
+    expect(active.getByPlaceholderText("/api/orders")).toHaveValue("/a?x=1");
+    fireEvent.click(active.getByRole("tab", { name: "Params" }));
+    act(() => useAppStore.getState().setActiveTabId("left", "b"));
+    active = second;
+    expect(active.getByRole("tabpanel", { name: "Body" })).toBeVisible();
+    act(() => useAppStore.getState().setActiveTabId("left", "a"));
+    active = first;
+    expect(active.getByRole("tabpanel", { name: "Params" })).toBeVisible();
+    expect(active.getByRole("textbox", { name: "Param 1 key" })).toHaveValue("x");
+    await waitFor(() => expect(screen.queryByText("Loading history…")).not.toBeInTheDocument());
+  });
+
 });
