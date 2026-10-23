@@ -71,3 +71,11 @@ A fresh read-only review by gpt-6-astra/high covered `dbcb11a..934f9cc`. It foun
 Two deferred-fetch regressions (success and rejection) failed first. The fix stores the successful fetch's offset alongside its rows and uses that snapshot for fallback labels. Both tests then passed, the full suite passed 569/569, and the build, full Rust suite and Playwright gate passed again. No review findings remain deferred.
 
 The reviewer set aside the existing accepted §18 stale-result/FK-comparison trade-offs and the pre-existing z-index tests as proof of clickability. Those rulings stand: the former remain explicitly accepted (cost: confusing stale results or an empty FK-jump grid); clickability rests on browser `elementFromPoint` measurements (cost if relying on jsdom instead: missed occluded controls).
+
+## Final main verification and cleanup
+
+The follow-ups landed in local merge `6efd4ca`. All three gates were rerun on that merged main checkout: 569 frontend tests / 51 files; clean build with 274 modules and no warnings; 263 Rust library tests passed, 1 ignored, and 6 smoke tests passed.
+
+Only after those gates passed, the temporary Vite server was stopped, the restored worktree was removed, and both merged local branches were deleted. The original feature branch's stale remote upstream initially blocked safe deletion; its main ancestry was verified, the local upstream association removed, and safe deletion then succeeded. Remote branches were not changed. No push or PR was made.
+
+The available historical decisions and all new measurements are preserved above. This session's raw ledger, Playwright script, JSON measurements and screenshot were also copied to `/private/tmp/devbench-table-view-verification-2026-10-23` before removing the worktree. That temporary copy is optional diagnostic material; the durable record is this committed document.

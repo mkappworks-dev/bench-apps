@@ -80,4 +80,4 @@
 - [x] Record measured numbers and gate results in `docs/superpowers/reviews/2026-10-23-table-view-merge.md`; preserve links to the committed Slice 4 measurements. The original ignored 35-ruling ledger was absent when this session resumed; do not invent its contents.
 - [x] Update §18 to describe the four closed gaps and their regression protection.
 - [x] Run all three full gates, request a fresh review of this follow-up range, and address any important findings with failing regression tests first.
-- [ ] Merge the verified follow-ups locally, rerun the full gates, and only then remove the restored worktree and merged branches.
+- [x] Merge the verified follow-ups locally, rerun the full gates, and only then remove the restored worktree and merged branches.
