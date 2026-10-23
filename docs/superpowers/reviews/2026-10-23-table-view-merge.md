@@ -32,9 +32,9 @@ Host port 5432 was free before Compose started. The restored checkout's service,
 - Query resizing now supports keyboard focus, numeric ARIA values, ArrowUp/ArrowDown in 10px steps, and Home/End at the exported bounds.
 - Document lookup searches both panes. A legacy left-pane match wins independent of array order; query state and its pinned connection are preserved. Other deep links still patch the matched document. A missing document opens on the left.
 - Apply strips frontend-only `connection_id` from each nested change instead of depending on serde ignoring it. Exact payload assertions cover update/insert/delete/SQL, nulls, and caller immutability.
-- Row-copy trigger and menu names include identity: primary-key column/value for tables, page-aware numbers without a usable key, and one-based numbers for generic query results.
+- Row-copy trigger and menu names include identity: primary-key column/value for tables, page-aware numbers from the successfully loaded row snapshot without a usable key, and one-based numbers for generic query results.
 
-Each change has a regression test observed failing before implementation. The focused passing suites contain 23 query-tab tests, 22 tab-controller tests, 18 IPC tests, and 93 grid/table-tab tests.
+Each change has a regression test observed failing before implementation. The focused passing suites contain 23 query-tab tests, 22 tab-controller tests, 18 IPC tests, and 95 grid/table-tab tests after the review fix.
 
 ## Browser gate (2026-10-23)
 
@@ -62,4 +62,12 @@ Bounds were read from the running QueryTab module, not copied into the browser a
 
 ## Follow-up gates
 
-`bun run test`: 567 passed across 51 files. `bun run build`: passed, 274 modules, no warnings. `cargo test`: 263 library tests passed, 1 ignored; all 6 smoke tests passed. Existing React `act(...)` warnings and Node localStorage warnings remain in frontend test output; they were present in the initial baseline too.
+`bun run test`: 569 passed across 51 files. `bun run build`: passed, 274 modules, no warnings. `cargo test`: 263 library tests passed, 1 ignored; all 6 smoke tests passed. Existing React `act(...)` warnings and Node localStorage warnings remain in frontend test output; they were present in the initial baseline too.
+
+## Fresh review and fix
+
+A fresh read-only review by gpt-6-astra/high covered `dbcb11a..934f9cc`. It found no Critical issues and one issue initially graded Minor: keyless copy labels used the requested page before its rows loaded. A failed fetch could leave old row data permanently labeled with the new page's numbers. This was regraded Important because it directly undermined the row-identity accessibility fix.
+
+Two deferred-fetch regressions (success and rejection) failed first. The fix stores the successful fetch's offset alongside its rows and uses that snapshot for fallback labels. Both tests then passed, the full suite passed 569/569, and the build, full Rust suite and Playwright gate passed again. No review findings remain deferred.
+
+The reviewer set aside the existing accepted §18 stale-result/FK-comparison trade-offs and the pre-existing z-index tests as proof of clickability. Those rulings stand: the former remain explicitly accepted (cost: confusing stale results or an empty FK-jump grid); clickability rests on browser `elementFromPoint` measurements (cost if relying on jsdom instead: missed occluded controls).

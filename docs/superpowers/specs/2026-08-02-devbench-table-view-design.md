@@ -857,7 +857,9 @@ Slice 4: `docs/superpowers/plans/2026-08-19-table-view-slice-4-queries.md`.
   update, insert, delete and SQL, so Apply no longer depends on serde ignoring
   that extra field.
 - **Row copy names.** DataGrid accepts `getRowLabel`; DbTab supplies the primary
-  key column and value, or a page-aware row number when no usable key exists.
+  key column and value, or a page-aware row number from the loaded row snapshot
+  when no usable key exists. Delayed and failed fetches retain that snapshot
+  and its row labels together.
   Query results use one-based row numbers. Copy triggers and menus include
   those labels; clipboard contents are unchanged.
 

@@ -36,10 +36,10 @@
 
 **Interfaces:** Consumes exported `MIN_EDITOR_PX = 90`, `MAX_EDITOR_PX = 560`; exposes a focusable horizontal separator whose `aria-valuenow` is the editor height in pixels.
 
-- [ ] Write tests for focusability and numeric ARIA bounds; ArrowDown/ArrowUp change by 10, Home/End select the bounds, repeated arrows clamp, unrelated keys are not prevented.
-- [ ] Run `bun run test src/components/db/QueryTab.test.tsx`; expect new assertions to fail because keyboard support is absent.
-- [ ] Add bounded key handling and ARIA values without changing mouse behavior. Give the grip a visible keyboard focus indicator.
-- [ ] Run the same test file; expect all tests to pass. Commit `fix(devbench): make query editor resizing keyboard accessible`.
+- [x] Write tests for focusability and numeric ARIA bounds; ArrowDown/ArrowUp change by 10, Home/End select the bounds, repeated arrows clamp, unrelated keys are not prevented.
+- [x] Run `bun run test src/components/db/QueryTab.test.tsx`; expect new assertions to fail because keyboard support is absent.
+- [x] Add bounded key handling and ARIA values without changing mouse behavior. Give the grip a visible keyboard focus indicator.
+- [x] Run the same test file; expect all tests to pass. Commit `fix(devbench): make query editor resizing keyboard accessible`.
 
 ### Task 2: Resolve documents across both panes
 
@@ -47,10 +47,10 @@
 
 **Interfaces:** Preserve `focusOrCreateTab(kind, statePatch?, match?): string`; search left then right, activate the matched tab in its own pane, and preserve matched query state. New tabs still open on the left.
 
-- [ ] Add regressions for a right-pane saved query with a different active connection, deterministic left priority when both panes match, right-pane deep-link state patching, and a nonmatching query ID.
-- [ ] Run `bun run test src/store/useTabController.test.ts`; expect right-pane lookup to fail.
-- [ ] Search both panes with explicit left priority and activate `existing.pane`.
-- [ ] Run the same file; expect all tests to pass. Commit `fix(devbench): focus existing documents across split panes`.
+- [x] Add regressions for a right-pane saved query with a different active connection, deterministic left priority when both panes match, right-pane deep-link state patching, and a nonmatching query ID.
+- [x] Run `bun run test src/store/useTabController.test.ts`; expect right-pane lookup to fail.
+- [x] Search both panes with explicit left priority and activate `existing.pane`.
+- [x] Run the same file; expect all tests to pass. Commit `fix(devbench): focus existing documents across split panes`.
 
 ### Task 3: Remove frontend metadata from Apply payloads
 
@@ -58,10 +58,10 @@
 
 **Interfaces:** `invokeApplyChanges(connectionId, changes)` keeps its public signature; nested wire changes exclude `connection_id`. Top-level `connectionId` continues to choose the target pool.
 
-- [ ] Test all four variants with exact payload equality, including null cell values, nullable SQL table, and unchanged caller entries.
-- [ ] Run `bun run test src/lib/tauri.test.ts`; expect extra `connection_id` properties in the payload.
-- [ ] Strip that field from each entry before invoking Rust, avoiding reliance on serde's unknown-field tolerance.
-- [ ] Run the same file; expect all tests to pass. Commit `fix(devbench): strip frontend connection metadata from apply payloads`.
+- [x] Test all four variants with exact payload equality, including null cell values, nullable SQL table, and unchanged caller entries.
+- [x] Run `bun run test src/lib/tauri.test.ts`; expect extra `connection_id` properties in the payload.
+- [x] Strip that field from each entry before invoking Rust, avoiding reliance on serde's unknown-field tolerance.
+- [x] Run the same file; expect all tests to pass. Commit `fix(devbench): strip frontend connection metadata from apply payloads`.
 
 ### Task 4: Distinguish row copy controls
 
@@ -69,15 +69,15 @@
 
 **Interfaces:** Add optional `getRowLabel(rowIndex: number): string` to DataGrid. Default to the one-based data-row index; DbTab returns `<pk column> <pk value>` where available and a page-aware row number otherwise. Copy trigger and menu share `Copy row <label>`.
 
-- [ ] Test custom labels, numbered query-result fallbacks, primary-key labels from DbTab, and page-aware labels without a primary key. Update existing copy-trigger lookups to accept the row suffix.
-- [ ] Run `bun run test src/components/db/DataGrid.test.tsx src/components/db/DbTab.test.tsx`; expect missing labels/prop behavior.
-- [ ] Thread labels through the existing grid; leave clipboard content and row actions unchanged.
-- [ ] Run the same files; expect all tests to pass. Commit `fix(devbench): name row copy controls by row identity`.
+- [x] Test custom labels, numbered query-result fallbacks, primary-key labels from DbTab, and page-aware labels without a primary key. Update existing copy-trigger lookups to accept the row suffix.
+- [x] Run `bun run test src/components/db/DataGrid.test.tsx src/components/db/DbTab.test.tsx`; expect missing labels/prop behavior.
+- [x] Thread labels through the existing grid; leave clipboard content and row actions unchanged.
+- [x] Run the same files; expect all tests to pass. Commit `fix(devbench): name row copy controls by row identity`.
 
 ## Final verification and review
 
-- [ ] In Playwright with `scripts/fk-stub.js`, measure editor heights at Home/End and Arrow steps against the exported bounds. Confirm grip, copy trigger and open copy menu are hittable using `elementFromPoint`; check horizontal containment and header/body alignment under scroll.
-- [ ] Record measured numbers and gate results in `docs/superpowers/reviews/2026-10-23-table-view-merge.md`; preserve links to the committed Slice 4 measurements. The original ignored 35-ruling ledger was absent when this session resumed; do not invent its contents.
-- [ ] Update §18 to describe the four closed gaps and their regression protection.
-- [ ] Run all three full gates, request a fresh review of this follow-up range, and address any important findings with failing regression tests first.
+- [x] In Playwright with `scripts/fk-stub.js`, measure editor heights at Home/End and Arrow steps against the exported bounds. Confirm grip, copy trigger and open copy menu are hittable using `elementFromPoint`; check horizontal containment and header/body alignment under scroll.
+- [x] Record measured numbers and gate results in `docs/superpowers/reviews/2026-10-23-table-view-merge.md`; preserve links to the committed Slice 4 measurements. The original ignored 35-ruling ledger was absent when this session resumed; do not invent its contents.
+- [x] Update §18 to describe the four closed gaps and their regression protection.
+- [x] Run all three full gates, request a fresh review of this follow-up range, and address any important findings with failing regression tests first.
 - [ ] Merge the verified follow-ups locally, rerun the full gates, and only then remove the restored worktree and merged branches.
