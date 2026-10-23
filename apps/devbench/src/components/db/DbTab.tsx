@@ -102,7 +102,7 @@ export function DbTab({
   const stagePendingUpdate = useAppStore((s) => s.stagePendingUpdate);
   const togglePendingDelete = useAppStore((s) => s.togglePendingDelete);
 
-  const [tableRows, setTableRows] = useState<TableRows | null>(null);
+  const [tableRows, setTableRows] = useState<(TableRows & { offset: number }) | null>(null);
   // tableRows.columns comes back empty when a filter matches nothing; this holds the last non-empty shape.
   const [lastKnownColumns, setLastKnownColumns] = useState<string[]>([]);
   const [columnMeta, setColumnMeta] = useState<ColumnInfo[]>([]);
@@ -164,7 +164,7 @@ export function DbTab({
         offset: pageNum * pageSize,
       });
       if (requestId !== requestIdRef.current) return;
-      setTableRows(result);
+      setTableRows({ ...result, offset: pageNum * pageSize });
       if (result.columns.length > 0) setLastKnownColumns(result.columns);
     } catch (err) {
       if (requestId !== requestIdRef.current) return;
@@ -587,6 +587,12 @@ export function DbTab({
                   <DataGrid
                     columns={tableRows.columns}
                     rows={tableRows.rows}
+                    getRowLabel={(rowIndex) => {
+                      const pkValue = pkValueForRow(rowIndex);
+                      return pkValue === null
+                        ? String(tableRows.offset + rowIndex + 1)
+                        : `${tableRows.pk_column} ${pkValue}`;
+                    }}
                     sort={sort}
                     onSort={handleSort}
                     renderCell={renderCell}

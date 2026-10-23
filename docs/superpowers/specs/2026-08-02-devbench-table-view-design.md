@@ -814,20 +814,6 @@ Slice 4: `docs/superpowers/plans/2026-08-19-table-view-slice-4-queries.md`.
   staged entry stays truthful — this is confusing, not incorrect. Guarding it
   would mean reintroducing the generation-counter machinery §15 retired, for a
   window that cannot produce a wrong write. Left as is, deliberately.
-- **The query editor's resize grip advertises an interaction it does not
-  offer.** The problem is not merely that it is mouse-only. It carries
-  `role="separator"` and `aria-orientation`, which is how a *resizable*
-  separator announces itself to assistive technology — but it has no
-  `tabindex`, no `aria-valuenow`/`aria-valuemin`/`aria-valuemax`, and no key
-  handling, so a keyboard or screen-reader user is told there is a separator
-  to operate and then given no way to operate it. A silent `<div>` would at
-  least not have made the promise. The pane stays fully usable (editor and
-  results both scroll), so this is a broken promise rather than a block.
-  Keyboard support — focusability, arrow-key stepping between `MIN_EDITOR_PX`
-  and `MAX_EDITOR_PX`, and the `aria-value*` trio to match — is the fix, and
-  is deliberately NOT taken in this wave: it adds a new interaction at the end
-  of a 23-commit branch, where the risk of a late behaviour change outweighs
-  the delay. Follow-up.
 - **Popover and jump can disagree on a match.** `get_referenced_row` binds the
   lookup value cast to the referenced column's real type (`= $1::timestamptz`,
   say). The jump's pinned filter compiles through the filter compiler to
@@ -854,16 +840,28 @@ Slice 4: `docs/superpowers/plans/2026-08-19-table-view-slice-4-queries.md`.
   "rolled back — nothing is written" reassurance and blocks staging, rather
   than swallowing it: we never claim nothing was written when we cannot prove
   it.
-- **`focusOrCreateTab` searches the left pane only.** A saved query already
-  open in a **split right pane** is not found when it is re-selected from a
-  left-pane rail, so a second tab is created for the same document. Worse, the
-  new tab pins whatever connection is active at that moment: if the active
-  connection moved in between, the two tabs are the same query aimed at two
-  different databases, and Run in each writes somewhere different. §3b's "one
-  saved query is one document" therefore holds only *within* a pane. The same
-  pane-blindness affects every deep link that routes through
-  `focusOrCreateTab` (Rollup's open-table, open-log, open-email); queries are
-  where it turns into a correctness question rather than a tidiness one,
-  because a query tab carries a pinned connection and the others do not.
-  Fixing it means teaching the lookup about both panes and deciding which pane
-  wins when a match exists in each — a shell-wide change, not a query one.
+### Closed follow-ups (2026-10-23)
+
+- **Keyboard editor resizing.** The horizontal separator is focusable, reports
+  its height and bounds with `aria-value*`, and supports ArrowUp/ArrowDown in
+  10px steps plus Home/End, clamped to `MIN_EDITOR_PX` / `MAX_EDITOR_PX`.
+  Mouse resizing and the exported bounds are unchanged.
+- **Document identity across panes.** `focusOrCreateTab` searches both panes
+  and activates the match in its own pane. A left-pane match wins if legacy
+  duplicates exist, independent of array order. Query matches preserve their
+  pinned connection even when the rail's active connection changes; unmatched
+  documents still open on the left. Existing duplicates are not deleted.
+- **Apply wire metadata.** `connection_id` belongs to frontend pending entries
+  and is removed from each entry by `invokeApplyChanges`. The command's
+  top-level `connectionId` still selects the pool. Exact payload tests cover
+  update, insert, delete and SQL, so Apply no longer depends on serde ignoring
+  that extra field.
+- **Row copy names.** DataGrid accepts `getRowLabel`; DbTab supplies the primary
+  key column and value, or a page-aware row number from the loaded row snapshot
+  when no usable key exists. Delayed and failed fetches retain that snapshot
+  and its row labels together.
+  Query results use one-based row numbers. Copy triggers and menus include
+  those labels; clipboard contents are unchanged.
+
+Regression tests cover all four changes. Browser measurements and merge gates:
+[`2026-10-23-table-view-merge.md`](../reviews/2026-10-23-table-view-merge.md).

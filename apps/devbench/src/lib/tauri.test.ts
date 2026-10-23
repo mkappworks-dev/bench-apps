@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  invokeApplyChanges,
   invokeClearEmails,
   invokeCollectCorrelationWindow,
   invokeCountTableRows,
@@ -10,6 +11,7 @@ import {
   invokeRunCorrelatedRequest,
   invokeSetWatchedTable,
 } from "./tauri";
+import type { PendingChange } from "./pendingChanges";
 
 /**
  * Asserts raw `invoke` payloads rather than spying on the wrappers, because
@@ -26,6 +28,25 @@ import {
  */
 
 const invoked = vi.mocked(invoke);
+
+describe("invokeApplyChanges", () => {
+  it("sends only Rust change fields for every variant without mutating staged entries", async () => {
+    const table = { schema: "public", name: "orders" };
+    const wireChanges = [
+      { kind: "update", table, pk_column: "id", pk_value: "42", column: "notes", old_value: null, new_value: "a'b" },
+      { kind: "insert", table, values: { notes: null, status: "pending" } },
+      { kind: "delete", table, pk_column: "id", pk_value: "7" },
+      { kind: "sql", table: null, statement: "UPDATE orders SET notes = NULL", previewed_effect: "2 rows affected" },
+    ] as const;
+    const changes: PendingChange[] = wireChanges.map((change) => ({ ...change, connection_id: "c1" }));
+    const before = structuredClone(changes);
+
+    await invokeApplyChanges("c1", changes);
+
+    expect(invoked).toHaveBeenLastCalledWith("apply_changes", { connectionId: "c1", changes: wireChanges });
+    expect(changes).toEqual(before);
+  });
+});
 
 /** The `[command, payload]` pair of the most recent `invoke` call. */
 function lastInvoke(): [string, Record<string, unknown>] {

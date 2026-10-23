@@ -221,8 +221,21 @@ export function QueryTab({
             role="separator"
             aria-orientation="horizontal"
             aria-label="Resize query editor"
+            tabIndex={0}
+            aria-valuemin={MIN_EDITOR_PX}
+            aria-valuemax={MAX_EDITOR_PX}
+            aria-valuenow={editorHeight}
+            onKeyDown={(e) => {
+              if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) return;
+              e.preventDefault();
+              setEditorHeight((height) =>
+                e.key === "Home" ? MIN_EDITOR_PX
+                  : e.key === "End" ? MAX_EDITOR_PX
+                    : Math.min(MAX_EDITOR_PX, Math.max(MIN_EDITOR_PX, height + (e.key === "ArrowDown" ? 10 : -10))),
+              );
+            }}
             onMouseDown={onGripMouseDown}
-            className="group absolute inset-x-0 bottom-0 flex h-3.5 cursor-row-resize items-center justify-center"
+            className="group absolute inset-x-0 bottom-0 flex h-3.5 cursor-row-resize items-center justify-center focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
           >
             <div className="h-1 w-9 rounded-full bg-border transition-colors duration-150 group-hover:bg-text-faint" aria-hidden />
           </div>

@@ -1112,6 +1112,68 @@ describe("DbTab", () => {
     expect(useAppStore.getState().pending).toEqual([]);
   });
 
+  it("names copy controls with the primary key column and value", async () => {
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["status", "order_id"], rows: [["pending", "42"], ["paid", "99"]], pk_column: "order_id",
+    });
+
+    renderDb(ORDERS);
+
+    expect(await screen.findByRole("button", { name: "Copy row order_id 42" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy row order_id 99" })).toBeInTheDocument();
+  });
+
+  it("uses page-aware copy labels when there is no primary key", async () => {
+    const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["status"], rows: [["pending"]], pk_column: null,
+    });
+    vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(150);
+
+    renderDb(ORDERS);
+    expect(await screen.findByRole("button", { name: "Copy row 1" })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Next page" }));
+
+    await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", ORDERS, expect.objectContaining({ offset: 100 })));
+    expect(await screen.findByRole("button", { name: "Copy row 101" })).toBeInTheDocument();
+  });
+
+  it.each(["resolve", "reject"] as const)("keeps copy labels tied to the loaded page while the next fetch will %s", async (outcome) => {
+    let resolveRows!: (rows: TableRows) => void;
+    let rejectRows!: (error: Error) => void;
+    const nextRows = new Promise<TableRows>((resolve, reject) => {
+      resolveRows = resolve;
+      rejectRows = reject;
+    });
+    const listRows = vi.spyOn(tauriLib, "invokeListTableRows")
+      .mockResolvedValueOnce({ columns: ["status"], rows: [["first page"]], pk_column: null })
+      .mockReturnValueOnce(nextRows);
+    vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(150);
+
+    renderDb(ORDERS);
+    await screen.findByRole("button", { name: "Copy row 1" });
+    fireEvent.click(await screen.findByRole("button", { name: "Next page" }));
+    await waitFor(() => expect(listRows).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByText("first page")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy row 1" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy row 101" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      if (outcome === "reject") rejectRows(new Error("page unavailable"));
+      else resolveRows({ columns: ["status"], rows: [["next page"]], pk_column: null });
+    });
+
+    if (outcome === "reject") {
+      expect(screen.getByRole("alert")).toHaveTextContent("page unavailable");
+      expect(screen.getByText("first page")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Copy row 1" })).toBeInTheDocument();
+    } else {
+      expect(screen.getByText("next page")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Copy row 101" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Copy row 1" })).not.toBeInTheDocument();
+    }
+  });
+
   it("offers no delete action when the table has no single-column primary key", async () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "status"], rows: [["42", "pending"]], pk_column: null,

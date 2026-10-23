@@ -219,7 +219,7 @@ describe("useTabController", () => {
     expect(createTab).not.toHaveBeenCalled();
   });
 
-  it("creates a tab when none of the requested kind exists in the left pane", async () => {
+  it("creates a tab when none of the requested kind exists in either pane", async () => {
     vi.spyOn(tauriLib, "invokeListTabs").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeCreateTab").mockResolvedValue(undefined);
     const { result } = renderHook(() => useTabController());
@@ -265,5 +265,72 @@ describe("useTabController", () => {
 
     expect(id).toBe("t1");
     expect(useAppStore.getState().tabs[0].state).toEqual({ queryId: "q1", connectionId: "c1" });
+  });
+
+  it("focuses a right-pane query without duplicating or repinning it after a connection switch", async () => {
+    vi.spyOn(tauriLib, "invokeListTabs").mockResolvedValue([
+      { id: "left", session_id: null, kind: "db", pane: "left", ordinal: 0, state: null },
+      { id: "other", session_id: null, kind: "query", pane: "right", ordinal: 0, state: '{"queryId":"q2","connectionId":"c1"}' },
+      { id: "query", session_id: null, kind: "query", pane: "right", ordinal: 1, state: '{"queryId":"q1","connectionId":"c1"}' },
+    ]);
+    const createTab = vi.spyOn(tauriLib, "invokeCreateTab").mockResolvedValue(undefined);
+    const { result } = renderHook(() => useTabController());
+    await waitFor(() => expect(useAppStore.getState().tabs).toHaveLength(3));
+    act(() => useAppStore.setState({ activeConnectionId: "c2" }));
+
+    let id = "";
+    act(() => {
+      id = result.current.focusOrCreateTab("query", { queryId: "q1", connectionId: "c2" }, (t) => t.state.queryId === "q1");
+    });
+
+    expect(id).toBe("query");
+    expect(useAppStore.getState().activeTabId).toEqual({ left: "left", right: "query" });
+    expect(useAppStore.getState().tabs.find((t) => t.id === id)?.state).toEqual({ queryId: "q1", connectionId: "c1" });
+    expect(createTab).not.toHaveBeenCalled();
+  });
+
+  it("prefers the left pane when legacy duplicates match, regardless of array order", async () => {
+    vi.spyOn(tauriLib, "invokeListTabs").mockResolvedValue([
+      { id: "right", session_id: null, kind: "query", pane: "right", ordinal: 0, state: '{"queryId":"q1"}' },
+      { id: "left", session_id: null, kind: "query", pane: "left", ordinal: 0, state: '{"queryId":"q1"}' },
+    ]);
+    const { result } = renderHook(() => useTabController());
+    await waitFor(() => expect(useAppStore.getState().tabs).toHaveLength(2));
+
+    let id = "";
+    act(() => { id = result.current.focusOrCreateTab("query", undefined, (t) => t.state.queryId === "q1"); });
+
+    expect(id).toBe("left");
+    expect(useAppStore.getState().activeTabId.left).toBe("left");
+  });
+
+  it.each(["db", "log", "email", "api"] as const)("patches a %s deep link into an existing right-pane tab", async (kind) => {
+    vi.spyOn(tauriLib, "invokeListTabs").mockResolvedValue([
+      { id: "right", session_id: null, kind, pane: "right", ordinal: 0, state: '{"kept":true}' },
+    ]);
+    const createTab = vi.spyOn(tauriLib, "invokeCreateTab").mockResolvedValue(undefined);
+    const { result } = renderHook(() => useTabController());
+    await waitFor(() => expect(useAppStore.getState().tabs).toHaveLength(1));
+
+    act(() => { result.current.focusOrCreateTab(kind, { target: "new" }); });
+
+    expect(useAppStore.getState().activeTabId.right).toBe("right");
+    expect(useAppStore.getState().tabs).toHaveLength(1);
+    expect(useAppStore.getState().tabs[0].state).toEqual({ kept: true, target: "new" });
+    expect(createTab).not.toHaveBeenCalled();
+  });
+
+  it("creates a left-pane document when a right-pane query has a different id", async () => {
+    vi.spyOn(tauriLib, "invokeListTabs").mockResolvedValue([
+      { id: "right", session_id: null, kind: "query", pane: "right", ordinal: 0, state: '{"queryId":"q2","connectionId":"c1"}' },
+    ]);
+    const createTab = vi.spyOn(tauriLib, "invokeCreateTab").mockResolvedValue(undefined);
+    const { result } = renderHook(() => useTabController());
+    await waitFor(() => expect(useAppStore.getState().tabs).toHaveLength(1));
+
+    act(() => { result.current.focusOrCreateTab("query", { queryId: "q1", connectionId: "c2" }, (t) => t.state.queryId === "q1"); });
+
+    expect(useAppStore.getState().tabs).toHaveLength(2);
+    expect(createTab).toHaveBeenCalledWith(expect.objectContaining({ pane: "left", state: '{"queryId":"q1","connectionId":"c2"}' }));
   });
 });
