@@ -120,11 +120,12 @@ export function useTabController() {
     statePatch?: Record<string, unknown>,
     match?: (tab: Tab) => boolean,
   ): string {
-    const existing = useAppStore
+    const candidates = useAppStore
       .getState()
-      .tabs.find((t) => t.pane === "left" && t.kind === kind && (match ? match(t) : true));
+      .tabs.filter((t) => t.kind === kind && (match ? match(t) : true));
+    const existing = candidates.find((t) => t.pane === "left") ?? candidates[0];
     if (existing) {
-      setActiveTabIdInStore("left", existing.id);
+      setActiveTabIdInStore(existing.pane, existing.id);
       // Found BY its state, so patching here would rewrite what was just matched on — deep links pass no matcher and still patch.
       if (statePatch && !match) patchTabState(existing.id, statePatch);
       return existing.id;
