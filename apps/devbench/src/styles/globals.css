@@ -18,6 +18,10 @@
   --color-warning-bg: var(--warning-bg);
   --color-danger: var(--danger);
   --color-danger-bg: var(--danger-bg);
+  --color-btn-ghost-border: var(--btn-ghost-border);
+  --color-btn-ghost-bg: var(--btn-ghost-bg);
+  --color-query-tint: var(--query-tint);
+  --color-query-edge: var(--query-edge);
   --radius-sm: var(--radius-sm);
   --radius-lg: var(--radius-lg);
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
@@ -30,10 +34,24 @@ body {
   font-family: var(--font-sans);
 }
 
-/* Covers both glass surfaces (NewSessionDialog, Menu) — they share this blur class. */
+/* Every glass surface (Menu, NewSessionDialog, ConnectionModal) — they share
+   this blur class, which is what this selector has to name. It previously read
+   `.backdrop-blur-\[24px\]`, a class no component uses, so DESIGN.md's required
+   solid fallback matched nothing and never applied. */
 @media (prefers-reduced-transparency: reduce) {
-  .backdrop-blur-\[24px\] {
+  .backdrop-blur-xl {
     backdrop-filter: none;
     background: var(--surface) !important;
+  }
+}
+
+/* The toolbar is always one row: below 620px the button labels drop and only
+   icons remain. The query measures this element's own CONTENT box, so with
+   px-2 the threshold lands at ~636px border-box (measured: 628px border-box =
+   612px content, labels hidden). A container query, not a media query — the
+   toolbar shrinks when the chat dock opens, not when the window resizes. */
+@container (max-width: 620px) {
+  .tb-label {
+    display: none;
   }
 }

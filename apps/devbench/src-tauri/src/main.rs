@@ -14,6 +14,11 @@ use tauri::Manager;
 /// source per tick when nothing has changed.
 const LOG_POLL_INTERVAL_MS: u64 = 250;
 
+/// How often the preview sweep checks for expired transactions. 8x finer
+/// than PREVIEW_TIMEOUT_MS, so an abandoned preview is never held much
+/// longer than the timeout itself implies.
+const PREVIEW_SWEEP_INTERVAL_MS: u64 = 15_000;
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -41,12 +46,25 @@ fn main() {
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
             let db_path = data_dir.join("devbench.db");
+            // Built before data_dir is moved into the block below. A debug build
+            // puts this in a file beside the database instead of the OS keychain
+            // — see secrets::default_store for why.
+            let secrets = devbench::secrets::default_store(&data_dir);
+            let secrets_for_seed = Arc::clone(&secrets);
             let init_result: Result<(LocalDb, u16), String> = tauri::async_runtime::block_on(async move {
                 let db = LocalDb::connect(data_dir).await?;
                 let port = devbench::commands::settings::get_settings_impl(&db.pool)
                     .await
                     .map(|s| s.smtp_port)
                     .unwrap_or(DEFAULT_SMTP_PORT);
+                if let Err(e) = devbench::commands::connections::seed_default_connection_password_if_missing(
+                    &db.pool,
+                    secrets_for_seed.as_ref(),
+                )
+                .await
+                {
+                    eprintln!("failed to seed default connection password: {e}");
+                }
                 Ok((db, port))
             });
 
@@ -87,6 +105,19 @@ fn main() {
             });
 
             app.manage(Arc::new(devbench::correlation_state::CorrelationRegistry::new()));
+            app.manage(Arc::new(devbench::connection_registry::ConnectionRegistry::new()));
+
+            let preview_registry = std::sync::Arc::new(devbench::preview_state::PendingPreviewRegistry::new());
+            app.manage(std::sync::Arc::clone(&preview_registry));
+            tauri::async_runtime::spawn(async move {
+                let mut ticker =
+                    tokio::time::interval(std::time::Duration::from_millis(PREVIEW_SWEEP_INTERVAL_MS));
+                loop {
+                    ticker.tick().await;
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    preview_registry.sweep_expired(now_ms).await;
+                }
+            });
 
             let emails = Arc::new(EmailState::new());
             if let Some((smtp_pool, smtp_port)) = smtp_target {
@@ -128,7 +159,7 @@ fn main() {
             }
             app.manage(emails);
 
-            app.manage(Arc::new(devbench::secrets::KeyringSecretStore) as Arc<dyn devbench::secrets::SecretStore>);
+            app.manage(secrets);
 
             Ok(())
         })
@@ -136,6 +167,15 @@ fn main() {
             commands::startup::get_startup_status,
             commands::db::db_connect_and_list_tables,
             commands::db::list_table_rows,
+            commands::db::count_table_rows,
+            commands::db_columns::describe_columns,
+            commands::db_columns::get_referenced_row,
+            commands::db_apply::apply_changes,
+            commands::db_queries::list_saved_queries,
+            commands::db_queries::create_saved_query,
+            commands::db_queries::rename_saved_query,
+            commands::db_queries::set_saved_query_sql,
+            commands::db_queries::delete_saved_query,
             commands::request::fire_request,
             commands::history::save_history_entry,
             commands::history::list_history,
@@ -163,6 +203,14 @@ fn main() {
             commands::tabs::move_tab,
             commands::watched::list_watched_tables,
             commands::watched::set_watched_table,
+            commands::connections::list_connections,
+            commands::connections::create_connection,
+            commands::connections::update_connection,
+            commands::connections::delete_connection,
+            commands::connections::set_connection_password,
+            commands::connections::clear_connection_password,
+            commands::connections::test_connection,
+            commands::connections::test_saved_connection,
             commands::settings::get_settings,
             commands::settings::set_setting,
             commands::provider::get_provider_status,
@@ -173,6 +221,8 @@ fn main() {
             commands::mcp::remove_mcp_server,
             commands::mcp::check_mcp_server,
             commands::chat::send_chat_message,
+            commands::query::preview_query,
+            commands::query::rollback_preview,
         ])
         .run(tauri::generate_context!())
         .expect("error while running devbench");

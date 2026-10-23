@@ -1,30 +1,33 @@
-import { useState } from "react";
 import { Tabs } from "../ui/Tabs";
+import { useAppStore, type SettingsPane } from "../../store/useAppStore";
 import { GeneralPane } from "./GeneralPane";
 import { AppearancePane } from "./AppearancePane";
 import { ProviderPane } from "./ProviderPane";
+import { ConnectionsPane } from "./ConnectionsPane";
 import { McpPane } from "./McpPane";
 import { ArchivePane } from "./ArchivePane";
 
-type PaneId = "general" | "appearance" | "provider" | "mcp" | "archive";
+type PaneId = SettingsPane;
 
 const PANES: { id: PaneId; label: string }[] = [
   { id: "general", label: "General" },
   { id: "appearance", label: "Appearance" },
   { id: "provider", label: "Provider" },
+  { id: "connections", label: "Connections" },
   { id: "mcp", label: "MCP" },
   { id: "archive", label: "Archive" },
 ];
 
 /**
- * A full navigated screen, not an overlay: a 5-section surface does not fit a
+ * A full navigated screen, not an overlay: a 6-section surface does not fit a
  * compact modal, and app-wide config is not scoped to any session the way the
  * four tools are (v1 spec, Components). Because it is persistent rather than
  * transient, it is ghosty — no blur. That is the same DESIGN.md rule the New
  * Session picker satisfies by being glass.
  */
 export function SettingsScreen({ onBack }: { onBack: () => void }) {
-  const [pane, setPane] = useState<PaneId>("general");
+  const pane = useAppStore((s) => s.settingsPane);
+  const setPane = useAppStore((s) => s.setSettingsPane);
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -67,6 +70,9 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
           </Tabs.Panel>
           <Tabs.Panel value="provider" className="p-6">
             <ProviderPane />
+          </Tabs.Panel>
+          <Tabs.Panel value="connections" className="p-6">
+            <ConnectionsPane />
           </Tabs.Panel>
           <Tabs.Panel value="mcp" className="p-6">
             <McpPane />

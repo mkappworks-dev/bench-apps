@@ -67,6 +67,29 @@ describe("useTabController", () => {
     expect(useAppStore.getState().tabs.map((t) => t.id)).toEqual(["good"]);
   });
 
+  it("hydrates a persisted query tab, whose kind the + menu cannot create", async () => {
+    vi.spyOn(tauriLib, "invokeListTabs").mockResolvedValue([
+      {
+        id: "q-tab",
+        session_id: null,
+        kind: "query",
+        pane: "left",
+        ordinal: 0,
+        state: '{"queryId":"q1","connectionId":"c1"}',
+      },
+    ]);
+    renderHook(() => useTabController());
+
+    await waitFor(() => expect(useAppStore.getState().tabs).toHaveLength(1));
+    expect(useAppStore.getState().tabs[0]).toEqual({
+      id: "q-tab",
+      kind: "query",
+      pane: "left",
+      ordinal: 0,
+      state: { queryId: "q1", connectionId: "c1" },
+    });
+  });
+
   it("reloads when the active session changes", async () => {
     const listTabs = vi
       .spyOn(tauriLib, "invokeListTabs")
@@ -112,8 +135,6 @@ describe("useTabController", () => {
     await waitFor(() => expect(closeTab).toHaveBeenCalledWith("t-1"));
   });
 
-  // Spec: "URL edits are debounced into a single write, not one per keystroke."
-  // Applied generically to every patchTabState call, not just RequestBuilder's.
   it("debounces patchTabState into a single write after 300ms of quiet", async () => {
     vi.spyOn(tauriLib, "invokeListTabs").mockResolvedValue([
       { id: "t-1", session_id: null, kind: "api", pane: "left", ordinal: 0, state: null },
@@ -129,8 +150,6 @@ describe("useTabController", () => {
       result.current.patchTabState("t-1", { url: "/abc" });
     });
 
-    // The in-memory state is immediate — typing must feel instant even though
-    // the SQLite write is delayed.
     expect(useAppStore.getState().tabs[0].state).toEqual({ url: "/abc" });
     expect(setTabState).not.toHaveBeenCalled();
 
@@ -213,5 +232,38 @@ describe("useTabController", () => {
 
     expect(useAppStore.getState().tabs.map((t) => t.id)).toEqual([targetId]);
     expect(useAppStore.getState().tabs[0].kind).toBe("log");
+  });
+
+  it("focuses an existing tab matched by state, not merely by kind", () => {
+    useAppStore.setState({
+      tabs: [
+        { id: "t1", kind: "query", pane: "left", ordinal: 0, state: { queryId: "q1", connectionId: "c1" } },
+        { id: "t2", kind: "query", pane: "left", ordinal: 1, state: { queryId: "q2", connectionId: "c1" } },
+      ],
+      activeTabId: { left: "t1", right: null },
+    });
+
+    const { result } = renderHook(() => useTabController());
+    const id = result.current.focusOrCreateTab("query", undefined, (t) => t.state.queryId === "q2");
+
+    expect(id).toBe("t2");
+    expect(useAppStore.getState().activeTabId.left).toBe("t2");
+  });
+
+  it("leaves a matched tab's state alone, rather than patching over what it matched on", () => {
+    useAppStore.setState({
+      tabs: [{ id: "t1", kind: "query", pane: "left", ordinal: 0, state: { queryId: "q1", connectionId: "c1" } }],
+      activeTabId: { left: "t1", right: null },
+    });
+
+    const { result } = renderHook(() => useTabController());
+    const id = result.current.focusOrCreateTab(
+      "query",
+      { queryId: "q1", connectionId: "c2" },
+      (t) => t.state.queryId === "q1",
+    );
+
+    expect(id).toBe("t1");
+    expect(useAppStore.getState().tabs[0].state).toEqual({ queryId: "q1", connectionId: "c1" });
   });
 });

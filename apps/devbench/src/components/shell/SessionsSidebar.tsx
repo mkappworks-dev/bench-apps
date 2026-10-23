@@ -113,7 +113,10 @@ export function SessionsSidebar({ onOpenSettings }: { onOpenSettings: () => void
   return (
     // Ghosty: transparent, hairline division, no blur.
     <aside aria-label="Sessions" className="flex w-(--w-sidebar) min-w-(--w-sidebar) flex-col border-r border-border">
-      <div className="flex items-center justify-between border-b border-border p-2.5 text-xs font-bold text-text-muted">
+      {/* h-11 like every other top divider (rail head, pane strip, chat
+          header) so the shell's first horizontal rule is one unbroken line
+          across all four columns rather than four rules 1–2px apart. */}
+      <div className="flex h-11 items-center justify-between border-b border-border px-2.5 text-xs font-bold text-text-muted">
         Sessions
         <button
           aria-label="New session"

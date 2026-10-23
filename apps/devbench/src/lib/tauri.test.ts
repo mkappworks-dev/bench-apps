@@ -3,9 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   invokeClearEmails,
   invokeCollectCorrelationWindow,
+  invokeCountTableRows,
   invokeListEmails,
   invokeListHistory,
+  invokeListTableRows,
   invokeRunCorrelatedRequest,
+  invokeSetWatchedTable,
 } from "./tauri";
 
 /**
@@ -30,8 +33,6 @@ function lastInvoke(): [string, Record<string, unknown>] {
   if (!call) throw new Error("invoke was never called");
   return [call[0] as string, call[1] as Record<string, unknown>];
 }
-
-const connection = { host: "localhost", port: 5432, database: "d", username: "u", password: "p" };
 
 describe("invokeListHistory", () => {
   beforeEach(() => {
@@ -72,11 +73,11 @@ describe("invokeRunCorrelatedRequest", () => {
     invoked.mockClear();
   });
 
-  it("sends the session id alongside the request, connection, and watched tables", async () => {
+  it("sends the session id alongside the request, connection id, and watched tables", async () => {
     await invokeRunCorrelatedRequest({
       request: { method: "GET", url: "/api/orders" },
-      connection,
-      watchedTables: ["orders"],
+      connectionId: "c1",
+      watchedTables: [{ schema: "public", name: "orders" }],
       sessionId: "sess-1",
     });
 
@@ -84,12 +85,12 @@ describe("invokeRunCorrelatedRequest", () => {
     expect(command).toBe("run_correlated_request");
     expect(payload).toStrictEqual({
       request: { method: "GET", url: "/api/orders" },
-      connection,
-      watchedTables: ["orders"],
+      connectionId: "c1",
+      watchedTables: [{ schema: "public", name: "orders" }],
       sessionId: "sess-1",
     });
     expect(Object.keys(payload).sort()).toEqual([
-      "connection",
+      "connectionId",
       "request",
       "sessionId",
       "watchedTables",
@@ -99,14 +100,14 @@ describe("invokeRunCorrelatedRequest", () => {
   it("sends an explicit null session id when the send is unattributed", async () => {
     await invokeRunCorrelatedRequest({
       request: { method: "GET", url: "/api/orders" },
-      connection,
+      connectionId: "c1",
       watchedTables: [],
     });
 
     const [, payload] = lastInvoke();
     expect(payload).toStrictEqual({
       request: { method: "GET", url: "/api/orders" },
-      connection,
+      connectionId: "c1",
       watchedTables: [],
       sessionId: null,
     });
@@ -192,5 +193,94 @@ describe("invokeClearEmails", () => {
     expect(payload).toStrictEqual({ sessionId: null });
     expect(payload.sessionId).toBeNull();
     expect(JSON.stringify(payload)).toBe('{"sessionId":null}');
+  });
+});
+
+describe("invokeCountTableRows", () => {
+  beforeEach(() => {
+    invoked.mockClear();
+    invoked.mockResolvedValue(0);
+  });
+
+  it("sends the same filter shape the row query uses", async () => {
+    await invokeCountTableRows("c1", { schema: "public", name: "orders" }, [
+      { column: "status", op: "eq", value: "paid", enabled: true },
+    ]);
+    expect(lastInvoke()).toEqual([
+      "count_table_rows",
+      {
+        connectionId: "c1",
+        table: { schema: "public", name: "orders" },
+        filter: [{ column: "status", op: "eq", value: "paid", enabled: true }],
+      },
+    ]);
+  });
+
+  it("defaults to no filter", async () => {
+    await invokeCountTableRows("c1", { schema: "public", name: "orders" });
+    expect(lastInvoke()[1]).toEqual({ connectionId: "c1", table: { schema: "public", name: "orders" }, filter: [] });
+  });
+});
+
+describe("invokeListTableRows with a filter", () => {
+  beforeEach(() => {
+    invoked.mockClear();
+    invoked.mockResolvedValue({ columns: [], rows: [], pk_column: null });
+  });
+
+  it("passes filter and orderBy through as separate lists", async () => {
+    await invokeListTableRows("c1", { schema: "public", name: "orders" }, {
+      filter: [{ column: "paid", op: "is_true", value: null, enabled: true }],
+      orderBy: [{ column: "id", descending: true, enabled: true }],
+      limit: 25,
+      offset: 50,
+    });
+    expect(lastInvoke()[1]).toEqual({
+      connectionId: "c1",
+      table: { schema: "public", name: "orders" },
+      filter: [{ column: "paid", op: "is_true", value: null, enabled: true }],
+      orderBy: [{ column: "id", descending: true, enabled: true }],
+      limit: 25,
+      offset: 50,
+    });
+  });
+});
+
+describe("qualified table wrappers", () => {
+  beforeEach(() => {
+    invoked.mockClear();
+    invoked.mockResolvedValue({ columns: [], rows: [], pk_column: null });
+  });
+
+  it("sends the table as a {schema, name} object", async () => {
+    await invokeListTableRows("c1", { schema: "alt", name: "orders" }, { limit: 25 });
+    expect(lastInvoke()[1]).toEqual({
+      connectionId: "c1",
+      table: { schema: "alt", name: "orders" },
+      filter: [],
+      orderBy: [],
+      limit: 25,
+      offset: 0,
+    });
+  });
+
+  it("sends the same table shape to the count", async () => {
+    invoked.mockResolvedValue(0);
+    await invokeCountTableRows("c1", { schema: "alt", name: "orders" });
+    expect(lastInvoke()[1]).toEqual({
+      connectionId: "c1",
+      table: { schema: "alt", name: "orders" },
+      filter: [],
+    });
+  });
+
+  it("sends the same table shape when watching", async () => {
+    invoked.mockResolvedValue(undefined);
+    await invokeSetWatchedTable("c1", { schema: "public", name: "orders" }, true);
+    expect(lastInvoke()[1]).toEqual({
+      connectionId: "c1",
+      table: { schema: "public", name: "orders" },
+      watched: true,
+    });
   });
 });

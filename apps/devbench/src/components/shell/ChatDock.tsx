@@ -4,6 +4,7 @@ import {
   invokeSendChatMessage,
   type ChatMessage,
 } from "../../lib/tauri";
+import { DockShell } from "./DockShell";
 
 interface Turn extends ChatMessage {
   toolCalls?: string[];
@@ -43,20 +44,34 @@ export function ChatDock({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    // Ghosty and a flex sibling of the content column — it RESIZES the
-    // workspace rather than overlaying it (DESIGN.md).
-    <aside aria-label="AI Assistant" className="flex w-(--w-chat) min-w-(--w-chat) flex-col border-l border-border">
-      <div className="flex items-center justify-between border-b border-border p-2.5">
-        <span className="text-xs font-bold text-text-muted">AI Assistant</span>
-        <button
-          aria-label="Close chat"
-          onClick={onClose}
-          className="rounded-sm px-1.5 text-text-faint hover:bg-surface-2 hover:text-text"
-        >
-          ✕
-        </button>
-      </div>
-
+    <DockShell
+      label="AI Assistant"
+      closeLabel="Close chat"
+      title="AI Assistant"
+      onClose={onClose}
+      footer={
+        <div className="flex gap-2 border-t border-border p-2.5">
+          <input
+            value={draft}
+            disabled={hasKey !== true}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void send();
+            }}
+            placeholder="Ask about this request…"
+            className="flex-1 rounded-sm border border-border bg-bg px-2.5 py-1.5 text-xs text-text disabled:opacity-60"
+          />
+          <button
+            aria-label="Send message"
+            disabled={hasKey !== true || sending}
+            onClick={() => void send()}
+            className="rounded-sm bg-accent px-2.5 text-xs font-bold text-accent-on disabled:opacity-60"
+          >
+            Send
+          </button>
+        </div>
+      }
+    >
       <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-3">
         {turns.length === 0 ? (
           <div className="text-xs text-text-faint">
@@ -89,27 +104,6 @@ export function ChatDock({ onClose }: { onClose: () => void }) {
           </div>
         ) : null}
       </div>
-
-      <div className="flex gap-2 border-t border-border p-2.5">
-        <input
-          value={draft}
-          disabled={hasKey !== true}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") void send();
-          }}
-          placeholder="Ask about this request…"
-          className="flex-1 rounded-sm border border-border bg-bg px-2.5 py-1.5 text-xs text-text disabled:opacity-60"
-        />
-        <button
-          aria-label="Send message"
-          disabled={hasKey !== true || sending}
-          onClick={() => void send()}
-          className="rounded-sm bg-accent px-2.5 text-xs font-bold text-accent-on disabled:opacity-60"
-        >
-          Send
-        </button>
-      </div>
-    </aside>
+    </DockShell>
   );
 }

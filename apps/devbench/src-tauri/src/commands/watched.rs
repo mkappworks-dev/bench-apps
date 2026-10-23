@@ -1,53 +1,58 @@
 use sqlx::{Row, SqlitePool};
 use tauri::State;
 
-use crate::commands::db::{validate_identifier, DbConnectInput};
+use crate::commands::qualified_table::QualifiedTable;
 use crate::local_db::LocalDb;
-
-/// Stable handle for a connection. Deliberately excludes the password: this
-/// value lands in a WHERE clause and in error messages, and a credential has
-/// no business in either.
-pub fn connection_key(input: &DbConnectInput) -> String {
-    format!("{}@{}:{}/{}", input.username, input.host, input.port, input.database)
-}
 
 pub async fn list_watched_tables_impl(
     pool: &SqlitePool,
-    connection: &DbConnectInput,
-) -> Result<Vec<String>, String> {
-    let rows = sqlx::query("SELECT table_name FROM watched_tables WHERE connection_key = ? ORDER BY table_name")
-        .bind(connection_key(connection))
-        .fetch_all(pool)
-        .await
-        .map_err(|e| format!("failed to list watched tables: {e}"))?;
-    Ok(rows.iter().map(|r| r.get::<String, _>("table_name")).collect())
+    connection_id: &str,
+) -> Result<Vec<QualifiedTable>, String> {
+    let rows = sqlx::query(
+        "SELECT table_schema, table_name FROM watched_tables \
+         WHERE connection_id = ? ORDER BY table_schema, table_name",
+    )
+    .bind(connection_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("failed to list watched tables: {e}"))?;
+
+    // A stored row was validated before it was written, but it is re-validated
+    // on the way out: the database file is editable by hand, and this value is
+    // interpolated into SQL downstream.
+    rows.iter()
+        .map(|r| QualifiedTable::new(&r.get::<String, _>("table_schema"), &r.get::<String, _>("table_name")))
+        .collect()
 }
 
 pub async fn set_watched_table_impl(
     pool: &SqlitePool,
-    connection: &DbConnectInput,
-    table: &str,
+    connection_id: &str,
+    table: &QualifiedTable,
     watched: bool,
 ) -> Result<(), String> {
-    // The same validation the snapshot path uses. A stored table name is
-    // interpolated into SQL later; rejecting it here means a bad value can
-    // never be persisted in the first place.
-    validate_identifier(table)?;
-    let key = connection_key(connection);
     if watched {
-        sqlx::query("INSERT OR IGNORE INTO watched_tables (connection_key, table_name) VALUES (?, ?)")
-            .bind(&key)
-            .bind(table)
-            .execute(pool)
-            .await
-            .map_err(|e| format!("failed to watch {table}: {e}"))?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO watched_tables (connection_id, table_schema, table_name) \
+             VALUES (?, ?, ?)",
+        )
+        .bind(connection_id)
+        .bind(table.schema())
+        .bind(table.name())
+        .execute(pool)
+        .await
+        .map_err(|e| format!("failed to watch {table}: {e}"))?;
     } else {
-        sqlx::query("DELETE FROM watched_tables WHERE connection_key = ? AND table_name = ?")
-            .bind(&key)
-            .bind(table)
-            .execute(pool)
-            .await
-            .map_err(|e| format!("failed to unwatch {table}: {e}"))?;
+        sqlx::query(
+            "DELETE FROM watched_tables \
+             WHERE connection_id = ? AND table_schema = ? AND table_name = ?",
+        )
+        .bind(connection_id)
+        .bind(table.schema())
+        .bind(table.name())
+        .execute(pool)
+        .await
+        .map_err(|e| format!("failed to unwatch {table}: {e}"))?;
     }
     Ok(())
 }
@@ -55,34 +60,24 @@ pub async fn set_watched_table_impl(
 #[tauri::command]
 pub async fn list_watched_tables(
     db: State<'_, LocalDb>,
-    connection: DbConnectInput,
-) -> Result<Vec<String>, String> {
-    list_watched_tables_impl(&db.pool, &connection).await
+    connection_id: String,
+) -> Result<Vec<QualifiedTable>, String> {
+    list_watched_tables_impl(&db.pool, &connection_id).await
 }
 
 #[tauri::command]
 pub async fn set_watched_table(
     db: State<'_, LocalDb>,
-    connection: DbConnectInput,
-    table: String,
+    connection_id: String,
+    table: QualifiedTable,
     watched: bool,
 ) -> Result<(), String> {
-    set_watched_table_impl(&db.pool, &connection, &table, watched).await
+    set_watched_table_impl(&db.pool, &connection_id, &table, watched).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn conn(database: &str) -> DbConnectInput {
-        DbConnectInput {
-            host: "localhost".into(),
-            port: 5432,
-            database: database.into(),
-            username: "postgres".into(),
-            password: "secret".into(),
-        }
-    }
 
     async fn db() -> (tempfile::TempDir, LocalDb) {
         let dir = tempfile::tempdir().unwrap();
@@ -90,49 +85,120 @@ mod tests {
         (dir, db)
     }
 
-    #[test]
-    fn the_connection_key_never_contains_the_password() {
-        let key = connection_key(&conn("devbench_test"));
-        assert!(!key.contains("secret"));
-        assert!(key.contains("devbench_test"));
+    fn qt(schema: &str, name: &str) -> crate::commands::qualified_table::QualifiedTable {
+        crate::commands::qualified_table::QualifiedTable::new(schema, name).unwrap()
+    }
+
+    // Watching the same table name in two schemas must produce two rows, not
+    // one — the composite primary key is what makes that possible.
+    #[tokio::test]
+    async fn the_same_name_in_two_schemas_watches_independently() {
+        let (_dir, db) = db().await;
+        set_watched_table_impl(&db.pool, "default", &qt("public", "dup"), true).await.unwrap();
+        set_watched_table_impl(&db.pool, "default", &qt("alt", "dup"), true).await.unwrap();
+
+        let watched = list_watched_tables_impl(&db.pool, "default").await.unwrap();
+        assert_eq!(watched.len(), 2);
+
+        // Unwatching one leaves the other.
+        set_watched_table_impl(&db.pool, "default", &qt("alt", "dup"), false).await.unwrap();
+        let watched = list_watched_tables_impl(&db.pool, "default").await.unwrap();
+        assert_eq!(watched, vec![qt("public", "dup")]);
+    }
+
+    #[tokio::test]
+    async fn the_default_connection_is_seeded_by_migration() {
+        let (_dir, db) = db().await;
+        let row = sqlx::query("SELECT name, host, port, database, username FROM connections WHERE id = 'default'")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<String, _>("name"), "Local Dev");
+        assert_eq!(row.get::<String, _>("host"), "localhost");
+        assert_eq!(row.get::<i64, _>("port"), 5432);
+        assert_eq!(row.get::<String, _>("database"), "devbench_test");
+        assert_eq!(row.get::<String, _>("username"), "postgres");
     }
 
     #[tokio::test]
     async fn watching_a_table_survives_a_reconnect() {
         let (_dir, db) = db().await;
-        set_watched_table_impl(&db.pool, &conn("shop"), "orders", true).await.unwrap();
-        assert_eq!(list_watched_tables_impl(&db.pool, &conn("shop")).await.unwrap(), vec!["orders"]);
+        set_watched_table_impl(&db.pool, "default", &qt("public", "orders"), true).await.unwrap();
+        assert_eq!(list_watched_tables_impl(&db.pool, "default").await.unwrap(), vec![qt("public", "orders")]);
     }
 
     #[tokio::test]
     async fn unwatching_removes_the_row() {
         let (_dir, db) = db().await;
-        set_watched_table_impl(&db.pool, &conn("shop"), "orders", true).await.unwrap();
-        set_watched_table_impl(&db.pool, &conn("shop"), "orders", false).await.unwrap();
-        assert!(list_watched_tables_impl(&db.pool, &conn("shop")).await.unwrap().is_empty());
+        set_watched_table_impl(&db.pool, "default", &qt("public", "orders"), true).await.unwrap();
+        set_watched_table_impl(&db.pool, "default", &qt("public", "orders"), false).await.unwrap();
+        assert!(list_watched_tables_impl(&db.pool, "default").await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn watching_the_same_table_twice_is_idempotent() {
         let (_dir, db) = db().await;
-        set_watched_table_impl(&db.pool, &conn("shop"), "orders", true).await.unwrap();
-        set_watched_table_impl(&db.pool, &conn("shop"), "orders", true).await.unwrap();
-        assert_eq!(list_watched_tables_impl(&db.pool, &conn("shop")).await.unwrap().len(), 1);
+        set_watched_table_impl(&db.pool, "default", &qt("public", "orders"), true).await.unwrap();
+        set_watched_table_impl(&db.pool, "default", &qt("public", "orders"), true).await.unwrap();
+        assert_eq!(list_watched_tables_impl(&db.pool, "default").await.unwrap().len(), 1);
     }
 
+    // watched_tables.connection_id is a foreign key into connections(id) now,
+    // so a second row has to actually exist there to prove scoping — unlike
+    // before, when "shop" and "staging" were just two arbitrary strings.
     #[tokio::test]
     async fn watch_state_is_scoped_per_connection() {
         let (_dir, db) = db().await;
-        set_watched_table_impl(&db.pool, &conn("shop"), "orders", true).await.unwrap();
-        assert!(list_watched_tables_impl(&db.pool, &conn("staging")).await.unwrap().is_empty());
+        sqlx::query(
+            "INSERT INTO connections (id, name, engine, host, port, database, username, sslmode, created_at, updated_at) \
+             VALUES ('staging', 'Staging', 'postgres', 'staging-db.internal', 5432, 'app', 'app_ro', 'require', datetime('now'), datetime('now'))",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        set_watched_table_impl(&db.pool, "default", &qt("public", "orders"), true).await.unwrap();
+        assert!(list_watched_tables_impl(&db.pool, "staging").await.unwrap().is_empty());
     }
 
+    // The store's own test above builds its tables with `QualifiedTable::new`.
+    // `set_watched_table` receives them from serde instead, and
+    // `list_watched_tables` hands them back the same way, so the round trip
+    // that actually happens in production is JSON in and JSON out.
     #[tokio::test]
-    async fn a_malicious_table_name_is_rejected_before_it_can_be_persisted() {
+    async fn watch_state_round_trips_through_the_ipc_wire_shape() {
         let (_dir, db) = db().await;
-        let result =
-            set_watched_table_impl(&db.pool, &conn("shop"), "orders; DROP TABLE users; --", true).await;
-        assert!(result.is_err());
-        assert!(list_watched_tables_impl(&db.pool, &conn("shop")).await.unwrap().is_empty());
+        let public_dup: QualifiedTable =
+            serde_json::from_value(serde_json::json!({"schema": "public", "name": "dup"})).unwrap();
+        let alt_dup: QualifiedTable =
+            serde_json::from_value(serde_json::json!({"schema": "alt", "name": "dup"})).unwrap();
+
+        set_watched_table_impl(&db.pool, "default", &public_dup, true).await.unwrap();
+        set_watched_table_impl(&db.pool, "default", &alt_dup, true).await.unwrap();
+
+        let watched = list_watched_tables_impl(&db.pool, "default").await.unwrap();
+        assert_eq!(watched.len(), 2, "one name in two schemas is two watches, not one");
+        // Serialized back out, the frontend keys these apart; a bare name would
+        // collapse both entries onto one row.
+        assert_eq!(
+            serde_json::to_value(&watched).unwrap(),
+            serde_json::json!([
+                {"schema": "alt", "name": "dup"},
+                {"schema": "public", "name": "dup"},
+            ]),
+        );
+
+        set_watched_table_impl(&db.pool, "default", &alt_dup, false).await.unwrap();
+        let watched = list_watched_tables_impl(&db.pool, "default").await.unwrap();
+        assert_eq!(watched, vec![public_dup], "unwatching one schema must leave the other");
+    }
+
+    // `set_watched_table_impl` now takes a `&QualifiedTable`, so a malicious
+    // table name can no longer be passed to it at all — the guarantee moved
+    // from a runtime check inside the store to `QualifiedTable::new`.
+    #[test]
+    fn a_malicious_table_name_cannot_construct_a_qualified_table() {
+        let result = QualifiedTable::new("public", "orders; DROP TABLE users; --");
+        assert!(result.is_err(), "should reject malicious table name before it can reach SQL");
     }
 }

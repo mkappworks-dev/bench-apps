@@ -7,18 +7,10 @@ import { useAppStore, type Tab } from "../../store/useAppStore";
 import {
   invokeCollectCorrelationWindow,
   type CorrelationResult,
-  type DbConnectInput,
   type FireRequestOutput,
   type HistoryEntry,
+  type QualifiedTable,
 } from "../../lib/tauri";
-
-const DEV_CONNECTION: DbConnectInput = {
-  host: "localhost",
-  port: 5432,
-  database: "devbench_test",
-  username: "postgres",
-  password: "postgres",
-};
 
 interface DisplayResult {
   /** Which send this pane shows. `null` when restored from history. */
@@ -37,14 +29,16 @@ export function ApiTab({
 }: {
   tab: Tab;
   onPatchState: (patch: Record<string, unknown>) => void;
-  onOpenDb: (table: string) => void;
+  onOpenDb: (table: QualifiedTable) => void;
   onOpenLog: () => void;
   onOpenEmail: (emailId: number | null) => void;
   /** Deep-linked from Email's "Sent by" chip — forwarded to HistorySidebar. */
   focusHistoryId?: string | null;
 }) {
   const watchedTables = useAppStore((s) => s.watchedTables);
+  const watchedTableList = useAppStore((s) => s.watchedTableList);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
+  const activeConnectionId = useAppStore((s) => s.activeConnectionId);
   const [result, setResult] = useState<DisplayResult | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -174,8 +168,8 @@ export function ApiTab({
       />
       <div className="mx-auto flex max-w-180 flex-1 flex-col gap-4 overflow-y-auto p-6">
         <RequestBuilder
-          connection={DEV_CONNECTION}
-          watchedTables={watchedTables}
+          connectionId={activeConnectionId}
+          watchedTables={watchedTableList}
           sessionId={activeSessionId}
           method={typeof tab.state.method === "string" ? tab.state.method : "GET"}
           url={typeof tab.state.url === "string" ? tab.state.url : ""}

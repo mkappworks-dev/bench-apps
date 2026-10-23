@@ -5,8 +5,6 @@ import { RequestBuilder } from "./RequestBuilder";
 import * as tauriLib from "../../lib/tauri";
 import type { CorrelationResult } from "../../lib/tauri";
 
-const connection = { host: "localhost", port: 5432, database: "d", username: "u", password: "p" };
-
 describe("RequestBuilder", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -17,15 +15,15 @@ describe("RequestBuilder", () => {
     vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
       correlation_id: "corr-1",
       response: { status_code: 201, body: '{"id":8841}', duration_ms: 142 },
-      table_diffs: [{ table: "orders", inserted: 1, updated: 0, deleted: 0 }],
+      table_diffs: [{ schema: "public", table: "orders", inserted: 1, updated: 0, deleted: 0 }],
       db_error: null,
       history_id: "hist-1",
     });
 
     render(
       <RequestBuilder
-        connection={connection}
-        watchedTables={new Set(["orders"])}
+        connectionId="c1"
+        watchedTables={[{ schema: "public", name: "orders" }]}
         onResult={onResult}
         method="GET"
         url="/api/orders"
@@ -38,15 +36,15 @@ describe("RequestBuilder", () => {
       expect(onResult).toHaveBeenCalledWith({
         correlation_id: "corr-1",
         response: { status_code: 201, body: '{"id":8841}', duration_ms: 142 },
-        table_diffs: [{ table: "orders", inserted: 1, updated: 0, deleted: 0 }],
+        table_diffs: [{ schema: "public", table: "orders", inserted: 1, updated: 0, deleted: 0 }],
         db_error: null,
         history_id: "hist-1",
       }),
     );
     expect(tauriLib.invokeRunCorrelatedRequest).toHaveBeenCalledWith({
       request: { method: "GET", url: "/api/orders", body: undefined },
-      connection,
-      watchedTables: ["orders"],
+      connectionId: "c1",
+      watchedTables: [{ schema: "public", name: "orders" }],
       sessionId: null,
     });
   });
@@ -62,8 +60,8 @@ describe("RequestBuilder", () => {
 
     render(
       <RequestBuilder
-        connection={connection}
-        watchedTables={new Set()}
+        connectionId="c1"
+        watchedTables={[]}
         onResult={() => {}}
         sessionId="sess-1"
         method="GET"
@@ -90,8 +88,8 @@ describe("RequestBuilder", () => {
 
     render(
       <RequestBuilder
-        connection={connection}
-        watchedTables={new Set(["orders"])}
+        connectionId="c1"
+        watchedTables={[{ schema: "public", name: "orders" }]}
         onResult={onResult}
         onSendStart={onSendStart}
         method="GET"
@@ -117,8 +115,8 @@ describe("RequestBuilder", () => {
   it("uses the styled menu rather than a native select for the method", () => {
     const { container } = render(
       <RequestBuilder
-        connection={connection}
-        watchedTables={new Set()}
+        connectionId="c1"
+        watchedTables={[]}
         onResult={() => {}}
         method="GET"
         url=""
@@ -137,8 +135,8 @@ describe("RequestBuilder", () => {
       const [method, setMethod] = useState("GET");
       return (
         <RequestBuilder
-          connection={connection}
-          watchedTables={new Set()}
+          connectionId="c1"
+          watchedTables={[]}
           onResult={() => {}}
           method={method}
           url=""
@@ -157,8 +155,8 @@ describe("RequestBuilder", () => {
   it("shows the method and url from tab state, not local defaults", () => {
     render(
       <RequestBuilder
-        connection={connection}
-        watchedTables={new Set()}
+        connectionId="c1"
+        watchedTables={[]}
         onResult={() => {}}
         method="POST"
         url="/api/orders"
@@ -172,7 +170,7 @@ describe("RequestBuilder", () => {
   it("patches state on every keystroke and every method change, rather than holding local state", () => {
     const onPatchState = vi.fn();
     render(
-      <RequestBuilder connection={connection} watchedTables={new Set()} onResult={() => {}} method="GET" url="" onPatchState={onPatchState} />,
+      <RequestBuilder connectionId="c1" watchedTables={[]} onResult={() => {}} method="GET" url="" onPatchState={onPatchState} />,
     );
 
     fireEvent.change(screen.getByPlaceholderText("/api/orders"), { target: { value: "/api/users" } });
@@ -181,5 +179,28 @@ describe("RequestBuilder", () => {
     fireEvent.click(screen.getByRole("button", { name: /method/i }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: "PUT" }));
     expect(onPatchState).toHaveBeenCalledWith({ method: "PUT" });
+  });
+
+  // Honest no-op: sending with `connectionId: null` would reach the backend
+  // with nothing to run the request against. The button reads as genuinely
+  // unavailable rather than merely doing nothing when clicked.
+  it("disables Send and never invokes the backend when no connection is selected", () => {
+    const invoked = vi.spyOn(tauriLib, "invokeRunCorrelatedRequest");
+    const onResult = vi.fn();
+    render(
+      <RequestBuilder
+        connectionId={null}
+        watchedTables={[]}
+        onResult={onResult}
+        method="GET"
+        url="/api/orders"
+        onPatchState={() => {}}
+      />,
+    );
+    const send = screen.getByRole("button", { name: "Send" });
+    expect(send).toBeDisabled();
+    fireEvent.click(send);
+    expect(invoked).not.toHaveBeenCalled();
+    expect(onResult).not.toHaveBeenCalled();
   });
 });

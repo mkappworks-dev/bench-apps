@@ -1,23 +1,10 @@
 use serde::{Deserialize, Serialize};
-use sqlx::postgres::PgPoolOptions;
-use sqlx::Column;
-use sqlx::Row;
+use sqlx::{Column, PgPool, Row};
+use tauri::State;
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct DbConnectInput {
-    pub host: String,
-    pub port: u16,
-    pub database: String,
-    pub username: String,
-    pub password: String,
-}
-
-pub fn connection_string(input: &DbConnectInput) -> String {
-    format!(
-        "postgres://{}:{}@{}:{}/{}",
-        input.username, input.password, input.host, input.port, input.database
-    )
-}
+use crate::connection_registry::ConnectionRegistry;
+use crate::local_db::LocalDb;
+use crate::secrets::SecretStore;
 
 #[derive(Debug, Serialize)]
 pub struct TableInfo {
@@ -25,48 +12,56 @@ pub struct TableInfo {
     pub name: String,
 }
 
-pub async fn list_tables_impl(input: &DbConnectInput) -> Result<Vec<TableInfo>, String> {
-    let pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&connection_string(input))
-        .await
-        .map_err(|e| format!("connection failed: {e}"))?;
-
+pub async fn list_tables_impl(pool: &PgPool) -> Result<Vec<TableInfo>, String> {
     let rows = sqlx::query(
         "SELECT table_schema, table_name FROM information_schema.tables \
          WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
          ORDER BY table_schema, table_name",
     )
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await
     .map_err(|e| format!("query failed: {e}"))?;
 
     Ok(rows
         .into_iter()
-        .map(|r| TableInfo {
-            schema: r.get("table_schema"),
-            name: r.get("table_name"),
-        })
+        .map(|r| TableInfo { schema: r.get("table_schema"), name: r.get("table_name") })
         .collect())
 }
 
 #[tauri::command]
-pub async fn db_connect_and_list_tables(input: DbConnectInput) -> Result<Vec<TableInfo>, String> {
-    list_tables_impl(&input).await
+pub async fn db_connect_and_list_tables(
+    db: State<'_, LocalDb>,
+    secrets: State<'_, std::sync::Arc<dyn SecretStore>>,
+    registry: State<'_, std::sync::Arc<ConnectionRegistry>>,
+    connection_id: String,
+) -> Result<Vec<TableInfo>, String> {
+    let pool = registry.pool_for(&connection_id, &db.pool, secrets.as_ref()).await?;
+    list_tables_impl(&pool).await
 }
 
 #[derive(Debug, Serialize)]
 pub struct TableRows {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<Option<String>>>,
+    /// `Some(column)` when the table has exactly one primary-key column —
+    /// the same rule `get_primary_key_column` already enforces for watching.
+    /// `None` means the grid renders this table read-only.
+    pub pk_column: Option<String>,
 }
 
-fn cell_to_string(row: &sqlx::postgres::PgRow, index: usize) -> Option<String> {
+pub(crate) fn cell_to_string(row: &sqlx::postgres::PgRow, index: usize) -> Option<String> {
     use sqlx::Row as _;
     if let Ok(v) = row.try_get::<Option<String>, _>(index) { return v; }
     if let Ok(v) = row.try_get::<Option<i64>, _>(index) { return v.map(|n| n.to_string()); }
     if let Ok(v) = row.try_get::<Option<i32>, _>(index) { return v.map(|n| n.to_string()); }
     if let Ok(v) = row.try_get::<Option<f64>, _>(index) { return v.map(|n| n.to_string()); }
+    // NUMERIC's OID doesn't match f64's decode, so it falls through to here.
+    // rust_decimal::Decimal (not bigdecimal::BigDecimal) matters: sqlx's
+    // bigdecimal conversion derives scale from base-10000 digit-group
+    // boundaries and ignores Postgres's own dscale, so it pads 0.37 out to
+    // "0.3700"; rust_decimal reads dscale directly and rescales to it,
+    // reproducing exactly what Postgres itself displays.
+    if let Ok(v) = row.try_get::<Option<rust_decimal::Decimal>, _>(index) { return v.map(|n| n.to_string()); }
     if let Ok(v) = row.try_get::<Option<bool>, _>(index) { return v.map(|b| b.to_string()); }
     if let Ok(v) = row.try_get::<Option<chrono::NaiveDateTime>, _>(index) { return v.map(|d| d.to_string()); }
     if let Ok(v) = row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>(index) { return v.map(|d| d.to_string()); }
@@ -75,46 +70,157 @@ fn cell_to_string(row: &sqlx::postgres::PgRow, index: usize) -> Option<String> {
     // None of the supported decode paths matched. This is NOT the same thing as a
     // genuine SQL NULL (which returns early above via `v.map(...)` on `None`) — it
     // means the column holds a real, non-null value of a type we don't know how to
-    // decode (NUMERIC/DECIMAL, JSONB, arrays, enums, ...).
+    // decode (JSONB, arrays, enums, a NUMERIC past rust_decimal's ~28-29 significant
+    // digits, ...).
     // Rendering that the same as NULL would silently misrepresent real row data, so
     // it gets a visible marker instead. Full decode support for every Postgres type
     // is out of scope here — this only makes the failure mode honest.
     Some("<unsupported type>".to_string())
 }
 
-/// Validates that a table name is a legitimate Postgres identifier.
-/// Allows only ASCII alphanumeric characters and underscores.
-/// Returns an error if the identifier contains any other characters.
-pub(crate) fn validate_identifier(identifier: &str) -> Result<(), String> {
+/// Validates that an identifier (table, schema, or column) is a legitimate
+/// Postgres identifier. Allows only ASCII alphanumeric characters and
+/// underscores. `kind` names what's being validated — a rejected schema
+/// reporting "table name contains invalid characters" would send the reader
+/// to the wrong half of the input.
+pub(crate) fn validate_identifier_labeled(kind: &str, identifier: &str) -> Result<(), String> {
     if identifier.is_empty() {
-        return Err("table name cannot be empty".to_string());
+        return Err(format!("{kind} cannot be empty"));
     }
     if identifier.len() > 63 {
-        return Err("table name exceeds maximum Postgres identifier length (63)".to_string());
+        return Err(format!("{kind} exceeds maximum Postgres identifier length (63)"));
     }
     if !identifier.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(format!(
-            "table name contains invalid characters; only alphanumeric and underscore allowed: {}",
-            identifier
+            "{kind} contains invalid characters; only alphanumeric and underscore allowed: {identifier}"
         ));
     }
     Ok(())
 }
 
-pub async fn list_table_rows_impl(input: &DbConnectInput, table: &str) -> Result<TableRows, String> {
-    // Validate the table identifier before using it in SQL.
-    validate_identifier(table)?;
+/// Relocated from correlation.rs — both correlation snapshotting and grid
+/// edit-target resolution need "does this table have exactly one PK column"
+/// now. Same signature, same error strings.
+pub async fn get_primary_key_column(
+    pool: &PgPool,
+    table: &crate::commands::qualified_table::QualifiedTable,
+) -> Result<String, String> {
+    // pg_constraint's uniqueness rule is UNIQUE (conrelid, contypid, conname):
+    // a constraint name is only guaranteed unique per relation, not per
+    // schema. Two tables in the SAME schema can legally share a constraint
+    // name — a hand-named foreign key with no backing index has nothing
+    // stopping it from colliding with another table's "<table>_pkey" — and
+    // key_column_usage includes FK constraints (contype='f'), so an
+    // unqualified join would pull that FK's columns into this PK lookup and
+    // inflate the row count into a false composite-key error. Pinning both
+    // constraint_schema and the owning table (table_schema, table_name) on
+    // both sides keys the join to the exact relation pg_constraint actually
+    // guarantees uniqueness against.
+    let rows = sqlx::query(
+        "SELECT kcu.column_name FROM information_schema.table_constraints tc \
+         JOIN information_schema.key_column_usage kcu \
+           ON tc.constraint_name = kcu.constraint_name \
+          AND tc.constraint_schema = kcu.constraint_schema \
+          AND tc.table_schema = kcu.table_schema AND tc.table_name = kcu.table_name \
+         WHERE tc.constraint_type = 'PRIMARY KEY' \
+           AND tc.table_name = $1 AND tc.table_schema = $2",
+    )
+    .bind(table.name())
+    .bind(table.schema())
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("failed to look up primary key for {table}: {e}"))?;
 
-    let pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&connection_string(input))
-        .await
-        .map_err(|e| format!("connection failed: {e}"))?;
+    match rows.len() {
+        0 => Err(format!("table {table} has no single-column primary key — not watchable")),
+        1 => Ok(rows[0].get::<String, _>("column_name")),
+        _ => Err(format!("table {table} has a composite primary key — not watchable")),
+    }
+}
 
-    // Double-quote the identifier as defense-in-depth after validation.
-    let sql = format!("SELECT * FROM \"{}\" LIMIT 200", table);
-    let rows = sqlx::query(&sql)
-        .fetch_all(&pool)
+/// The Postgres physical type name (`pg_catalog.pg_type.typname`, e.g.
+/// `int4`, `text`, `uuid`) for a column — used by query.rs's cell-edit path
+/// to cast a bound PK value to the PK column's real type (`$2::{pk_type}`)
+/// so the WHERE clause stays sargable instead of casting the column itself.
+pub(crate) async fn get_column_type(
+    pool: &PgPool,
+    table: &crate::commands::qualified_table::QualifiedTable,
+    column: &str,
+) -> Result<String, String> {
+    let row = sqlx::query(
+        "SELECT udt_name FROM information_schema.columns \
+         WHERE table_name = $1 AND column_name = $2 AND table_schema = $3",
+    )
+    .bind(table.name())
+    .bind(column)
+    .bind(table.schema())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("failed to look up type for {table}.{column}: {e}"))?
+    .ok_or_else(|| format!("no such column {column} on table {table}"))?;
+    Ok(row.get::<String, _>("udt_name"))
+}
+
+/// One term of an `ORDER BY`. A list of these rather than a single column so
+/// the grid can express "status, then newest first" — the ordering questions
+/// that actually come up while debugging are rarely single-column.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SortTerm {
+    pub column: String,
+    pub descending: bool,
+    /// An unticked term is kept by the UI but must not reach the ORDER BY.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+pub async fn list_table_rows_impl(
+    pool: &PgPool,
+    table: &crate::commands::qualified_table::QualifiedTable,
+    filter: &[crate::commands::db_filter::FilterCondition],
+    order_by: &[SortTerm],
+    limit: i64,
+    offset: i64,
+) -> Result<TableRows, String> {
+    // The table is validated by construction. Sort columns are not — every
+    // term is validated before any is interpolated, because identifiers
+    // (unlike values) can't be bound as parameters.
+    for term in order_by {
+        validate_identifier_labeled("ORDER BY column", &term.column)?;
+    }
+
+    // No single-column PK is a normal, common case (junction tables,
+    // append-only logs) — not an error. It just means this table's grid
+    // renders read-only.
+    let pk_column = get_primary_key_column(pool, table).await.ok();
+
+    // Filter params take $1..$n, so limit and offset follow them.
+    let compiled = crate::commands::db_filter::compile_filter(filter, 1)?;
+    let limit_index = compiled.params.len() + 1;
+    let offset_index = compiled.params.len() + 2;
+
+    let mut sql = format!("SELECT * FROM {}{}", table.quoted(), compiled.where_sql);
+    let terms: Vec<String> = order_by
+        .iter()
+        .filter(|t| t.enabled)
+        .map(|t| format!("\"{}\" {}", t.column, if t.descending { "DESC" } else { "ASC" }))
+        .collect();
+    if !terms.is_empty() {
+        sql.push_str(&format!(" ORDER BY {}", terms.join(", ")));
+    }
+    sql.push_str(&format!(" LIMIT ${limit_index} OFFSET ${offset_index}"));
+
+    let mut query = sqlx::query(&sql);
+    for param in &compiled.params {
+        query = query.bind(param);
+    }
+    let rows = query
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
         .await
         .map_err(|e| format!("query failed: {e}"))?;
 
@@ -128,46 +234,123 @@ pub async fn list_table_rows_impl(input: &DbConnectInput, table: &str) -> Result
         .map(|row| (0..columns.len()).map(|i| cell_to_string(row, i)).collect())
         .collect();
 
-    Ok(TableRows { columns, rows: out_rows })
+    Ok(TableRows { columns, rows: out_rows, pk_column })
+}
+
+pub async fn count_table_rows_impl(
+    pool: &PgPool,
+    table: &crate::commands::qualified_table::QualifiedTable,
+    filter: &[crate::commands::db_filter::FilterCondition],
+) -> Result<i64, String> {
+    let compiled = crate::commands::db_filter::compile_filter(filter, 1)?;
+    let sql = format!("SELECT COUNT(*) AS n FROM {}{}", table.quoted(), compiled.where_sql);
+
+    let mut query = sqlx::query(&sql);
+    for param in &compiled.params {
+        query = query.bind(param);
+    }
+    let row = query
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("count failed: {e}"))?;
+    Ok(row.get::<i64, _>("n"))
+}
+
+// The argument list IS the IPC surface — see run_correlated_request's
+// identical rationale in correlation.rs.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn list_table_rows(
+    db: State<'_, LocalDb>,
+    secrets: State<'_, std::sync::Arc<dyn SecretStore>>,
+    registry: State<'_, std::sync::Arc<ConnectionRegistry>>,
+    connection_id: String,
+    table: crate::commands::qualified_table::QualifiedTable,
+    filter: Option<Vec<crate::commands::db_filter::FilterCondition>>,
+    order_by: Option<Vec<SortTerm>>,
+    limit: i64,
+    offset: i64,
+) -> Result<TableRows, String> {
+    let pool = registry.pool_for(&connection_id, &db.pool, secrets.as_ref()).await?;
+    list_table_rows_impl(
+        &pool,
+        &table,
+        &filter.unwrap_or_default(),
+        &order_by.unwrap_or_default(),
+        limit,
+        offset,
+    )
+    .await
 }
 
 #[tauri::command]
-pub async fn list_table_rows(input: DbConnectInput, table: String) -> Result<TableRows, String> {
-    list_table_rows_impl(&input, &table).await
+pub async fn count_table_rows(
+    db: State<'_, LocalDb>,
+    secrets: State<'_, std::sync::Arc<dyn SecretStore>>,
+    registry: State<'_, std::sync::Arc<ConnectionRegistry>>,
+    connection_id: String,
+    table: crate::commands::qualified_table::QualifiedTable,
+    filter: Option<Vec<crate::commands::db_filter::FilterCondition>>,
+) -> Result<i64, String> {
+    let pool = registry.pool_for(&connection_id, &db.pool, secrets.as_ref()).await?;
+    count_table_rows_impl(&pool, &table, &filter.unwrap_or_default()).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::qualified_table::QualifiedTable;
 
-    fn test_connection() -> DbConnectInput {
-        DbConnectInput {
-            host: std::env::var("PGHOST").unwrap_or_else(|_| "localhost".into()),
-            port: 5432,
-            database: std::env::var("PGDATABASE").unwrap_or_else(|_| "devbench_test".into()),
-            username: std::env::var("PGUSER").unwrap_or_else(|_| "postgres".into()),
-            password: std::env::var("PGPASSWORD").unwrap_or_else(|_| "postgres".into()),
+    fn public(name: &str) -> crate::commands::qualified_table::QualifiedTable {
+        crate::commands::qualified_table::QualifiedTable::new("public", name).unwrap()
+    }
+
+    fn asc_on(column: &str) -> SortTerm {
+        SortTerm { column: column.to_string(), descending: false, enabled: true }
+    }
+
+    fn eq_on(column: &str, value: &str) -> crate::commands::db_filter::FilterCondition {
+        crate::commands::db_filter::FilterCondition {
+            column: column.to_string(),
+            op: crate::commands::db_filter::FilterOp::Eq,
+            value: Some(value.to_string()),
+            enabled: true,
         }
+    }
+
+    fn gt_on(column: &str, value: &str) -> crate::commands::db_filter::FilterCondition {
+        crate::commands::db_filter::FilterCondition {
+            column: column.to_string(),
+            op: crate::commands::db_filter::FilterOp::Gt,
+            value: Some(value.to_string()),
+            enabled: true,
+        }
+    }
+
+    async fn test_pool() -> PgPool {
+        let host = std::env::var("PGHOST").unwrap_or_else(|_| "localhost".into());
+        let database = std::env::var("PGDATABASE").unwrap_or_else(|_| "devbench_test".into());
+        let username = std::env::var("PGUSER").unwrap_or_else(|_| "postgres".into());
+        let password = std::env::var("PGPASSWORD").unwrap_or_else(|_| "postgres".into());
+        let connection_string = crate::connection_registry::postgres_connection_string(
+            &host, 5432, &database, &username, Some(&password), "disable",
+        );
+        sqlx::postgres::PgPoolOptions::new()
+            // Capped so the suite's parallel tests can't collectively exhaust
+            // Postgres's max_connections; each test needs only a handful.
+            .max_connections(4)
+            .connect(&connection_string)
+            .await
+            .expect("requires a real local Postgres — see CONTRIBUTING for setup")
     }
 
     #[tokio::test]
     async fn lists_the_public_orders_table() {
-        let conn = test_connection();
-        let pool = PgPoolOptions::new()
-            .connect(&connection_string(&conn))
-            .await
-            .expect("requires a real local Postgres — see CONTRIBUTING for setup");
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS orders_for_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE orders_for_test (id serial PRIMARY KEY)").execute(&pool).await.unwrap();
 
-        sqlx::query("DROP TABLE IF EXISTS orders_for_test")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("CREATE TABLE orders_for_test (id serial PRIMARY KEY)")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let tables = list_tables_impl(&conn).await.unwrap();
+        let tables = list_tables_impl(&pool).await.unwrap();
         assert!(tables.iter().any(|t| t.name == "orders_for_test" && t.schema == "public"));
 
         sqlx::query("DROP TABLE orders_for_test").execute(&pool).await.unwrap();
@@ -176,7 +359,7 @@ mod tests {
     #[test]
     fn rejects_sql_injection_with_drop_table() {
         let malicious = "orders; DROP TABLE users; --";
-        let result = validate_identifier(malicious);
+        let result = validate_identifier_labeled("identifier", malicious);
         assert!(result.is_err(), "should reject SQL injection attempt");
         assert!(result.unwrap_err().contains("invalid characters"));
     }
@@ -184,14 +367,14 @@ mod tests {
     #[test]
     fn rejects_sql_injection_with_quote_escape() {
         let malicious = "orders\" WHERE 1=1; --";
-        let result = validate_identifier(malicious);
+        let result = validate_identifier_labeled("identifier", malicious);
         assert!(result.is_err(), "should reject quote-escape injection attempt");
         assert!(result.unwrap_err().contains("invalid characters"));
     }
 
     #[test]
     fn rejects_empty_table_name() {
-        let result = validate_identifier("");
+        let result = validate_identifier_labeled("identifier", "");
         assert!(result.is_err(), "should reject empty table name");
         assert!(result.unwrap_err().contains("empty"));
     }
@@ -199,173 +382,610 @@ mod tests {
     #[test]
     fn rejects_table_name_exceeding_max_length() {
         let long_name = "a".repeat(64);
-        let result = validate_identifier(&long_name);
+        let result = validate_identifier_labeled("identifier", &long_name);
         assert!(result.is_err(), "should reject table name exceeding 63 characters");
         assert!(result.unwrap_err().contains("exceeds maximum"));
     }
 
     #[test]
     fn accepts_valid_lowercase_table_name() {
-        let result = validate_identifier("orders");
-        assert!(result.is_ok(), "should accept simple lowercase table name");
+        assert!(validate_identifier_labeled("identifier", "orders").is_ok());
     }
 
     #[test]
     fn accepts_valid_table_name_with_underscore() {
-        let result = validate_identifier("orders_for_test");
-        assert!(result.is_ok(), "should accept table name with underscores");
+        assert!(validate_identifier_labeled("identifier", "orders_for_test").is_ok());
     }
 
     #[test]
     fn accepts_valid_table_name_with_numbers() {
-        let result = validate_identifier("table123");
-        assert!(result.is_ok(), "should accept table name with numbers");
+        assert!(validate_identifier_labeled("identifier", "table123").is_ok());
     }
 
     #[test]
     fn accepts_valid_mixed_case_table_name() {
-        let result = validate_identifier("OrdersTable");
-        assert!(result.is_ok(), "should accept mixed-case table name");
+        assert!(validate_identifier_labeled("identifier", "OrdersTable").is_ok());
     }
 
     #[test]
     fn rejects_special_characters() {
         let test_cases = vec![
-            ("users;", "semicolon"),
-            ("users--", "dash"),
-            ("users/**/", "comment"),
-            ("users OR 1=1", "space and keyword"),
-            ("users'test", "single quote"),
-            ("users\"test", "double quote"),
-            ("users,test", "comma"),
-            ("users.test", "dot"),
+            ("users;", "semicolon"), ("users--", "dash"), ("users/**/", "comment"),
+            ("users OR 1=1", "space and keyword"), ("users'test", "single quote"),
+            ("users\"test", "double quote"), ("users,test", "comma"), ("users.test", "dot"),
             ("users(test)", "parentheses"),
         ];
         for (input, desc) in test_cases {
-            let result = validate_identifier(input);
-            assert!(result.is_err(), "should reject {} in table name", desc);
+            assert!(validate_identifier_labeled("identifier", input).is_err(), "should reject {} in table name", desc);
         }
     }
 
     #[tokio::test]
-    async fn list_table_rows_rejects_malicious_table_name() {
-        let conn = test_connection();
-        let malicious_table = "orders; DROP TABLE users; --";
-        let result = list_table_rows_impl(&conn, malicious_table).await;
-        assert!(result.is_err(), "should reject malicious table name before executing query");
-    }
-
-    #[tokio::test]
     async fn list_table_rows_works_with_valid_table_name() {
-        let conn = test_connection();
-        let pool = PgPoolOptions::new()
-            .connect(&connection_string(&conn))
-            .await
-            .expect("requires a real local Postgres — see CONTRIBUTING for setup");
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS test_rows_table").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE test_rows_table (id serial PRIMARY KEY, name text)").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO test_rows_table (name) VALUES ('test_row_1')").execute(&pool).await.unwrap();
 
-        // Create a test table
-        sqlx::query("DROP TABLE IF EXISTS test_rows_table")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("CREATE TABLE test_rows_table (id serial PRIMARY KEY, name text)")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO test_rows_table (name) VALUES ('test_row_1')")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        // Call list_table_rows_impl with valid table name
-        let result = list_table_rows_impl(&conn, "test_rows_table").await;
+        let result = list_table_rows_impl(&pool, &public("test_rows_table"), &[], &[], 200, 0).await;
         assert!(result.is_ok(), "should successfully list rows from valid table");
 
         let table_rows = result.unwrap();
         assert!(!table_rows.columns.is_empty(), "should have columns");
         assert_eq!(table_rows.columns[0], "id", "first column should be id");
+        assert_eq!(table_rows.pk_column.as_deref(), Some("id"));
 
-        // Clean up
-        sqlx::query("DROP TABLE test_rows_table")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query("DROP TABLE test_rows_table").execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_table_with_no_qualifying_primary_key_reports_pk_column_none() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS no_pk_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE no_pk_test (a int, b int)").execute(&pool).await.unwrap();
+
+        let result = list_table_rows_impl(&pool, &public("no_pk_test"), &[], &[], 200, 0).await.unwrap();
+        assert_eq!(result.pk_column, None, "no single-column PK means not editable, not an error");
+
+        sqlx::query("DROP TABLE no_pk_test").execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sort_and_pagination_are_applied() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS sort_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE sort_test (id serial PRIMARY KEY, n int)").execute(&pool).await.unwrap();
+        for n in [3, 1, 2] {
+            sqlx::query("INSERT INTO sort_test (n) VALUES ($1)").bind(n).execute(&pool).await.unwrap();
+        }
+
+        let asc = list_table_rows_impl(&pool, &public("sort_test"), &[], &[asc_on("n")], 200, 0).await.unwrap();
+        let n_col = asc.columns.iter().position(|c| c == "n").unwrap();
+        let values: Vec<_> = asc.rows.iter().map(|r| r[n_col].clone()).collect();
+        assert_eq!(values, vec![Some("1".to_string()), Some("2".to_string()), Some("3".to_string())]);
+
+        let paged = list_table_rows_impl(&pool, &public("sort_test"), &[], &[asc_on("n")], 1, 1).await.unwrap();
+        assert_eq!(paged.rows.len(), 1, "LIMIT 1 must return exactly one row");
+        assert_eq!(paged.rows[0][n_col], Some("2".to_string()), "OFFSET 1 must skip the first sorted row");
+
+        sqlx::query("DROP TABLE sort_test").execute(&pool).await.unwrap();
+    }
+
+    // Order within the term list is the tie-break order, so the second term
+    // only shows up where the first one ties — which is exactly what makes a
+    // multi-sort worth having, and exactly what a naive join would get wrong.
+    #[tokio::test]
+    async fn multiple_sort_terms_are_applied_in_order() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS multisort_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE multisort_test (id serial PRIMARY KEY, grp text, n int)")
+            .execute(&pool).await.unwrap();
+        for (grp, n) in [("b", 1), ("a", 2), ("b", 2), ("a", 1)] {
+            sqlx::query("INSERT INTO multisort_test (grp, n) VALUES ($1, $2)")
+                .bind(grp).bind(n).execute(&pool).await.unwrap();
+        }
+
+        let sorted = list_table_rows_impl(
+            &pool,
+            &public("multisort_test"),
+            &[],
+            &[asc_on("grp"), SortTerm { column: "n".into(), descending: true, enabled: true }],
+            200,
+            0,
+        )
+        .await
+        .unwrap();
+
+        let g = sorted.columns.iter().position(|c| c == "grp").unwrap();
+        let n = sorted.columns.iter().position(|c| c == "n").unwrap();
+        let pairs: Vec<(String, String)> = sorted
+            .rows
+            .iter()
+            .map(|r| (r[g].clone().unwrap(), r[n].clone().unwrap()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("a".to_string(), "2".to_string()),
+                ("a".to_string(), "1".to_string()),
+                ("b".to_string(), "2".to_string()),
+                ("b".to_string(), "1".to_string()),
+            ],
+            "grp ascending, then n descending inside each grp"
+        );
+
+        sqlx::query("DROP TABLE multisort_test").execute(&pool).await.unwrap();
+    }
+
+    // Validation must cover every term, not just the first — a second term is
+    // interpolated into the same SQL string and is just as dangerous.
+    #[tokio::test]
+    async fn a_malicious_identifier_in_a_later_sort_term_is_still_rejected() {
+        let pool = test_pool().await;
+        let result = list_table_rows_impl(
+            &pool,
+            &public("orders"),
+            &[],
+            &[asc_on("id"), asc_on("n; DROP TABLE users; --")],
+            200,
+            0,
+        )
+        .await;
+        assert!(result.is_err(), "a malicious column in any ORDER BY term must be rejected");
+    }
+
+    #[tokio::test]
+    async fn sort_column_rejects_a_malicious_identifier() {
+        let pool = test_pool().await;
+        let result =
+            list_table_rows_impl(&pool, &public("orders"), &[], &[asc_on("n; DROP TABLE users; --")], 200, 0).await;
+        assert!(result.is_err(), "a malicious ORDER BY column must be rejected exactly like a malicious table name");
     }
 
     #[tokio::test]
     async fn unsupported_column_types_render_distinctly_from_genuine_null() {
-        let conn = test_connection();
-        let pool = PgPoolOptions::new()
-            .connect(&connection_string(&conn))
-            .await
-            .expect("requires a real local Postgres — see CONTRIBUTING for setup");
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS unsupported_type_test").execute(&pool).await.unwrap();
+        // `payload` is JSONB, which this codebase doesn't decode — it's a real,
+        // non-null value that must NOT render the same as `notes`, which is a
+        // genuine SQL NULL.
+        sqlx::query("CREATE TABLE unsupported_type_test (id serial PRIMARY KEY, payload jsonb, notes text)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO unsupported_type_test (payload, notes) VALUES ('{\"a\": 1}', NULL)")
+            .execute(&pool).await.unwrap();
 
-        sqlx::query("DROP TABLE IF EXISTS unsupported_type_test")
-            .execute(&pool)
-            .await
-            .unwrap();
-        // `amount` is NUMERIC, which this codebase doesn't decode (no bigdecimal/
-        // rust_decimal feature enabled) — it's a real, non-null value that must NOT
-        // render the same as `notes`, which is a genuine SQL NULL.
-        sqlx::query(
-            "CREATE TABLE unsupported_type_test (id serial PRIMARY KEY, amount numeric, notes text)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query("INSERT INTO unsupported_type_test (amount, notes) VALUES (42.50, NULL)")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let result = list_table_rows_impl(&conn, "unsupported_type_test").await.unwrap();
-        assert_eq!(result.columns, vec!["id", "amount", "notes"]);
+        let result = list_table_rows_impl(&pool, &public("unsupported_type_test"), &[], &[], 200, 0).await.unwrap();
+        assert_eq!(result.columns, vec!["id", "payload", "notes"]);
         assert_eq!(result.rows[0][1], Some("<unsupported type>".to_string()));
         assert_eq!(result.rows[0][2], None, "a genuine NULL must still render as None");
 
-        sqlx::query("DROP TABLE unsupported_type_test")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query("DROP TABLE unsupported_type_test").execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn numeric_column_round_trips_as_its_exact_decimal_string() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS numeric_decode_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE numeric_decode_test (id serial PRIMARY KEY, price numeric)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO numeric_decode_test (price) VALUES (19.99)").execute(&pool).await.unwrap();
+
+        let result = list_table_rows_impl(&pool, &public("numeric_decode_test"), &[], &[], 200, 0).await.unwrap();
+        assert_eq!(result.rows[0][1], Some("19.99".to_string()));
+        assert_ne!(result.rows[0][1], Some("<unsupported type>".to_string()));
+
+        sqlx::query("DROP TABLE numeric_decode_test").execute(&pool).await.unwrap();
+    }
+
+    // f64 can only hold ~15-17 significant decimal digits, so a lossy
+    // `numeric -> f64 -> to_string` path would round or pad these away.
+    // rust_decimal::Decimal rescales to Postgres's own dscale instead.
+    #[tokio::test]
+    async fn numeric_column_preserves_scale_and_precision_beyond_f64() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS numeric_scale_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE numeric_scale_test (id serial PRIMARY KEY, amount numeric)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO numeric_scale_test (amount) VALUES (0.37), (0.1234567890123456789)")
+            .execute(&pool).await.unwrap();
+
+        let result = list_table_rows_impl(&pool, &public("numeric_scale_test"), &[], &[], 200, 0).await.unwrap();
+        assert_eq!(result.rows[0][1], Some("0.37".to_string()), "must be exact — not \"0.37000\", not \"0.4\"");
+        assert_eq!(result.rows[1][1], Some("0.1234567890123456789".to_string()), "precision beyond f64 must survive");
+
+        sqlx::query("DROP TABLE numeric_scale_test").execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn null_numeric_column_reads_as_none_not_marker_or_empty_string() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS numeric_null_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE numeric_null_test (id serial PRIMARY KEY, amount numeric)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO numeric_null_test (amount) VALUES (NULL)").execute(&pool).await.unwrap();
+
+        let result = list_table_rows_impl(&pool, &public("numeric_null_test"), &[], &[], 200, 0).await.unwrap();
+        assert_eq!(result.rows[0][1], None, "a NULL numeric must stay None, not the marker and not an empty string");
+
+        sqlx::query("DROP TABLE numeric_null_test").execute(&pool).await.unwrap();
+    }
+
+    // rust_decimal::Decimal caps at ~28-29 significant digits; Postgres NUMERIC
+    // does not. A value past that cap must still fall through to the marker —
+    // not a truncated or rounded number, which on a money column would be the
+    // one outcome worse than the marker.
+    #[tokio::test]
+    async fn a_numeric_value_beyond_decimal_precision_reads_as_the_marker_not_a_truncated_number() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS numeric_overflow_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE numeric_overflow_test (id serial PRIMARY KEY, amount numeric)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO numeric_overflow_test (amount) VALUES (0.12345678901234567890123456789012345)")
+            .execute(&pool).await.unwrap();
+
+        let result = list_table_rows_impl(&pool, &public("numeric_overflow_test"), &[], &[], 200, 0).await.unwrap();
+        assert_eq!(result.rows[0][1], Some("<unsupported type>".to_string()));
+
+        sqlx::query("DROP TABLE numeric_overflow_test").execute(&pool).await.unwrap();
     }
 
     #[tokio::test]
     async fn timestamptz_and_date_columns_render_as_strings() {
-        let conn = test_connection();
-        let pool = PgPoolOptions::new()
-            .connect(&connection_string(&conn))
-            .await
-            .expect("requires a real local Postgres — see CONTRIBUTING for setup");
-
-        sqlx::query("DROP TABLE IF EXISTS datetime_type_test")
-            .execute(&pool)
-            .await
-            .unwrap();
-        // Create a table with TIMESTAMPTZ (common use case like created_at) and DATE columns.
-        sqlx::query(
-            "CREATE TABLE datetime_type_test (id serial PRIMARY KEY, created_at timestamptz, birth_date date)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS datetime_type_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE datetime_type_test (id serial PRIMARY KEY, created_at timestamptz, birth_date date)")
+            .execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO datetime_type_test (created_at, birth_date) VALUES ('2025-07-30 12:34:56+00:00', '2025-07-30')")
-            .execute(&pool)
-            .await
-            .unwrap();
+            .execute(&pool).await.unwrap();
 
-        let result = list_table_rows_impl(&conn, "datetime_type_test").await.unwrap();
+        let result = list_table_rows_impl(&pool, &public("datetime_type_test"), &[], &[], 200, 0).await.unwrap();
         assert_eq!(result.columns, vec!["id", "created_at", "birth_date"]);
+        assert!(result.rows[0][1].is_some());
+        assert_ne!(result.rows[0][1], Some("<unsupported type>".to_string()));
+        assert!(result.rows[0][2].is_some());
+        assert_ne!(result.rows[0][2], Some("<unsupported type>".to_string()));
 
-        // Verify that TIMESTAMPTZ (created_at) and DATE (birth_date) render as strings, not as unsupported.
-        assert!(result.rows[0][1].is_some(), "TIMESTAMPTZ column should decode to Some(string)");
-        assert_ne!(result.rows[0][1], Some("<unsupported type>".to_string()), "TIMESTAMPTZ should render as a date string, not unsupported");
+        sqlx::query("DROP TABLE datetime_type_test").execute(&pool).await.unwrap();
+    }
 
-        assert!(result.rows[0][2].is_some(), "DATE column should decode to Some(string)");
-        assert_ne!(result.rows[0][2], Some("<unsupported type>".to_string()), "DATE should render as a date string, not unsupported");
+    // The grid renders a boolean as a pill purely by string-matching "true"/
+    // "false" (see `cellDisplay`), so these exact spellings are a contract, not
+    // an implementation detail — anything else silently degrades to plain text.
+    // A NULL boolean must also stay a genuine None rather than the string
+    // "false", which the grid draws as a bordered pill meaning something else.
+    #[tokio::test]
+    async fn boolean_columns_render_as_true_false_and_keep_null_distinct() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS bool_type_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE bool_type_test (id serial PRIMARY KEY, paid boolean)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO bool_type_test (paid) VALUES (true), (false), (NULL)")
+            .execute(&pool).await.unwrap();
 
-        sqlx::query("DROP TABLE datetime_type_test")
-            .execute(&pool)
+        let result = list_table_rows_impl(&pool, &public("bool_type_test"), &[], &[], 200, 0).await.unwrap();
+        assert_eq!(result.rows[0][1], Some("true".to_string()));
+        assert_eq!(result.rows[1][1], Some("false".to_string()));
+        assert_eq!(result.rows[2][1], None, "a NULL boolean must not become the string \"false\"");
+
+        sqlx::query("DROP TABLE bool_type_test").execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn primary_key_lookup_finds_a_single_column_key() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS pk_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE pk_test (id serial PRIMARY KEY)").execute(&pool).await.unwrap();
+        assert_eq!(get_primary_key_column(&pool, &public("pk_test")).await.unwrap(), "id");
+        sqlx::query("DROP TABLE pk_test").execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn primary_key_lookup_rejects_composite_keys() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS composite_pk_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE composite_pk_test (a int, b int, PRIMARY KEY (a, b))").execute(&pool).await.unwrap();
+        let result = get_primary_key_column(&pool, &public("composite_pk_test")).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("composite primary key"));
+        sqlx::query("DROP TABLE composite_pk_test").execute(&pool).await.unwrap();
+    }
+
+    // pg_constraint only guarantees a constraint name is unique per relation,
+    // not per schema, so a hand-named FK on an unrelated table can legally
+    // collide with another table's auto-named "<table>_pkey". key_column_usage
+    // includes FK constraints, so joining table_constraints to it on just
+    // constraint_name (+ constraint_schema) pulls that FK's column into this
+    // table's PK lookup and inflates the row count into a false composite-key
+    // error. The join must also pin the constraint's owning relation
+    // (table_schema, table_name) on both sides.
+    #[tokio::test]
+    async fn a_same_named_foreign_key_on_another_table_does_not_corrupt_the_pk_lookup() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS fk_collision_source").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS fk_collision_target").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE fk_collision_target (id serial PRIMARY KEY, tag text)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE fk_collision_source (id serial PRIMARY KEY, target_id int)")
+            .execute(&pool).await.unwrap();
+        // Postgres auto-names fk_collision_target's PK constraint
+        // "fk_collision_target_pkey". Naming this FK the exact same string
+        // reproduces the collision — legal, since pg_constraint's uniqueness
+        // is per relation (conrelid), not per schema.
+        sqlx::query(
+            "ALTER TABLE fk_collision_source ADD CONSTRAINT fk_collision_target_pkey \
+             FOREIGN KEY (target_id) REFERENCES fk_collision_target(id)",
+        )
+        .execute(&pool).await.unwrap();
+
+        let result = get_primary_key_column(&pool, &public("fk_collision_target")).await;
+        assert_eq!(
+            result.as_deref(),
+            Ok("id"),
+            "an unrelated table's same-named FK must not leak into this table's PK lookup: {result:?}"
+        );
+
+        sqlx::query("DROP TABLE fk_collision_source").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE fk_collision_target").execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_disabled_sort_term_is_not_applied() {
+        let pool = test_pool().await;
+        // Fixture needed; ambient seeded data made test pass by accident.
+        sqlx::query("DROP TABLE IF EXISTS disabled_sort_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE disabled_sort_test (id serial PRIMARY KEY, name text)")
+            .execute(&pool).await.unwrap();
+        for name in ["alice", "charlie", "bob"] {
+            sqlx::query("INSERT INTO disabled_sort_test (name) VALUES ($1)")
+                .bind(name).execute(&pool).await.unwrap();
+        }
+
+        let disabled = SortTerm { column: "id".into(), descending: true, enabled: false };
+        let result = list_table_rows_impl(&pool, &public("disabled_sort_test"), &[], &[disabled], 5, 0).await;
+        assert!(result.is_ok(), "a disabled term must be skipped, not rejected");
+
+        let rows = result.unwrap();
+        let id_col = rows.columns.iter().position(|c| c == "id").unwrap();
+        let ids: Vec<_> = rows.rows.iter()
+            .map(|r| r[id_col].as_ref().map(|s| s.parse::<i32>().unwrap()))
+            .collect();
+        assert_eq!(ids, vec![Some(1), Some(2), Some(3)], "disabled DESC sort must not change row order");
+
+        sqlx::query("DROP TABLE disabled_sort_test").execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_filter_narrows_the_returned_rows() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS filter_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE filter_test (id serial PRIMARY KEY, status text)")
+            .execute(&pool).await.unwrap();
+        for s in ["paid", "pending", "paid"] {
+            sqlx::query("INSERT INTO filter_test (status) VALUES ($1)")
+                .bind(s).execute(&pool).await.unwrap();
+        }
+
+        let all = list_table_rows_impl(&pool, &public("filter_test"), &[], &[], 200, 0).await.unwrap();
+        assert_eq!(all.rows.len(), 3);
+
+        let paid = list_table_rows_impl(&pool, &public("filter_test"), &[eq_on("status", "paid")], &[], 200, 0)
+            .await.unwrap();
+        assert_eq!(paid.rows.len(), 2);
+
+        sqlx::query("DROP TABLE filter_test").execute(&pool).await.unwrap();
+    }
+
+    // Filter values are all bound as TEXT, and Postgres refuses to resolve
+    // `int = text` — so filtering a non-text column has to reach the server and
+    // come back with rows, not an "operator does not exist" error. Asserting on
+    // the compiled SQL alone would never have caught this.
+    #[tokio::test]
+    async fn a_filter_on_a_non_text_column_matches_rather_than_erroring() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS type_filter_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE type_filter_test (id serial PRIMARY KEY, n int)")
+            .execute(&pool).await.unwrap();
+        for n in [7, 42, 9, 10] {
+            sqlx::query("INSERT INTO type_filter_test (n) VALUES ($1)")
+                .bind(n).execute(&pool).await.unwrap();
+        }
+
+        let eq = list_table_rows_impl(&pool, &public("type_filter_test"), &[eq_on("n", "42")], &[], 200, 0)
             .await
-            .unwrap();
+            .expect("an eq filter on an int column must not be a SQL error");
+        let n = eq.columns.iter().position(|c| c == "n").unwrap();
+        assert_eq!(eq.rows.len(), 1);
+        assert_eq!(eq.rows[0][n], Some("42".to_string()));
+        assert_eq!(
+            count_table_rows_impl(&pool, &public("type_filter_test"), &[eq_on("n", "42")]).await.unwrap(),
+            1
+        );
+
+        // And ordering compares as numbers, not as strings — "10" > "9" only
+        // holds numerically.
+        let gt = list_table_rows_impl(&pool, &public("type_filter_test"), &[gt_on("n", "9")], &[asc_on("n")], 200, 0)
+            .await
+            .expect("a gt filter on an int column must not be a SQL error");
+        let values: Vec<Option<String>> = gt.rows.iter().map(|r| r[n].clone()).collect();
+        assert_eq!(values, vec![Some("10".to_string()), Some("42".to_string())]);
+
+        sqlx::query("DROP TABLE type_filter_test").execute(&pool).await.unwrap();
+    }
+
+    // The pager and the grid must never disagree, so the count runs the same
+    // filter the row query does.
+    #[tokio::test]
+    async fn the_count_uses_the_same_filter_as_the_rows() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS count_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE count_test (id serial PRIMARY KEY, status text)")
+            .execute(&pool).await.unwrap();
+        for s in ["paid", "pending", "paid", "paid"] {
+            sqlx::query("INSERT INTO count_test (status) VALUES ($1)")
+                .bind(s).execute(&pool).await.unwrap();
+        }
+
+        assert_eq!(count_table_rows_impl(&pool, &public("count_test"), &[]).await.unwrap(), 4);
+        assert_eq!(
+            count_table_rows_impl(&pool, &public("count_test"), &[eq_on("status", "paid")]).await.unwrap(),
+            3
+        );
+
+        // And it agrees with what an unpaged fetch actually returns.
+        let rows = list_table_rows_impl(&pool, &public("count_test"), &[eq_on("status", "paid")], &[], 500, 0)
+            .await.unwrap();
+        assert_eq!(rows.rows.len() as i64, 3);
+
+        sqlx::query("DROP TABLE count_test").execute(&pool).await.unwrap();
+    }
+
+    // Filter parameters are bound first, so limit/offset must shift to $n+1/$n+2
+    // or the query binds the wrong values to the wrong placeholders.
+    #[tokio::test]
+    async fn a_filter_and_pagination_bind_without_colliding() {
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS filter_page_test").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE filter_page_test (id serial PRIMARY KEY, status text, n int)")
+            .execute(&pool).await.unwrap();
+        for n in 1..=5 {
+            sqlx::query("INSERT INTO filter_page_test (status, n) VALUES ('paid', $1)")
+                .bind(n).execute(&pool).await.unwrap();
+        }
+
+        let page = list_table_rows_impl(
+            &pool, &public("filter_page_test"), &[eq_on("status", "paid")], &[asc_on("n")], 2, 1,
+        ).await.unwrap();
+        let n = page.columns.iter().position(|c| c == "n").unwrap();
+        assert_eq!(page.rows.len(), 2, "LIMIT must still apply alongside a filter");
+        assert_eq!(page.rows[0][n], Some("2".to_string()), "OFFSET must skip the first match");
+
+        sqlx::query("DROP TABLE filter_page_test").execute(&pool).await.unwrap();
+    }
+
+    // The catalog lookups matched on table_name alone, so a table name present
+    // in two schemas resolved by luck. This is the defect the whole refactor
+    // exists to remove.
+    #[tokio::test]
+    async fn a_table_name_present_in_two_schemas_resolves_by_schema() {
+        let pool = test_pool().await;
+        sqlx::query("CREATE SCHEMA IF NOT EXISTS alt").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS public.dup").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS alt.dup").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE public.dup (id serial PRIMARY KEY, tag text)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE alt.dup (other_id serial PRIMARY KEY, tag text)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.dup (tag) VALUES ('p1'), ('p2')")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO alt.dup (tag) VALUES ('a1')")
+            .execute(&pool).await.unwrap();
+
+        let alt_dup = crate::commands::qualified_table::QualifiedTable::new("alt", "dup").unwrap();
+
+        // Rows come from the right physical table.
+        let p = list_table_rows_impl(&pool, &public("dup"), &[], &[], 200, 0).await.unwrap();
+        assert_eq!(p.rows.len(), 2);
+        let a = list_table_rows_impl(&pool, &alt_dup, &[], &[], 200, 0).await.unwrap();
+        assert_eq!(a.rows.len(), 1);
+
+        // Counts too.
+        assert_eq!(count_table_rows_impl(&pool, &public("dup"), &[]).await.unwrap(), 2);
+        assert_eq!(count_table_rows_impl(&pool, &alt_dup, &[]).await.unwrap(), 1);
+
+        // And the PK lookup, which previously saw two candidate rows and
+        // reported a composite primary key.
+        assert_eq!(get_primary_key_column(&pool, &public("dup")).await.unwrap(), "id");
+        assert_eq!(get_primary_key_column(&pool, &alt_dup).await.unwrap(), "other_id");
+
+        sqlx::query("DROP TABLE public.dup").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE alt.dup").execute(&pool).await.unwrap();
+    }
+
+    // The test above starts from `QualifiedTable::new`, which is not how a
+    // table identity actually enters the process: over IPC it arrives as JSON
+    // and is reconstituted by serde. Starting from the JSON is what makes this
+    // a command-layer test — it would catch a wire shape that deserializes
+    // into a different table than the caller named, which a test built from
+    // the constructor cannot see.
+    //
+    // Fixtures are named apart from the test above because cargo runs these
+    // concurrently against one database; sharing `alt.dup` would race.
+    #[tokio::test]
+    async fn a_table_identity_arriving_as_ipc_json_resolves_to_its_own_schema() {
+        let pool = test_pool().await;
+        sqlx::query("CREATE SCHEMA IF NOT EXISTS alt_ipc").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS public.dup_ipc").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS alt_ipc.dup_ipc").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE public.dup_ipc (id serial PRIMARY KEY, tag text)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE alt_ipc.dup_ipc (other_id serial PRIMARY KEY, tag text)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.dup_ipc (tag) VALUES ('p1'), ('p2')")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO alt_ipc.dup_ipc (tag) VALUES ('a1')")
+            .execute(&pool).await.unwrap();
+
+        let public_dup: QualifiedTable =
+            serde_json::from_value(serde_json::json!({"schema": "public", "name": "dup_ipc"}))
+                .expect("the wire shape the frontend sends must deserialize");
+        let alt_dup: QualifiedTable =
+            serde_json::from_value(serde_json::json!({"schema": "alt_ipc", "name": "dup_ipc"}))
+                .expect("the wire shape the frontend sends must deserialize");
+
+        let p = list_table_rows_impl(&pool, &public_dup, &[], &[], 200, 0).await.unwrap();
+        assert_eq!(p.rows.len(), 2, "public.dup_ipc holds two rows");
+        let a = list_table_rows_impl(&pool, &alt_dup, &[], &[], 200, 0).await.unwrap();
+        assert_eq!(a.rows.len(), 1, "alt_ipc.dup_ipc holds one row");
+
+        assert_eq!(count_table_rows_impl(&pool, &public_dup, &[]).await.unwrap(), 2);
+        assert_eq!(count_table_rows_impl(&pool, &alt_dup, &[]).await.unwrap(), 1);
+
+        // The pager and the grid have to agree, or the last page is unreachable.
+        assert_eq!(count_table_rows_impl(&pool, &public_dup, &[]).await.unwrap() as usize, p.rows.len());
+        assert_eq!(count_table_rows_impl(&pool, &alt_dup, &[]).await.unwrap() as usize, a.rows.len());
+
+        // Distinct PK names are what prove the catalog lookup read the right
+        // relation rather than merging both candidates.
+        assert_eq!(get_primary_key_column(&pool, &public_dup).await.unwrap(), "id");
+        assert_eq!(get_primary_key_column(&pool, &alt_dup).await.unwrap(), "other_id");
+        assert_eq!(p.pk_column.as_deref(), Some("id"));
+        assert_eq!(a.pk_column.as_deref(), Some("other_id"));
+
+        sqlx::query("DROP TABLE public.dup_ipc").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE alt_ipc.dup_ipc").execute(&pool).await.unwrap();
+        sqlx::query("DROP SCHEMA alt_ipc").execute(&pool).await.unwrap();
+    }
+
+    // A payload that never becomes a `QualifiedTable` never reaches SQL: the
+    // command's argument cannot be built, so the command body does not run.
+    #[tokio::test]
+    async fn a_malformed_ipc_table_payload_is_rejected_before_it_reaches_sql() {
+        // The pre-plan wire shape. Silently accepting it would resurrect the
+        // bare-name lookup this plan removed.
+        let bare: Result<QualifiedTable, _> = serde_json::from_value(serde_json::json!("dup_ipc"));
+        assert!(bare.is_err(), "a bare table name is no longer a valid table identity");
+
+        let injected: Result<QualifiedTable, _> = serde_json::from_value(
+            serde_json::json!({"schema": "public\"; DROP TABLE users; --", "name": "dup_ipc"}),
+        );
+        let err = injected.expect_err("an injection payload in the schema must fail deserialization");
+        assert!(
+            err.to_string().contains("schema"),
+            "the error must name the offending half, got: {err}"
+        );
+
+        // Proof it stopped at the boundary rather than downstream: the table
+        // the payload would have dropped is untouched.
+        let pool = test_pool().await;
+        sqlx::query("DROP TABLE IF EXISTS injection_sentinel").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE injection_sentinel (id serial PRIMARY KEY)")
+            .execute(&pool).await.unwrap();
+        let still_there: Result<QualifiedTable, _> = serde_json::from_value(
+            serde_json::json!({"schema": "public", "name": "injection_sentinel\"; DROP TABLE injection_sentinel; --"}),
+        );
+        assert!(still_there.is_err());
+        let sentinel = QualifiedTable::new("public", "injection_sentinel").unwrap();
+        assert_eq!(count_table_rows_impl(&pool, &sentinel, &[]).await.unwrap(), 0);
+        sqlx::query("DROP TABLE injection_sentinel").execute(&pool).await.unwrap();
     }
 }

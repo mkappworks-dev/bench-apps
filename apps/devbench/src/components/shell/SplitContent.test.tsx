@@ -1,8 +1,19 @@
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, beforeAll } from "vitest";
 import { SplitContent } from "./SplitContent";
 import { useAppStore } from "../../store/useAppStore";
 import * as tauriLib from "../../lib/tauri";
+
+// DbTab renders DataGrid, which virtualizes rows via TanStack Virtual. jsdom
+// gives every element a height of 0, which makes the virtualizer compute a
+// zero-row viewport (see LogStream.test.tsx for the same fix).
+beforeAll(() => {
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: 600 });
+  Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, value: 800 });
+  Element.prototype.getBoundingClientRect = function () {
+    return { width: 800, height: 600, top: 0, left: 0, bottom: 600, right: 800, x: 0, y: 0, toJSON: () => {} };
+  };
+});
 
 function renderSplit(overrides: Partial<Parameters<typeof SplitContent>[0]> = {}) {
   return render(
@@ -10,6 +21,8 @@ function renderSplit(overrides: Partial<Parameters<typeof SplitContent>[0]> = {}
       onAddTab={() => {}}
       onPatchState={() => {}}
       onOpenDb={() => {}}
+      onOpenQuery={() => {}}
+      onCloseQueryTabs={() => {}}
       onOpenLog={() => {}}
       onOpenEmail={() => {}}
       emailFocusRequest={null}
@@ -22,9 +35,10 @@ function renderSplit(overrides: Partial<Parameters<typeof SplitContent>[0]> = {}
 
 describe("SplitContent", () => {
   beforeEach(() => {
-    useAppStore.setState({ tabs: [], activeTabId: { left: null, right: null } });
+    useAppStore.setState({ tabs: [], activeTabId: { left: null, right: null }, activeConnectionId: "c1" });
     vi.spyOn(tauriLib, "invokeListWatchedTables").mockResolvedValue([]);
-    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: [], rows: [] });
+    vi.spyOn(tauriLib, "invokeListConnections").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: [], rows: [], pk_column: null });
     vi.spyOn(tauriLib, "invokeListLogSources").mockResolvedValue([]);
   });
 
@@ -101,9 +115,15 @@ describe("SplitContent", () => {
   // both instances' fetched rows must be independently queryable even though
   // only "a" is visible.
   it("gives two simultaneously-mounted DB tabs in the same pane independent, distinctly-rendered rows", async () => {
-    const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation(async (_conn, table: string) => ({
+    // The cell value is derived from, but distinct from, the table name
+    // itself (not just `table`) — since Task 12, a table with no PK also
+    // renders its own name in a "cells are read-only" note below the grid,
+    // and a cell value identical to the table name would ambiguously match
+    // both `getByText` queries below.
+    const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockImplementation(async (_conn, table) => ({
       columns: ["table"],
-      rows: [[table]],
+      rows: [[`row-${table.name}`]],
+      pk_column: null,
     }));
     useAppStore.setState({
       tabs: [
@@ -114,10 +134,10 @@ describe("SplitContent", () => {
     });
     renderSplit();
 
-    await waitFor(() => expect(screen.getByText("orders")).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByText("payments")).toBeInTheDocument());
-    expect(listRows).toHaveBeenCalledWith(expect.anything(), "orders");
-    expect(listRows).toHaveBeenCalledWith(expect.anything(), "payments");
+    await waitFor(() => expect(screen.getByText("row-orders")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("row-payments")).toBeInTheDocument());
+    expect(listRows).toHaveBeenCalledWith(expect.anything(), { schema: "public", name: "orders" }, expect.anything());
+    expect(listRows).toHaveBeenCalledWith(expect.anything(), { schema: "public", name: "payments" }, expect.anything());
 
     // Switching which tab is active only flips the CSS class — DbTab's fetch
     // effect keys on its `table` prop, which does not change on an active-tab
@@ -127,8 +147,8 @@ describe("SplitContent", () => {
       useAppStore.getState().setActiveTabId("left", "b");
     });
     expect(listRows.mock.calls.length).toBe(callCountAfterMount);
-    expect(screen.getByText("orders")).toBeInTheDocument();
-    expect(screen.getByText("payments")).toBeInTheDocument();
+    expect(screen.getByText("row-orders")).toBeInTheDocument();
+    expect(screen.getByText("row-payments")).toBeInTheDocument();
   });
 
   // Mirrors the design invariant already relied on for Email's deep link —

@@ -1,14 +1,16 @@
 use serde::Serialize;
-use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Row};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::State;
 
-use super::db::{connection_string, validate_identifier, DbConnectInput};
+use super::db::{get_primary_key_column, validate_identifier_labeled};
 use super::history::{save_history_entry_impl, HistoryEntryInput};
 use super::request::{fire_request_impl, FireRequestInput, FireRequestOutput};
+use crate::commands::qualified_table::QualifiedTable;
+use crate::connection_registry::ConnectionRegistry;
 use crate::local_db::LocalDb;
+use crate::secrets::SecretStore;
 
 #[derive(Debug, Clone)]
 pub struct RowSnapshot {
@@ -18,13 +20,18 @@ pub struct RowSnapshot {
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct TableDiff {
+    pub schema: String,
     pub table: String,
     pub inserted: i64,
     pub updated: i64,
     pub deleted: i64,
 }
 
-pub fn diff_table_snapshots(table: &str, before: &[RowSnapshot], after: &[RowSnapshot]) -> TableDiff {
+pub fn diff_table_snapshots(
+    table: &QualifiedTable,
+    before: &[RowSnapshot],
+    after: &[RowSnapshot],
+) -> TableDiff {
     let before_map: HashMap<&str, &str> =
         before.iter().map(|r| (r.pk.as_str(), r.hash.as_str())).collect();
     let after_map: HashMap<&str, &str> =
@@ -43,45 +50,28 @@ pub fn diff_table_snapshots(table: &str, before: &[RowSnapshot], after: &[RowSna
     let deleted = before_map.keys().filter(|pk| !after_map.contains_key(*pk)).count() as i64;
 
     TableDiff {
-        table: table.to_string(),
+        schema: table.schema().to_string(),
+        table: table.name().to_string(),
         inserted,
         updated,
         deleted,
     }
 }
 
-pub async fn get_primary_key_column(pool: &Pool<Postgres>, table: &str) -> Result<String, String> {
-    let rows = sqlx::query(
-        "SELECT kcu.column_name FROM information_schema.table_constraints tc \
-         JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name \
-         WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_name = $1",
-    )
-    .bind(table)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| format!("failed to look up primary key for {table}: {e}"))?;
-
-    match rows.len() {
-        0 => Err(format!("table {table} has no single-column primary key — not watchable")),
-        1 => Ok(rows[0].get::<String, _>("column_name")),
-        _ => Err(format!("table {table} has a composite primary key — not watchable")),
-    }
-}
-
 pub async fn snapshot_table(
     pool: &Pool<Postgres>,
-    table: &str,
+    table: &crate::commands::qualified_table::QualifiedTable,
     pk_col: &str,
 ) -> Result<Vec<RowSnapshot>, String> {
-    // Validate both identifiers before using them in SQL — `table` comes straight
-    // from the frontend's `watched_tables` list with no validation upstream, and
-    // `pk_col`, while normally sourced from `information_schema` (trusted), is
-    // validated too as defense-in-depth, matching db.rs's `list_table_rows_impl`.
-    validate_identifier(table)?;
-    validate_identifier(pk_col)?;
+    // The table is validated by construction. `pk_col`, while normally sourced
+    // from `information_schema` (trusted), is validated too as defense-in-depth,
+    // matching db.rs's `list_table_rows_impl`.
+    validate_identifier_labeled("pk column", pk_col)?;
 
-    // Double-quote both identifiers as defense-in-depth after validation.
-    let sql = format!("SELECT \"{pk_col}\"::text as pk, md5(t::text) as hash FROM \"{table}\" t");
+    let sql = format!(
+        "SELECT \"{pk_col}\"::text as pk, md5(t::text) as hash FROM {} t",
+        table.quoted()
+    );
     let rows = sqlx::query(&sql)
         .fetch_all(pool)
         .await
@@ -111,8 +101,8 @@ pub struct CorrelationResult {
 /// degrade to "unable to verify" instead of failing the whole request.
 async fn snapshot_all(
     pool: &Pool<Postgres>,
-    watched_tables: &[String],
-) -> Result<Vec<(String, String, Vec<RowSnapshot>)>, String> {
+    watched_tables: &[QualifiedTable],
+) -> Result<Vec<(QualifiedTable, String, Vec<RowSnapshot>)>, String> {
     let mut snapshots = Vec::with_capacity(watched_tables.len());
     for table in watched_tables {
         let pk_col = get_primary_key_column(pool, table).await?;
@@ -124,11 +114,15 @@ async fn snapshot_all(
 
 async fn diff_all(
     pool: &Pool<Postgres>,
-    before: Vec<(String, String, Vec<RowSnapshot>)>,
+    before: Vec<(QualifiedTable, String, Vec<RowSnapshot>)>,
 ) -> Result<Vec<TableDiff>, String> {
     let mut table_diffs = Vec::with_capacity(before.len());
     for (table, pk_col, before_rows) in before {
         let after = snapshot_table(pool, &table, &pk_col).await?;
+        // `TableDiff.table` stays the bare name (never `table.to_string()`,
+        // which would be schema-qualified) — it's user-facing output, and a
+        // `public`-only user must keep seeing exactly the name they always
+        // have. `TableDiff.schema` carries the rest, for the deep link.
         let diff = diff_table_snapshots(&table, &before_rows, &after);
         if diff.inserted > 0 || diff.updated > 0 || diff.deleted > 0 {
             table_diffs.push(diff);
@@ -139,20 +133,15 @@ async fn diff_all(
 
 pub async fn run_correlated_request_impl(
     request: FireRequestInput,
-    connection: DbConnectInput,
-    watched_tables: Vec<String>,
+    pool: Option<Pool<Postgres>>,
+    watched_tables: Vec<QualifiedTable>,
     logs: &crate::log_state::LogState,
 ) -> Result<CorrelationResult, String> {
     // Everything DB-related is fallible-but-not-fatal. Only a failure to fire
     // the request itself fails the command, because without a response there
-    // is nothing to correlate against.
-    let pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&connection_string(&connection))
-        .await
-        .map_err(|e| format!("connection failed: {e}"))
-        .ok();
-
+    // is nothing to correlate against. Resolving the pool itself (including a
+    // failed connection) now happens one layer up, in the tauri command —
+    // this function just receives `None` when that failed.
     let before = match &pool {
         Some(p) => snapshot_all(p, &watched_tables).await.map_err(Some),
         None => Err(Some("connection failed".to_string())),
@@ -234,16 +223,13 @@ pub struct CorrelationWindowResult {
 /// in the past and skip the wait entirely.
 pub async fn run_correlated_request_impl_with_registry(
     request: FireRequestInput,
-    connection: DbConnectInput,
-    watched_tables: Vec<String>,
+    pool: Option<Pool<Postgres>>,
+    watched_tables: Vec<QualifiedTable>,
     logs: &LogState,
     _emails: &EmailState,
     db: &sqlx::SqlitePool,
     registry: &CorrelationRegistry,
     now_ms: i64,
-    // How long after the response to keep collecting. Comes from Settings >
-    // General; `DEFAULT_CORRELATION_WINDOW_MS` is the fallback when no row
-    // has been stored.
     window_ms: i64,
 ) -> Result<CorrelationResult, String> {
     let from_log_id = logs.next_line_id().saturating_sub(1);
@@ -257,7 +243,7 @@ pub async fn run_correlated_request_impl_with_registry(
     // adjustments) gives the request's real cost, so `now_ms + elapsed_ms +
     // window_ms` correctly measures `window_ms` from the response instead.
     let request_started_at = std::time::Instant::now();
-    let mut result = run_correlated_request_impl(request, connection, watched_tables, logs).await?;
+    let mut result = run_correlated_request_impl(request, pool, watched_tables, logs).await?;
     let elapsed_ms = request_started_at.elapsed().as_millis() as i64;
 
     result.correlation_id = registry.open(from_log_id, from_email_id, now_ms + elapsed_ms + window_ms);
@@ -360,21 +346,27 @@ pub async fn collect_correlation_window(
     .await
 }
 
-// The argument list IS the IPC surface: four `State` injections plus the
-// request payload. Collapsing it into a params struct would change the shape
-// the frontend has to invoke with, for no gain on this side.
+// The argument list IS the IPC surface: State injections plus the request
+// payload. Collapsing it into a params struct would change the shape the
+// frontend has to invoke with, for no gain on this side.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn run_correlated_request(
     db: State<'_, LocalDb>,
+    secrets: State<'_, Arc<dyn SecretStore>>,
+    connection_registry: State<'_, Arc<ConnectionRegistry>>,
     logs: State<'_, Arc<LogState>>,
     emails: State<'_, Arc<EmailState>>,
-    registry: State<'_, Arc<CorrelationRegistry>>,
+    correlation_registry: State<'_, Arc<CorrelationRegistry>>,
     request: FireRequestInput,
-    connection: DbConnectInput,
-    watched_tables: Vec<String>,
+    connection_id: String,
+    watched_tables: Vec<QualifiedTable>,
     session_id: Option<String>,
 ) -> Result<CorrelationResult, String> {
+    // A pool that fails to resolve degrades to None rather than failing the
+    // whole command — identical fallback behaviour to the pre-registry code,
+    // which caught its own connect() failure with .ok() below this line.
+    let pool = connection_registry.pool_for(&connection_id, &db.pool, secrets.as_ref()).await.ok();
     let method = request.method.clone();
     let url = request.url.clone();
     let window_ms = crate::commands::settings::get_settings_impl(&db.pool)
@@ -383,12 +375,12 @@ pub async fn run_correlated_request(
         .unwrap_or(DEFAULT_CORRELATION_WINDOW_MS);
     let mut result = run_correlated_request_impl_with_registry(
         request,
-        connection,
+        pool,
         watched_tables,
         &logs,
         &emails,
         &db.pool,
-        &registry,
+        &correlation_registry,
         chrono::Utc::now().timestamp_millis(),
         window_ms,
     )
@@ -401,8 +393,6 @@ pub async fn run_correlated_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::db::{connection_string, DbConnectInput};
-    use sqlx::postgres::PgPoolOptions;
     use crate::correlation_state::{CorrelationRegistry, DEFAULT_CORRELATION_WINDOW_MS};
     use crate::log_state::LogState;
 
@@ -410,36 +400,73 @@ mod tests {
         RowSnapshot { pk: pk.to_string(), hash: hash.to_string() }
     }
 
+    fn public(name: &str) -> crate::commands::qualified_table::QualifiedTable {
+        crate::commands::qualified_table::QualifiedTable::new("public", name).unwrap()
+    }
+
     #[test]
     fn detects_an_insert() {
         let before = vec![snap("1", "a")];
         let after = vec![snap("1", "a"), snap("2", "b")];
-        let diff = diff_table_snapshots("orders", &before, &after);
-        assert_eq!(diff, TableDiff { table: "orders".into(), inserted: 1, updated: 0, deleted: 0 });
+        let diff = diff_table_snapshots(&public("orders"), &before, &after);
+        assert_eq!(diff, TableDiff { schema: "public".into(), table: "orders".into(), inserted: 1, updated: 0, deleted: 0 });
     }
 
     #[test]
     fn detects_an_update_even_though_row_count_is_unchanged() {
         let before = vec![snap("1", "a")];
         let after = vec![snap("1", "a-changed")];
-        let diff = diff_table_snapshots("orders", &before, &after);
-        assert_eq!(diff, TableDiff { table: "orders".into(), inserted: 0, updated: 1, deleted: 0 });
+        let diff = diff_table_snapshots(&public("orders"), &before, &after);
+        assert_eq!(diff, TableDiff { schema: "public".into(), table: "orders".into(), inserted: 0, updated: 1, deleted: 0 });
     }
 
     #[test]
     fn detects_a_delete() {
         let before = vec![snap("1", "a"), snap("2", "b")];
         let after = vec![snap("1", "a")];
-        let diff = diff_table_snapshots("orders", &before, &after);
-        assert_eq!(diff, TableDiff { table: "orders".into(), inserted: 0, updated: 0, deleted: 1 });
+        let diff = diff_table_snapshots(&public("orders"), &before, &after);
+        assert_eq!(diff, TableDiff { schema: "public".into(), table: "orders".into(), inserted: 0, updated: 0, deleted: 1 });
     }
 
     #[test]
     fn reports_nothing_when_unchanged() {
         let before = vec![snap("1", "a")];
         let after = vec![snap("1", "a")];
-        let diff = diff_table_snapshots("orders", &before, &after);
-        assert_eq!(diff, TableDiff { table: "orders".into(), inserted: 0, updated: 0, deleted: 0 });
+        let diff = diff_table_snapshots(&public("orders"), &before, &after);
+        assert_eq!(diff, TableDiff { schema: "public".into(), table: "orders".into(), inserted: 0, updated: 0, deleted: 0 });
+    }
+
+    // Regression guard: a diff on a watched non-public table must carry that
+    // table's own schema, not silently read as `public` downstream — the
+    // Rollup deep-link (src/components/rollup/Rollup.tsx) has nothing else to
+    // build the correct identity from.
+    #[test]
+    fn a_diff_on_a_non_public_table_carries_that_schema() {
+        let alt_orders = crate::commands::qualified_table::QualifiedTable::new("alt", "orders").unwrap();
+        let before = vec![snap("1", "a")];
+        let after = vec![snap("1", "a"), snap("2", "b")];
+        let diff = diff_table_snapshots(&alt_orders, &before, &after);
+        assert_eq!(
+            diff,
+            TableDiff { schema: "alt".into(), table: "orders".into(), inserted: 1, updated: 0, deleted: 0 }
+        );
+    }
+
+    async fn test_pool() -> Pool<Postgres> {
+        let host = std::env::var("PGHOST").unwrap_or_else(|_| "localhost".into());
+        let database = std::env::var("PGDATABASE").unwrap_or_else(|_| "devbench_test".into());
+        let username = std::env::var("PGUSER").unwrap_or_else(|_| "postgres".into());
+        let password = std::env::var("PGPASSWORD").unwrap_or_else(|_| "postgres".into());
+        let connection_string = crate::connection_registry::postgres_connection_string(
+            &host, 5432, &database, &username, Some(&password), "disable",
+        );
+        sqlx::postgres::PgPoolOptions::new()
+            // Capped so the suite's parallel tests can't collectively exhaust
+            // Postgres's max_connections; each test needs only a handful.
+            .max_connections(4)
+            .connect(&connection_string)
+            .await
+            .expect("requires a real local Postgres — see CONTRIBUTING for setup")
     }
 
     async fn db() -> (tempfile::TempDir, LocalDb) {
@@ -448,23 +475,9 @@ mod tests {
         (dir, db)
     }
 
-    fn test_connection() -> DbConnectInput {
-        DbConnectInput {
-            host: std::env::var("PGHOST").unwrap_or_else(|_| "localhost".into()),
-            port: 5432,
-            database: std::env::var("PGDATABASE").unwrap_or_else(|_| "devbench_test".into()),
-            username: std::env::var("PGUSER").unwrap_or_else(|_| "postgres".into()),
-            password: std::env::var("PGPASSWORD").unwrap_or_else(|_| "postgres".into()),
-        }
-    }
-
     #[tokio::test]
     async fn snapshot_and_diff_detects_a_real_update() {
-        let conn = test_connection();
-        let pool = PgPoolOptions::new()
-            .connect(&connection_string(&conn))
-            .await
-            .expect("requires a real local Postgres");
+        let pool = test_pool().await;
 
         sqlx::query("DROP TABLE IF EXISTS correlation_test").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE correlation_test (id serial PRIMARY KEY, status text)")
@@ -472,37 +485,18 @@ mod tests {
         sqlx::query("INSERT INTO correlation_test (status) VALUES ('pending')")
             .execute(&pool).await.unwrap();
 
-        let pk_col = get_primary_key_column(&pool, "correlation_test").await.unwrap();
+        let pk_col = get_primary_key_column(&pool, &public("correlation_test")).await.unwrap();
         assert_eq!(pk_col, "id");
 
-        let before = snapshot_table(&pool, "correlation_test", &pk_col).await.unwrap();
+        let before = snapshot_table(&pool, &public("correlation_test"), &pk_col).await.unwrap();
         sqlx::query("UPDATE correlation_test SET status = 'shipped' WHERE id = 1")
             .execute(&pool).await.unwrap();
-        let after = snapshot_table(&pool, "correlation_test", &pk_col).await.unwrap();
+        let after = snapshot_table(&pool, &public("correlation_test"), &pk_col).await.unwrap();
 
-        let diff = diff_table_snapshots("correlation_test", &before, &after);
-        assert_eq!(diff, TableDiff { table: "correlation_test".into(), inserted: 0, updated: 1, deleted: 0 });
+        let diff = diff_table_snapshots(&public("correlation_test"), &before, &after);
+        assert_eq!(diff, TableDiff { schema: "public".into(), table: "correlation_test".into(), inserted: 0, updated: 1, deleted: 0 });
 
         sqlx::query("DROP TABLE correlation_test").execute(&pool).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn rejects_composite_primary_keys() {
-        let conn = test_connection();
-        let pool = PgPoolOptions::new()
-            .connect(&connection_string(&conn))
-            .await
-            .expect("requires a real local Postgres");
-
-        sqlx::query("DROP TABLE IF EXISTS composite_test").execute(&pool).await.unwrap();
-        sqlx::query("CREATE TABLE composite_test (tenant_id int, item_id int, val text, PRIMARY KEY (tenant_id, item_id))")
-            .execute(&pool).await.unwrap();
-
-        let result = get_primary_key_column(&pool, "composite_test").await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("composite primary key"));
-
-        sqlx::query("DROP TABLE composite_test").execute(&pool).await.unwrap();
     }
 
     // Deliberately does NOT insert the "side effect" row before calling
@@ -514,11 +508,7 @@ mod tests {
     // after-snapshot.
     #[tokio::test]
     async fn run_correlated_request_reports_only_tables_that_actually_changed() {
-        let conn = test_connection();
-        let pool = PgPoolOptions::new()
-            .connect(&connection_string(&conn))
-            .await
-            .expect("requires a real local Postgres");
+        let pool = test_pool().await;
 
         sqlx::query("DROP TABLE IF EXISTS orders_e2e").execute(&pool).await.unwrap();
         sqlx::query("DROP TABLE IF EXISTS untouched_e2e").execute(&pool).await.unwrap();
@@ -528,7 +518,7 @@ mod tests {
             .execute(&pool).await.unwrap();
 
         let mut server = mockito::Server::new_async().await;
-        let insert_conn_str = connection_string(&conn);
+        let insert_pool = pool.clone();
         let mock = server
             .mock("POST", "/orders")
             .with_status(201)
@@ -549,18 +539,13 @@ mod tests {
             // timing race. (Canonical explanation for this hazard — other tests
             // below just reference this comment.)
             .with_body_from_request(move |_request| {
-                let conn_str = insert_conn_str.clone();
+                let insert_pool = insert_pool.clone();
                 std::thread::spawn(move || {
                     let rt = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
                         .expect("failed to build throwaway runtime for synchronized insert");
                     rt.block_on(async {
-                        let insert_pool = PgPoolOptions::new()
-                            .max_connections(1)
-                            .connect(&conn_str)
-                            .await
-                            .expect("insert thread requires a real local Postgres");
                         sqlx::query("INSERT INTO orders_e2e (status) VALUES ('pending')")
                             .execute(&insert_pool)
                             .await
@@ -580,8 +565,8 @@ mod tests {
                 url: format!("{}/orders", server.url()),
                 body: None,
             },
-            conn,
-            vec!["orders_e2e".to_string(), "untouched_e2e".to_string()],
+            Some(pool.clone()),
+            vec![public("orders_e2e"), public("untouched_e2e")],
             &crate::log_state::LogState::new(),
         )
         .await
@@ -598,27 +583,21 @@ mod tests {
         sqlx::query("DROP TABLE untouched_e2e").execute(&pool).await.unwrap();
     }
 
-    #[tokio::test]
-    async fn snapshot_table_rejects_a_malicious_table_name() {
-        let conn = test_connection();
-        let pool = PgPoolOptions::new()
-            .connect(&connection_string(&conn))
-            .await
-            .expect("requires a real local Postgres");
-
-        let result = snapshot_table(&pool, "orders; DROP TABLE users; --", "id").await;
-        assert!(result.is_err(), "should reject malicious table name before executing SQL");
+    // `snapshot_table` now takes a `&QualifiedTable`, so a malicious table
+    // name can no longer be passed to it at all — the guarantee moved from a
+    // runtime check inside `snapshot_table` to `QualifiedTable::new`.
+    #[test]
+    fn a_malicious_table_name_cannot_construct_a_qualified_table() {
+        let result =
+            crate::commands::qualified_table::QualifiedTable::new("public", "orders; DROP TABLE users; --");
+        assert!(result.is_err(), "should reject malicious table name before it can reach SQL");
     }
 
     #[tokio::test]
     async fn snapshot_table_rejects_a_malicious_pk_column() {
-        let conn = test_connection();
-        let pool = PgPoolOptions::new()
-            .connect(&connection_string(&conn))
-            .await
-            .expect("requires a real local Postgres");
+        let pool = test_pool().await;
 
-        let result = snapshot_table(&pool, "orders", "id; DROP TABLE users; --").await;
+        let result = snapshot_table(&pool, &public("orders"), "id; DROP TABLE users; --").await;
         assert!(result.is_err(), "should reject malicious pk column name before executing SQL");
     }
 
@@ -630,11 +609,7 @@ mod tests {
     // resolves the real, case-sensitive table.
     #[tokio::test]
     async fn snapshot_table_works_with_a_mixed_case_table_name_needing_quoting() {
-        let conn = test_connection();
-        let pool = PgPoolOptions::new()
-            .connect(&connection_string(&conn))
-            .await
-            .expect("requires a real local Postgres");
+        let pool = test_pool().await;
 
         sqlx::query("DROP TABLE IF EXISTS \"MixedCaseTable\"").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE \"MixedCaseTable\" (id serial PRIMARY KEY, val text)")
@@ -643,7 +618,7 @@ mod tests {
             .unwrap();
         sqlx::query("INSERT INTO \"MixedCaseTable\" (val) VALUES ('x')").execute(&pool).await.unwrap();
 
-        let snapshot = snapshot_table(&pool, "MixedCaseTable", "id").await.unwrap();
+        let snapshot = snapshot_table(&pool, &public("MixedCaseTable"), "id").await.unwrap();
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].pk, "1");
 
@@ -683,7 +658,6 @@ mod tests {
     async fn full_correlated_request_flow_persists_a_history_entry() {
         let dir = tempfile::tempdir().unwrap();
         let db = LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
-        let conn = test_connection();
 
         let mut server = mockito::Server::new_async().await;
         let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
@@ -692,7 +666,7 @@ mod tests {
         let request = FireRequestInput { method: "GET".to_string(), url: url.clone(), body: None };
         let method = request.method.clone();
 
-        let result = run_correlated_request_impl(request, conn, vec![], &crate::log_state::LogState::new()).await.unwrap();
+        let result = run_correlated_request_impl(request, None, vec![], &crate::log_state::LogState::new()).await.unwrap();
         save_correlation_history(&db.pool, &method, &url, &result.response, None).await;
 
         mock.assert_async().await;
@@ -757,8 +731,6 @@ mod tests {
     // an explicit "unable to verify" — never a silent, false "0 writes".
     #[tokio::test]
     async fn a_db_failure_still_returns_the_response_and_reports_unable_to_verify() {
-        let conn = test_connection();
-
         let mut server = mockito::Server::new_async().await;
         let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
 
@@ -768,8 +740,8 @@ mod tests {
                 url: format!("{}/ping", server.url()),
                 body: None,
             },
-            conn,
-            vec!["table_that_does_not_exist_anywhere".to_string()],
+            None,
+            vec![public("table_that_does_not_exist_anywhere")],
             &crate::log_state::LogState::new(),
         )
         .await
@@ -784,13 +756,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_successful_diff_reports_an_empty_vec_not_a_null() {
-        let conn = test_connection();
+        let pool = test_pool().await;
         let mut server = mockito::Server::new_async().await;
         let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
 
         let result = run_correlated_request_impl(
             FireRequestInput { method: "GET".to_string(), url: format!("{}/ping", server.url()), body: None },
-            conn,
+            Some(pool.clone()),
             vec![],
             &crate::log_state::LogState::new(),
         )
@@ -804,7 +776,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_correlated_request_opens_a_window_that_can_be_collected() {
-        let conn = test_connection();
+        let pool = test_pool().await;
         let logs = LogState::new();
         let emails = EmailState::new();
         let registry = CorrelationRegistry::new();
@@ -836,7 +808,7 @@ mod tests {
 
         let result = run_correlated_request_impl_with_registry(
             FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), body: None },
-            conn,
+            Some(pool.clone()),
             vec![],
             &logs,
             &emails,
@@ -876,7 +848,6 @@ mod tests {
 
     #[tokio::test]
     async fn collecting_a_window_with_no_log_source_reports_not_observed_rather_than_zero() {
-        let conn = test_connection();
         let logs = LogState::new();
         let emails = EmailState::new();
         let registry = CorrelationRegistry::new();
@@ -887,7 +858,7 @@ mod tests {
 
         let result = run_correlated_request_impl_with_registry(
             FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
-            conn,
+            None,
             vec![],
             &logs,
             &emails,
@@ -956,7 +927,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_correlation_window_captures_mail_sent_during_the_request() {
-        let conn = test_connection();
+        let pool = test_pool().await;
         let logs = LogState::new();
         let emails = listening_email_state();
         let registry = CorrelationRegistry::new();
@@ -1005,7 +976,7 @@ mod tests {
 
         let result = run_correlated_request_impl_with_registry(
             FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), body: None },
-            conn,
+            Some(pool.clone()),
             vec![],
             &logs,
             &emails,
@@ -1047,7 +1018,7 @@ mod tests {
     // 100` — comfortably includes it.
     #[tokio::test]
     async fn a_slow_request_does_not_shrink_its_own_correlation_window() {
-        let conn = test_connection();
+        let pool = test_pool().await;
         let logs = LogState::new();
         let emails = listening_email_state();
         let registry = CorrelationRegistry::new();
@@ -1100,7 +1071,7 @@ mod tests {
         let started_at_ms = chrono::Utc::now().timestamp_millis();
         let result = run_correlated_request_impl_with_registry(
             FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), body: None },
-            conn,
+            Some(pool.clone()),
             vec![],
             &logs,
             &emails,
@@ -1141,7 +1112,7 @@ mod tests {
 
     #[tokio::test]
     async fn mail_sent_before_the_request_is_not_attributed_to_it() {
-        let conn = test_connection();
+        let pool = test_pool().await;
         let logs = LogState::new();
         let emails = listening_email_state();
         let registry = CorrelationRegistry::new();
@@ -1162,7 +1133,7 @@ mod tests {
 
         let result = run_correlated_request_impl_with_registry(
             FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
-            conn,
+            Some(pool.clone()),
             vec![],
             &logs,
             &emails,
@@ -1192,7 +1163,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_stopped_catcher_reports_emails_as_not_observed_rather_than_zero() {
-        let conn = test_connection();
+        let pool = test_pool().await;
         let logs = LogState::new();
         let emails = EmailState::new();
         emails.set_status(crate::email_state::SmtpStatus {
@@ -1208,7 +1179,7 @@ mod tests {
 
         let result = run_correlated_request_impl_with_registry(
             FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
-            conn,
+            Some(pool.clone()),
             vec![],
             &logs,
             &emails,
@@ -1244,7 +1215,7 @@ mod tests {
     // distinguishes them.
     #[tokio::test]
     async fn the_window_length_comes_from_the_caller_not_a_hardcoded_constant() {
-        let conn = test_connection();
+        let pool = test_pool().await;
         let logs = LogState::new();
         let emails = listening_email_state();
         let registry = CorrelationRegistry::new();
@@ -1293,7 +1264,7 @@ mod tests {
 
         let result = run_correlated_request_impl_with_registry(
             FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
-            conn,
+            Some(pool.clone()),
             vec![],
             &logs,
             &emails,
@@ -1326,7 +1297,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_completed_window_links_its_captured_emails_to_the_request_that_sent_them() {
-        let conn = test_connection();
+        let pool = test_pool().await;
         let logs = LogState::new();
         let emails = listening_email_state();
         let registry = CorrelationRegistry::new();
@@ -1368,7 +1339,7 @@ mod tests {
 
         let result = run_correlated_request_impl_with_registry(
             FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), body: None },
-            conn,
+            Some(pool.clone()),
             vec![],
             &logs,
             &emails,
@@ -1416,7 +1387,7 @@ mod tests {
     // one email inside the window, one outside it.
     #[tokio::test]
     async fn mail_outside_the_window_is_never_linked_to_a_request_that_did_not_send_it() {
-        let conn = test_connection();
+        let pool = test_pool().await;
         let logs = LogState::new();
         let emails = listening_email_state();
         let registry = CorrelationRegistry::new();
@@ -1472,7 +1443,7 @@ mod tests {
 
         let result = run_correlated_request_impl_with_registry(
             FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
-            conn,
+            Some(pool.clone()),
             vec![],
             &logs,
             &emails,

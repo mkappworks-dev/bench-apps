@@ -1,9 +1,11 @@
 pub mod commands;
+pub mod connection_registry;
 pub mod correlation_state;
 pub mod email_state;
 pub mod local_db;
 pub mod log_state;
 pub mod mcp_client;
+pub mod preview_state;
 pub mod secrets;
 pub mod smtp_catcher;
 pub mod startup_state;
