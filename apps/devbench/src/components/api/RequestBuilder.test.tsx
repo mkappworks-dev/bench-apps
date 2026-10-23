@@ -332,4 +332,36 @@ describe("RequestBuilder", () => {
     expect(screen.getByPlaceholderText("value")).toHaveValue("2");
   });
 
+  it("keeps incomplete param rows editable while only persisting named params", async () => {
+    const invoked = vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
+      correlation_id: "draft", history_id: null, response: { status_code: 200, headers: [], body: "{}", duration_ms: 1 }, table_diffs: [], db_error: null,
+    });
+    render(<Composer onResult={() => {}} />);
+    const url = screen.getByPlaceholderText("/api/orders");
+    fireEvent.change(url, { target: { value: "/orders#frag" } });
+    fireEvent.click(screen.getByText("Params"));
+    fireEvent.click(screen.getByRole("button", { name: "Add param" }));
+    const value = screen.getByPlaceholderText("value");
+    fireEvent.change(value, { target: { value: "pending" } });
+    const key = screen.getByPlaceholderText("key");
+    fireEvent.change(key, { target: { value: "status" } });
+    expect(url).toHaveValue("/orders?status=pending#frag");
+    key.focus();
+    fireEvent.change(key, { target: { value: "" } });
+    expect(key).toHaveFocus();
+    expect(value).toHaveValue("pending");
+    expect(url).toHaveValue("/orders#frag");
+    fireEvent.change(key, { target: { value: "status" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add param" }));
+    expect(screen.getAllByPlaceholderText("key")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(invoked).toHaveBeenCalled());
+    expect(invoked.mock.calls[0][0].request.url).toBe("/orders?status=pending#frag");
+    fireEvent.change(url, { target: { value: "/other?limit=2" } });
+    expect(screen.getAllByPlaceholderText("key")).toHaveLength(1);
+    expect(screen.getByPlaceholderText("key")).toHaveValue("limit");
+    fireEvent.change(url, { target: { value: "/orders?status=pending#frag" } });
+    expect(screen.getAllByPlaceholderText("key")).toHaveLength(1);
+  });
+
 });

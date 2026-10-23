@@ -41,12 +41,16 @@ export function RequestBuilder({
   const [bodyType, setBodyType] = useState<BodyType>("none");
   const [auth, setAuth] = useState<AuthState>(DEFAULT_AUTH);
   const [activeReqTab, setActiveReqTab] = useState<ReqTab>("headers");
+  const [paramsDraft, setParamsDraft] = useState<{ url: string; rows: KeyValueRow[] } | null>(null);
   const [sending, setSending] = useState(false);
 
-  const { base, params } = splitUrlAndParams(url);
+  const { base, params: parsedParams, fragment } = splitUrlAndParams(url);
+  const params = paramsDraft?.url === url ? paramsDraft.rows : parsedParams;
 
   function handleParamsChange(rows: KeyValueRow[]) {
-    onPatchState({ url: joinUrlAndParams(base, rows) });
+    const nextUrl = joinUrlAndParams(base, rows, fragment);
+    setParamsDraft({ url: nextUrl, rows });
+    onPatchState({ url: nextUrl });
   }
 
   function buildHeaders(): HeaderPair[] {
@@ -61,8 +65,8 @@ export function RequestBuilder({
   function buildUrl(): string {
     const authParam = resolveAuthQueryParam(auth);
     if (!authParam) return url;
-    const { base: b, params: p } = splitUrlAndParams(url);
-    return joinUrlAndParams(b, [...p, { key: authParam.key, value: authParam.value }]);
+    const { base: b, params: p, fragment: f } = splitUrlAndParams(url);
+    return joinUrlAndParams(b, [...p, { key: authParam.key, value: authParam.value }], f);
   }
 
   async function handleSend() {
@@ -107,7 +111,10 @@ export function RequestBuilder({
         />
         <input
           value={url}
-          onChange={(e) => onPatchState({ url: e.target.value })}
+          onChange={(e) => {
+            setParamsDraft(null);
+            onPatchState({ url: e.target.value });
+          }}
           placeholder="/api/orders"
           className="flex-1 rounded-sm border border-border bg-bg px-2.5 py-2 font-mono text-text"
         />
