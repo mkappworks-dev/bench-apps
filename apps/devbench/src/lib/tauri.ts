@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { tableCountCache } from "./tableCountCache";
 
 export interface DbInitError {
   db_path: string;
@@ -254,7 +255,10 @@ export function invokeApplyChanges(
   changes: PendingChange[],
 ): Promise<ApplyOutcome> {
   const wireChanges = changes.map(({ connection_id: _, ...change }) => change);
-  return invoke("apply_changes", { connectionId, changes: wireChanges });
+  return invoke<ApplyOutcome>("apply_changes", { connectionId, changes: wireChanges }).then((outcome) => {
+    if (outcome.applied > 0) tableCountCache.invalidateConnection(connectionId);
+    return outcome;
+  });
 }
 
 /** `null` means the key points at no row — spec §8's "No matching row in …",
@@ -490,11 +494,14 @@ export function invokeCreateConnection(input: ConnectionInput): Promise<Connecti
 }
 
 export function invokeUpdateConnection(id: string, input: ConnectionInput): Promise<ConnectionSummary> {
-  return invoke("update_connection", { id, input });
+  return invoke<ConnectionSummary>("update_connection", { id, input }).then((connection) => {
+    tableCountCache.invalidateConnection(id);
+    return connection;
+  });
 }
 
 export function invokeDeleteConnection(id: string): Promise<void> {
-  return invoke("delete_connection", { id });
+  return invoke<void>("delete_connection", { id }).then(() => tableCountCache.invalidateConnection(id));
 }
 
 export function invokeSetConnectionPassword(id: string, password: string): Promise<void> {

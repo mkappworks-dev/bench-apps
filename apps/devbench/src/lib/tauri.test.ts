@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   invokeApplyChanges,
+  invokeUpdateConnection,
+  invokeDeleteConnection,
   invokeClearEmails,
   invokeCollectCorrelationWindow,
   invokeCountTableRows,
@@ -12,6 +14,7 @@ import {
   invokeSetWatchedTable,
 } from "./tauri";
 import type { PendingChange } from "./pendingChanges";
+import { tableCountCache } from "./tableCountCache";
 
 /**
  * Asserts raw `invoke` payloads rather than spying on the wrappers, because
@@ -28,6 +31,32 @@ import type { PendingChange } from "./pendingChanges";
  */
 
 const invoked = vi.mocked(invoke);
+
+describe("count invalidation at the IPC boundary", () => {
+  const table = { schema: "public", name: "count_invalidation" };
+  const input = { name: "dev", engine: "postgres", host: "localhost", port: 5432, database: "demo", username: "postgres", sslmode: "disable" };
+
+  it.each(["apply", "update", "delete"] as const)("invalidates only the affected connection after successful %s", async (operation) => {
+    tableCountCache.invalidateConnection("cache-c1");
+    tableCountCache.invalidateConnection("cache-c2");
+    await tableCountCache.get(null, "cache-c1", table, [], () => Promise.resolve(1));
+    await tableCountCache.get(null, "cache-c2", table, [], () => Promise.resolve(2));
+    invoked.mockResolvedValueOnce({ applied: 1, conflict: null });
+    if (operation === "apply") await invokeApplyChanges("cache-c1", []);
+    if (operation === "update") await invokeUpdateConnection("cache-c1", input);
+    if (operation === "delete") await invokeDeleteConnection("cache-c1");
+    expect(await tableCountCache.get(null, "cache-c1", table, [], () => Promise.resolve(10))).toBe(10);
+    expect(await tableCountCache.get(null, "cache-c2", table, [], () => Promise.resolve(20))).toBe(2);
+  });
+
+  it("keeps a valid cached count after a rejected Apply", async () => {
+    tableCountCache.invalidateConnection("cache-c1");
+    await tableCountCache.get(null, "cache-c1", table, [], () => Promise.resolve(1));
+    invoked.mockRejectedValueOnce(new Error("offline"));
+    await expect(invokeApplyChanges("cache-c1", [])).rejects.toThrow("offline");
+    expect(await tableCountCache.get(null, "cache-c1", table, [], () => Promise.resolve(10))).toBe(1);
+  });
+});
 
 describe("invokeApplyChanges", () => {
   it("sends only Rust change fields for every variant without mutating staged entries", async () => {

@@ -53,7 +53,7 @@ export function GridToolbar({
   sort: SortTerm[];
   onSortChange: (sort: SortTerm[]) => void;
   page: number;
-  pageCount: number;
+  pageCount: number | null;
   onPageChange: (page: number) => void;
   limit: number;
   onLimitChange: (limit: number) => void;
@@ -144,6 +144,7 @@ export function GridToolbar({
   }
 
   function commitPage() {
+    if (pageCount === null) return;
     const parsed = Number.parseInt(pageField, 10);
     // Out of range clamps rather than erroring — a page beyond the end is a
     // typo, not a request for an empty grid.
@@ -211,11 +212,11 @@ export function GridToolbar({
             onBlur={commitPage}
             className="h-6 w-8.5 rounded-sm border border-border bg-bg text-center font-mono text-xs text-text"
           />
-          <span className="whitespace-nowrap px-1.5">of {pageCount}</span>
+          <span className="whitespace-nowrap px-1.5">of {pageCount ?? "—"}</span>
           <button
             type="button"
             aria-label="Next page"
-            disabled={page >= pageCount}
+            disabled={pageCount === null || page >= pageCount}
             onClick={() => onPageChange(page + 1)}
             className="inline-flex h-6 w-5.5 items-center justify-center rounded-sm hover:bg-surface-2 hover:text-text disabled:opacity-40"
           >

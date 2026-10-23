@@ -7,6 +7,7 @@ import { FkLinkButton, FkPopover } from "./grid/FkPopover";
 import { readLayout, writeLayout, type GridLayout } from "./grid/gridLayout";
 import { SecondaryButton } from "../ui/SecondaryButton";
 import { normalizeTable, tableKey } from "../../lib/tableIdentity";
+import { tableCountCache } from "../../lib/tableCountCache";
 import {
   invokeListTableRows,
   invokeCountTableRows,
@@ -91,6 +92,7 @@ export function DbTab({
 }) {
   const table = normalizeTable(tableProp);
   const activeConnectionId = useAppStore((s) => s.activeConnectionId);
+  const activeSessionId = useAppStore((s) => s.activeSessionId);
   const setActiveConnectionId = useAppStore((s) => s.setActiveConnectionId);
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
   const setDockPanel = useAppStore((s) => s.setDockPanel);
@@ -118,7 +120,7 @@ export function DbTab({
   const [page, setPage] = useState(0);
   const [filter, setFilter] = useState<FilterCondition[]>([]);
   const [limit, setLimit] = useState(100);
-  const [total, setTotal] = useState(0);
+  const [total, setTotal] = useState<number | null>(null);
 
   const limitRef = useRef(limit);
 
@@ -149,12 +151,13 @@ export function DbTab({
     const requestId = ++requestIdRef.current;
     setLoading(true);
     setError(null);
-    void invokeCountTableRows(connId, t, activeFilter)
+    setTotal(null);
+    void tableCountCache.get(activeSessionId, connId, t, activeFilter, () => invokeCountTableRows(connId, t, activeFilter))
       .then((n) => {
         if (requestId === requestIdRef.current) setTotal(n);
       })
       .catch(() => {
-        if (requestId === requestIdRef.current) setTotal(0);
+        if (requestId === requestIdRef.current) setTotal(null);
       });
     try {
       const result = await invokeListTableRows(connId, t, {
@@ -188,7 +191,7 @@ export function DbTab({
     setFilter(jumpFilter);
     setLimit(100);
     limitRef.current = 100;
-    setTotal(0);
+    setTotal(null);
     setTableRows(null);
     setLastKnownColumns([]);
     setError(null);
@@ -200,7 +203,7 @@ export function DbTab({
     }
     // table is re-wrapped into a fresh object each render, so keying on tableKey(table) avoids re-fetching every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [table ? tableKey(table) : null, activeConnectionId]);
+  }, [table ? tableKey(table) : null, activeConnectionId, activeSessionId]);
 
   useEffect(() => {
     if (!table || !activeConnectionId) {
@@ -647,7 +650,7 @@ export function DbTab({
                           void fetchRows(table!, activeConnectionId!, filter, next, 0, limitRef.current);
                         }}
                         page={page + 1}
-                        pageCount={Math.max(1, Math.ceil(total / limit))}
+                        pageCount={total === null ? null : Math.max(1, Math.ceil(total / limit))}
                         onPageChange={(next) => {
                           abandonEditForQueryChange();
                           setPage(next - 1);
@@ -663,6 +666,7 @@ export function DbTab({
                         }}
                         onRefresh={() => {
                           abandonEditForQueryChange();
+                          tableCountCache.invalidateTable(activeConnectionId!, table!);
                           void fetchRows(table!, activeConnectionId!, filter, sort, page, limitRef.current);
                         }}
                         onInsert={() => {
