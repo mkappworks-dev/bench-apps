@@ -596,4 +596,35 @@ mod tests {
         sqlx::query("DROP TABLE gr_ref.gr_xs_customers").execute(&pool).await.unwrap();
         sqlx::query("DROP SCHEMA gr_ref").execute(&pool).await.unwrap();
     }
+    #[tokio::test]
+    async fn typed_fk_filters_match_the_popover_for_noncanonical_values() {
+        use crate::commands::db::{count_table_rows_impl, list_table_rows_impl};
+        use crate::commands::db_filter::FilterCondition;
+        let pool = test_pool().await;
+        let tiny = format!("0.{}1", "0".repeat(199));
+        for (name, ty, value) in [
+            ("polish_fk_time", "timestamptz", "2026-08-01T14:00:00+02:00"),
+            ("polish_fk_float", "float8", tiny.as_str()),
+            ("polish_fk_empty", "text", ""),
+            ("polish_fk_hostile", "text", "x'; DROP TABLE polish_fk_hostile; --"),
+        ] {
+            let target = public(name);
+            let source = public(&format!("{name}_source"));
+            sqlx::query(&format!("DROP TABLE IF EXISTS {}", source.quoted())).execute(&pool).await.unwrap();
+            sqlx::query(&format!("DROP TABLE IF EXISTS {}", target.quoted())).execute(&pool).await.unwrap();
+            sqlx::query(&format!("CREATE TABLE {} (id {ty} PRIMARY KEY)", target.quoted())).execute(&pool).await.unwrap();
+            sqlx::query(&format!("CREATE TABLE {} (id int PRIMARY KEY, target_id {ty} REFERENCES {}(id))", source.quoted(), target.quoted())).execute(&pool).await.unwrap();
+            sqlx::query(&format!("INSERT INTO {} VALUES ($1::{ty})", target.quoted())).bind(value).execute(&pool).await.unwrap();
+            let found = get_referenced_row_impl(&pool, &source, "target_id", value).await.unwrap().unwrap();
+            let filter: FilterCondition = serde_json::from_value(serde_json::json!({
+                "column": "id", "op": "eq_typed", "value": value, "enabled": true,
+            })).unwrap();
+            let rows = list_table_rows_impl(&pool, &target, &[filter.clone()], &[], 100, 0).await.unwrap();
+            assert_eq!(rows.rows, found.rows, "popover and jump disagree for {name}");
+            assert_eq!(count_table_rows_impl(&pool, &target, &[filter]).await.unwrap(), 1);
+            sqlx::query(&format!("DROP TABLE {}", source.quoted())).execute(&pool).await.unwrap();
+            sqlx::query(&format!("DROP TABLE {}", target.quoted())).execute(&pool).await.unwrap();
+        }
+    }
+
 }

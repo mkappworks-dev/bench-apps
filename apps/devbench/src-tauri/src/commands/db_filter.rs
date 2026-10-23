@@ -1,4 +1,8 @@
 use serde::Deserialize;
+use std::collections::BTreeMap;
+use sqlx::PgPool;
+use crate::commands::qualified_table::QualifiedTable;
+use crate::commands::db::get_column_type;
 
 use crate::commands::db::validate_identifier_labeled;
 
@@ -7,6 +11,7 @@ use crate::commands::db::validate_identifier_labeled;
 #[serde(rename_all = "snake_case")]
 pub enum FilterOp {
     Eq,
+    EqTyped,
     Ne,
     Gt,
     Lt,
@@ -59,6 +64,30 @@ pub fn compile_filter(
     conditions: &[FilterCondition],
     first_param_index: usize,
 ) -> Result<CompiledFilter, String> {
+    compile_filter_with_types(conditions, first_param_index, &BTreeMap::new())
+}
+
+pub async fn compile_filter_for_table(
+    pool: &PgPool,
+    table: &QualifiedTable,
+    conditions: &[FilterCondition],
+    first_param_index: usize,
+) -> Result<CompiledFilter, String> {
+    let mut types = BTreeMap::new();
+    for condition in conditions.iter().filter(|c| c.enabled && c.op == FilterOp::EqTyped && c.value.is_some()) {
+        validate_identifier_labeled("filter column", &condition.column)?;
+        let udt = get_column_type(pool, table, &condition.column).await?;
+        validate_identifier_labeled("filter column type", &udt)?;
+        types.insert(condition.column.clone(), udt);
+    }
+    compile_filter_with_types(conditions, first_param_index, &types)
+}
+
+fn compile_filter_with_types(
+    conditions: &[FilterCondition],
+    first_param_index: usize,
+    types: &BTreeMap<String, String>,
+) -> Result<CompiledFilter, String> {
     let mut clauses: Vec<String> = Vec::new();
     let mut params: Vec<String> = Vec::new();
     let mut next = first_param_index;
@@ -69,7 +98,7 @@ pub fn compile_filter(
         }
         // An unfinished rule is inert rather than an error — the UI lets one
         // exist while the user is still typing it.
-        if condition.op.takes_value() && condition.value.as_deref().unwrap_or("").is_empty() {
+        if condition.op.takes_value() && (condition.value.is_none() || (condition.op != FilterOp::EqTyped && condition.value.as_deref() == Some(""))) {
             continue;
         }
         validate_identifier_labeled("filter column", &condition.column)?;
@@ -80,12 +109,15 @@ pub fn compile_filter(
             FilterOp::IsNotNull => format!("{column} IS NOT NULL"),
             FilterOp::IsTrue => format!("{column} IS TRUE"),
             FilterOp::IsFalse => format!("{column} IS FALSE"),
-            // Every value arrives as a Rust String, so sqlx declares each
-            // placeholder as TEXT. Postgres will not implicitly cast TEXT for
-            // operator resolution, so `"id" = $1` against an int column is a
-            // hard error. The cast therefore has to happen in the SQL, on the
-            // column side: comparing string representations is correct for any
-            // column type and a no-op for one that is already text.
+            FilterOp::EqTyped => {
+                let udt = types.get(&condition.column).ok_or_else(|| "typed equality requires resolved column metadata".to_string())?;
+                validate_identifier_labeled("filter column type", udt)?;
+                params.push(condition.value.clone().unwrap_or_default());
+                let clause = format!("{column} = ${next}::{udt}");
+                next += 1;
+                clause
+            }
+            // Ordinary filters retain display-text semantics; FK jumps opt into typed equality.
             FilterOp::Eq | FilterOp::Ne => {
                 let operator = if condition.op == FilterOp::Eq { "=" } else { "<>" };
                 params.push(condition.value.clone().unwrap_or_default());

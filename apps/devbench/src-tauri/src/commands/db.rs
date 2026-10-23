@@ -203,7 +203,7 @@ pub async fn list_table_rows_impl(
     let pk_column = get_primary_key_column(pool, table).await.ok();
 
     // Filter params take $1..$n, so limit and offset follow them.
-    let compiled = crate::commands::db_filter::compile_filter(filter, 1)?;
+    let compiled = crate::commands::db_filter::compile_filter_for_table(pool, table, filter, 1).await?;
     let limit_index = compiled.params.len() + 1;
     let offset_index = compiled.params.len() + 2;
 
@@ -248,7 +248,7 @@ pub async fn count_table_rows_impl(
     table: &crate::commands::qualified_table::QualifiedTable,
     filter: &[crate::commands::db_filter::FilterCondition],
 ) -> Result<i64, String> {
-    let compiled = crate::commands::db_filter::compile_filter(filter, 1)?;
+    let compiled = crate::commands::db_filter::compile_filter_for_table(pool, table, filter, 1).await?;
     let sql = format!("SELECT COUNT(*) AS n FROM {}{}", table.quoted(), compiled.where_sql);
 
     let mut query = sqlx::query(&sql);

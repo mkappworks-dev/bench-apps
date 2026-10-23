@@ -273,7 +273,7 @@ export function DbTab({
     const targetTable: QualifiedTable = { schema: target.schema, name: target.table };
     const targetKey = tableKey(targetTable);
     const jumpFilter: FilterCondition[] = [
-      { column: target.column, op: "eq", value, enabled: true },
+      { column: target.column, op: "eq_typed", value, enabled: true },
     ];
 
     closeFk();

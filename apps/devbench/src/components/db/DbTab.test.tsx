@@ -75,7 +75,7 @@ describe("DbTab", () => {
       rows: [["1", "true", "false"]], pk_column: "id",
     });
     renderDb(ORDERS);
-    const label = await screen.findByRole("button", { name: "true", exact: true });
+    const label = await screen.findByRole("button", { name: "true" });
     expect(screen.getAllByRole("checkbox")).toHaveLength(1);
     fireEvent.click(label);
     expect(screen.getByRole("textbox", { name: "Edit label" })).toHaveValue("true");
@@ -674,7 +674,7 @@ describe("DbTab", () => {
         "c1",
         { schema: "public", name: "users" },
         expect.objectContaining({
-          filter: [{ column: "id", op: "eq", value: "usr_88", enabled: true }],
+          filter: [{ column: "id", op: "eq_typed", value: "usr_88", enabled: true }],
           orderBy: [],
           offset: 0,
         }),
@@ -729,7 +729,7 @@ describe("DbTab", () => {
         "c1",
         ORDERS,
         expect.objectContaining({
-          filter: [{ column: "id", op: "eq", value: "e1", enabled: true }],
+          filter: [{ column: "id", op: "eq_typed", value: "e1", enabled: true }],
         }),
       ),
     );

@@ -1,6 +1,7 @@
 /** Wire-compatible with the Rust `FilterOp` (serde snake_case). */
 export type FilterOp =
   | "eq"
+  | "eq_typed"
   | "ne"
   | "gt"
   | "lt"
@@ -31,6 +32,7 @@ export const VALUELESS_OPS: FilterOp[] = ["is_null", "is_not_null", "is_true", "
 
 export const OP_LABELS: Record<FilterOp, string> = {
   eq: "=",
+  eq_typed: "=",
   ne: "≠",
   gt: ">",
   lt: "<",
@@ -56,6 +58,7 @@ export const OPERATORS_FOR_FAMILY: Record<ColumnFamily, FilterOp[]> = {
 /** A condition the backend will skip: unticked, or needing a value it lacks. */
 export function isActiveCondition(condition: FilterCondition): boolean {
   if (!condition.enabled) return false;
+  if (condition.op === "eq_typed") return condition.value !== null;
   if (VALUELESS_OPS.includes(condition.op)) return true;
   return (condition.value ?? "").trim() !== "";
 }
