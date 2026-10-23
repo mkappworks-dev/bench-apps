@@ -32,7 +32,6 @@ target/
 .claude/worktrees/
 
 # Superpowers scratch workspace and visual-companion session files
-
 .superpowers/
 
 # Playwright MCP scratch output (screenshots/snapshots from ad-hoc verification)

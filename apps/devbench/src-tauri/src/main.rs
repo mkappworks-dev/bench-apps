@@ -18,6 +18,7 @@ const LOG_POLL_INTERVAL_MS: u64 = 250;
 /// than PREVIEW_TIMEOUT_MS, so an abandoned preview is never held much
 /// longer than the timeout itself implies.
 const PREVIEW_SWEEP_INTERVAL_MS: u64 = 15_000;
+
 /// How often unflushed log lines are batch-written to SQLite. Slower than
 /// LOG_POLL_INTERVAL_MS on purpose — this is a durability sweep, not a
 /// latency-sensitive one; Live mode reads the in-memory buffers directly.
@@ -115,7 +116,6 @@ fn main() {
                     None
                 }
             };
-
 
             // One background task polls every FILE source. Command sources
             // capture via their own reader tasks, started when they're

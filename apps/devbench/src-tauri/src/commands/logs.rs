@@ -956,7 +956,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migration_0006_creates_usable_log_sources_and_log_lines_tables() {
+    async fn migration_0009_creates_usable_log_sources_and_log_lines_tables() {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::local_db::LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
 
