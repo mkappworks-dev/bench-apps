@@ -4,6 +4,7 @@ import { DataGrid } from "./DataGrid";
 import { SecondaryButton } from "../ui/SecondaryButton";
 import { useAppStore, type Tab } from "../../store/useAppStore";
 import { savedQueryById } from "../../lib/savedQueries";
+import { queryRollbackKey } from "../../lib/queryRollbackFailures";
 import {
   invokePreviewQuery,
   invokeRenameSavedQuery,
@@ -53,8 +54,8 @@ export function QueryTab({
   // Captured at run time, not re-read from `query.sql` — staging off the live field would record an effect for a statement never previewed.
   const [result, setResult] = useState<{ preview: QueryPreview; statement: string } | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
-  // Set only when the automatic rollback FAILED: the statement may have committed, so this replaces the "rolled back" reassurance.
-  const [rollbackFailure, setRollbackFailure] = useState<string | null>(null);
+  const warningKey = queryRollbackKey(queryId ?? "", pinnedConnectionId ?? "");
+  const rollbackFailure = useAppStore((s) => s.queryRollbackFailures[warningKey]?.message ?? null);
   const [running, setRunning] = useState(false);
 
   const runGeneration = useRef(0);
@@ -118,9 +119,10 @@ export function QueryTab({
   }
 
   async function run() {
-    if (running || !pinnedConnectionId || !query) return;
+    if (running || !pinnedConnectionId || !query || !queryId) return;
     const statement = query.sql;
     const generation = runGeneration.current;
+    const previousFailure = useAppStore.getState().queryRollbackFailures[warningKey];
     const current = () => mounted.current && generation === runGeneration.current;
     setRunError(null);
     setResult(null);
@@ -129,9 +131,9 @@ export function QueryTab({
       const preview = await invokePreviewQuery(pinnedConnectionId, statement);
       try {
         await invokeRollbackPreview(preview.preview_id);
-        if (mounted.current) setRollbackFailure(null);
+        useAppStore.getState().clearQueryRollbackFailure(queryId, pinnedConnectionId, previousFailure);
       } catch (err) {
-        if (mounted.current) setRollbackFailure(err instanceof Error ? err.message : String(err));
+        useAppStore.getState().recordQueryRollbackFailure(queryId, pinnedConnectionId, err instanceof Error ? err.message : String(err));
       }
       if (current()) setResult({ preview, statement });
     } catch (err) {

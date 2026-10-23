@@ -14,6 +14,7 @@ function seed(sql = "SELECT 1;") {
   useAppStore.setState({
     savedQueries: [{ id: "q1", connection_id: "c1", name: "failed orders", sql, created_at: 1 }],
     pending: [],
+    queryRollbackFailures: {},
     activeConnectionId: "c1",
   });
 }
@@ -184,6 +185,19 @@ describe("QueryTab", () => {
     await act(async () => { finish(WRITE_PREVIEW); });
     expect(screen.getByText(/could not be rolled back/)).toBeInTheDocument();
     expect(screen.queryByText("Add to pending")).not.toBeInTheDocument();
+  });
+
+  it.each(["before", "after"] as const)("retains rollback failures when the tab closes %s the response", async (when) => {
+    let finish!: (preview: typeof WRITE_PREVIEW) => void;
+    vi.spyOn(tauriLib, "invokePreviewQuery").mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    vi.spyOn(tauriLib, "invokeRollbackPreview").mockRejectedValue(new Error("uncertain transaction"));
+    const first = renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+    if (when === "before") first.unmount();
+    await act(async () => { finish(WRITE_PREVIEW); });
+    if (when === "after") first.unmount();
+    renderTab();
+    expect(screen.getByText(/uncertain transaction/)).toBeInTheDocument();
   });
 
   it("does not offer staging while rollback is still pending", async () => {

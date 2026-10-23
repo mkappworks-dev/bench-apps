@@ -201,7 +201,7 @@ export function PendingPanel({
     // Captured before the await — `pending` can grow underneath it during the round trip, but what comes back describes THIS list.
     const sent = mine.map((e) => e.entry);
     setApplying(true);
-    setApplyInFlight(true);
+    setApplyInFlight(true, sent);
     setProblem(null);
     try {
       const outcome = await invokeApplyChanges(connectionId, sent);
@@ -213,7 +213,6 @@ export function PendingPanel({
         setProblem(conflictMessage(outcome.conflict));
         return;
       }
-      // Exactly `sent`, by identity — a cell toggled while this call was in flight is not covered by the commit and must survive.
       removePendingEntries(sent);
       bumpApplyGeneration();
     } catch (err) {

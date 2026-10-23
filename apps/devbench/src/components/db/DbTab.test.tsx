@@ -84,6 +84,33 @@ describe("DbTab", () => {
     expect(useAppStore.getState().pending).toEqual([expect.objectContaining({ column: "paid", old_value: "false", new_value: "true" })]);
   });
 
+  it("locks submitted boolean cells while leaving other rows editable during Apply", async () => {
+    const sent = { kind: "update" as const, connection_id: "c1", table: ORDERS, pk_column: "id", pk_value: "1", column: "paid", old_value: "false", new_value: "true" };
+    useAppStore.setState({ pending: [sent] });
+    useAppStore.getState().setApplyInFlight(true, [sent]);
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: ["id", "paid"], column_types: ["int4", "bool"], rows: [["1", "false"], ["2", "false"]], pk_column: "id" });
+    try {
+      renderDb(ORDERS);
+      const boxes = await screen.findAllByRole("checkbox", { name: "paid" });
+      expect(boxes[0]).toBeDisabled();
+      expect(boxes[1]).toBeEnabled();
+    } finally { useAppStore.getState().setApplyInFlight(false); }
+  });
+
+  it("does not let a submitted delete be undone during Apply", async () => {
+    const sent = { kind: "delete" as const, connection_id: "c1", table: ORDERS, pk_column: "id", pk_value: "1" };
+    useAppStore.setState({ pending: [sent] });
+    useAppStore.getState().setApplyInFlight(true, [sent]);
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: ["id"], rows: [["1"], ["2"]], pk_column: "id" });
+    try {
+      renderDb(ORDERS);
+      expect(await screen.findByRole("button", { name: "Undo staged delete of row 1" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Stage delete of row 2" })).toBeEnabled();
+      act(() => { useAppStore.getState().togglePendingDelete("c1", ORDERS, "id", "1"); });
+      expect(useAppStore.getState().pending).toEqual([sent]);
+    } finally { useAppStore.getState().setApplyInFlight(false); }
+  });
+
   it("reuses counts across paging and sorting, and invalidates them on Refresh", async () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({ columns: ["id"], rows: [["1"]], pk_column: "id" });
     const count = vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(150);

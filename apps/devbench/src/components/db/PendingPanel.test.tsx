@@ -245,6 +245,24 @@ describe("PendingPanel", () => {
     });
   });
 
+  it.each([
+    ["false", "true", "false"],
+    ["A", "B", "C"],
+  ])("locks a submitted cell until Apply settles (%s → %s, later %s)", async (oldValue, sentValue, laterValue) => {
+    const sent = { ...UPDATE, old_value: oldValue, new_value: sentValue };
+    seed([sent]);
+    let finish!: (outcome: tauriLib.ApplyOutcome) => void;
+    vi.spyOn(tauriLib, "invokeApplyChanges").mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: "Apply 1" }));
+    act(() => { useAppStore.getState().stagePendingUpdate({ ...sent, new_value: laterValue }); });
+    expect(useAppStore.getState().pending).toEqual([sent]);
+    await act(async () => { finish({ applied: 1, conflict: null }); });
+    expect(useAppStore.getState().pending).toEqual([]);
+    act(() => { useAppStore.getState().stagePendingUpdate({ ...sent, old_value: sentValue, new_value: laterValue }); });
+    expect(useAppStore.getState().pending).toEqual([{ ...sent, old_value: sentValue, new_value: laterValue }]);
+  });
+
   // A wholesale clear would destroy a newcomer staged mid-flight — the post-Apply refetch would then silently repaint the stored value over it.
   it("keeps a change staged during Apply and clears only what it sent", async () => {
     seed([UPDATE]);

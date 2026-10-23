@@ -7,11 +7,14 @@ import {
   entriesForOtherConnections,
   removeEntries,
   stageUpdate,
+  stagedUpdateFor,
+  hasStagedDelete,
   toggleDelete,
   type PendingChange,
   type UpdateChange,
 } from "../lib/pendingChanges";
 import { mergeSavedQueries, type SavedQuery } from "../lib/savedQueries";
+import { queryRollbackKey, readQueryRollbackFailures, writeQueryRollbackFailures, type QueryRollbackFailure, type QueryRollbackFailures } from "../lib/queryRollbackFailures";
 
 // `query` is a real tab kind but absent from `TABS`: opening one needs a saved query, so it cannot come from the + menu.
 export type ToolKind = "api" | "db" | "log" | "email" | "query";
@@ -77,7 +80,11 @@ interface AppState {
   setInsertTarget: (target: InsertTarget | null) => void;
   // `setChatOpen`/`setDockPanel` refuse to tear the dock down while this is set, so an Apply's outcome always has a panel to land in.
   applyInFlight: boolean;
-  setApplyInFlight: (inFlight: boolean) => void;
+  applyingEntries: PendingChange[];
+  setApplyInFlight: (inFlight: boolean, entries?: PendingChange[]) => void;
+  queryRollbackFailures: QueryRollbackFailures;
+  recordQueryRollbackFailure: (queryId: string, connectionId: string, message: string) => void;
+  clearQueryRollbackFailure: (queryId: string, connectionId: string, expected: QueryRollbackFailure | undefined) => void;
   // A counter, not a boolean, so two applies in a row are two distinct events for every mounted DbTab.
   applyGeneration: number;
   bumpApplyGeneration: () => void;
@@ -197,13 +204,30 @@ export const useAppStore = create<AppState>((set, get) => ({
   insertTarget: null,
   setInsertTarget: (insertTarget) => set({ insertTarget }),
   applyInFlight: false,
-  setApplyInFlight: (applyInFlight) => set({ applyInFlight }),
+  applyingEntries: [],
+  setApplyInFlight: (applyInFlight, entries = []) => set({ applyInFlight, applyingEntries: applyInFlight ? [...entries] : [] }),
+  queryRollbackFailures: readQueryRollbackFailures(),
+  recordQueryRollbackFailure: (queryId, connectionId, message) => set((s) => {
+    const queryRollbackFailures = { ...s.queryRollbackFailures, [queryRollbackKey(queryId, connectionId)]: { queryId, connectionId, message } };
+    writeQueryRollbackFailures(queryRollbackFailures);
+    return { queryRollbackFailures };
+  }),
+  clearQueryRollbackFailure: (queryId, connectionId, expected) => set((s) => {
+    const key = queryRollbackKey(queryId, connectionId);
+    if (!expected || s.queryRollbackFailures[key] !== expected) return s;
+    const queryRollbackFailures = { ...s.queryRollbackFailures };
+    delete queryRollbackFailures[key];
+    writeQueryRollbackFailures(queryRollbackFailures);
+    return { queryRollbackFailures };
+  }),
   applyGeneration: 0,
   bumpApplyGeneration: () => set((s) => ({ applyGeneration: s.applyGeneration + 1 })),
   pending: [],
-  stagePendingUpdate: (entry) => set((s) => ({ pending: stageUpdate(s.pending, entry) })),
+  stagePendingUpdate: (entry) => set((s) => stagedUpdateFor(s.applyingEntries, entry.connection_id, entry.table, entry.pk_value, entry.column).staged
+    ? s : { pending: stageUpdate(s.pending, entry) }),
   togglePendingDelete: (connectionId, table, pkColumn, pkValue) =>
-    set((s) => ({ pending: toggleDelete(s.pending, connectionId, table, pkColumn, pkValue) })),
+    set((s) => hasStagedDelete(s.applyingEntries, connectionId, table, pkValue)
+      ? s : { pending: toggleDelete(s.pending, connectionId, table, pkColumn, pkValue) }),
   // Two inserts into one table are two rows; nothing here to upsert against.
   addPendingInsert: (connectionId, table, values) =>
     set((s) => ({

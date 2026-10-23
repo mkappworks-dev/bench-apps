@@ -32,38 +32,38 @@
 
 Files: new `src/lib/tableCountCache.ts` and tests; `DbTab.tsx` and tests; `lib/tauri.ts` and IPC tests; `grid/GridToolbar.tsx` and tests (all under `apps/devbench`).
 
-- [ ] Add red tests for cache reuse/deduplication, key boundaries, retries, invalidation during an in-flight load, Refresh/Apply/connection-edit invalidation, and a pending count shown as `of —`.
-- [ ] Implement `createTableCountCache()` with `get(sessionId, connectionId, table, filter, load)`, `invalidateConnection`, and `invalidateTable`; export one session-memory instance. Keep row fetching independent of count completion.
-- [ ] Verify focused tests and full frontend suite. Commit the count feature.
+- [x] Add red tests for cache reuse/deduplication, key boundaries, retries, invalidation during an in-flight load, Refresh/Apply/connection-edit invalidation, and a pending count shown as `of —`.
+- [x] Implement `createTableCountCache()` with `get(sessionId, connectionId, table, filter, load)`, `invalidateConnection`, and `invalidateTable`; export one session-memory instance. Keep row fetching independent of count completion.
+- [x] Verify focused tests and full frontend suite. Commit the count feature.
 
 ### Task 2: Render boolean types from metadata
 
 Files: `src-tauri/src/commands/{db,db_columns,query}.rs`; `src/lib/tauri.ts`; `DataGrid.tsx`, `DbTab.tsx`, `QueryTab.tsx`, `grid/FkPopover.tsx`, and tests.
 
-- [ ] Add red regressions for text `true`/`false`, real bools and NULL, query expressions/aliases and zero-row query type metadata.
-- [ ] Add result `column_types` arrays from sqlx column descriptors. Frontend consumers tolerate absent metadata and render it as text; actual `bool` type alone selects boolean presentation.
-- [ ] Verify focused frontend/Rust tests, build and full suites. Commit the type correction.
+- [x] Add red regressions for text `true`/`false`, real bools and NULL, query expressions/aliases and zero-row query type metadata.
+- [x] Add result `column_types` arrays from sqlx column descriptors. Frontend consumers tolerate absent metadata and render it as text; actual `bool` type alone selects boolean presentation.
+- [x] Verify focused frontend/Rust tests, build and full suites. Commit the type correction.
 
 ### Task 3: Suppress stale query continuations
 
 Files: `QueryTab.tsx` and tests.
 
-- [ ] Add red tests for edit-away/edit-back, late query failure, unmount, and rollback failure after SQL changes.
-- [ ] Increment a generation on SQL/document changes and unmount. Gate result/error updates and staging by current generation; always request rollback on any returned preview. Keep rollback failures visible because transaction outcome is independent of editor freshness.
-- [ ] Verify query tests and the frontend suite. Commit the stale-result fix.
+- [x] Add red tests for edit-away/edit-back, late query failure, unmount, and rollback failure after SQL changes.
+- [x] Increment a generation on SQL/document changes and unmount. Gate result/error updates and staging by current generation; always request rollback on any returned preview. Keep rollback failures visible because transaction outcome is independent of editor freshness.
+- [x] Verify query tests and the frontend suite. Commit the stale-result fix.
 
 ### Task 4: Match FK navigation by real type
 
 Files: `grid/types.ts`, `DbTab.tsx`, `src-tauri/src/commands/{db_filter,db,db_columns}.rs`, and tests.
 
-- [ ] Add red Rust regressions comparing FK popover lookup with list/count typed filters for timestamptz offsets, float extremes and hostile values. Add a frontend assertion that FK jumps emit `eq_typed`.
-- [ ] Add internal `eq_typed` operator for pinned FK filters. Resolve cast types in `compile_filter_for_table(pool, table, conditions, first_param_index)` and validate identifiers before interpolation; preserve ordinary text filter behavior. Use the same compiler for list and count.
-- [ ] Verify focused tests and full suites. Commit typed FK navigation.
+- [x] Add red Rust regressions comparing FK popover lookup with list/count typed filters for timestamptz offsets, float extremes and hostile values. Add a frontend assertion that FK jumps emit `eq_typed`.
+- [x] Add internal `eq_typed` operator for pinned FK filters. Resolve cast types in `compile_filter_for_table(pool, table, conditions, first_param_index)` and validate identifiers before interpolation; preserve ordinary text filter behavior. Use the same compiler for list and count.
+- [x] Verify focused tests and full suites. Commit typed FK navigation.
 
 ### Task 5: Audit, reconcile, verify
 
-- [ ] Inspect §15 against cell staging and Apply code/tests; add regression coverage wherever the retired guards' invariant is not established. Close the stale §18 review note with evidence.
-- [ ] Update the spec and add a concise review/verification record, preserving accepted trade-offs rather than claiming all risks are eliminated.
-- [ ] Run frontend suite/build, full Rust suite, and real-browser checks for boolean/text presentation, cached pagination, and hit targets.
-- [ ] Request one fresh read-only review; reproduce important findings with failing tests and fix them, then rerun full gates.
+- [x] Inspect §15 against cell staging and Apply code/tests; add regression coverage wherever the retired guards' invariant is not established. Close the stale §18 review note with evidence.
+- [x] Update the spec and add a concise review/verification record, preserving accepted trade-offs rather than claiming all risks are eliminated.
+- [x] Run frontend suite/build, full Rust suite, and real-browser checks for boolean/text presentation, cached pagination, and hit targets.
+- [x] Request one fresh read-only review; reproduce important findings with failing tests and fix them, then rerun full gates.
 - [ ] Merge locally only after green checks, retain the worktree and restart its app on Local Demo. Do not push or open a PR.

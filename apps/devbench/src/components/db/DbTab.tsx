@@ -100,6 +100,7 @@ export function DbTab({
   const setInsertTarget = useAppStore((s) => s.setInsertTarget);
   const setChatOpen = useAppStore((s) => s.setChatOpen);
   const pending = useAppStore((s) => s.pending);
+  const applyingEntries = useAppStore((s) => s.applyingEntries);
   const applyGeneration = useAppStore((s) => s.applyGeneration);
   const stagePendingUpdate = useAppStore((s) => s.stagePendingUpdate);
   const togglePendingDelete = useAppStore((s) => s.togglePendingDelete);
@@ -367,7 +368,8 @@ export function DbTab({
     const stagedDelete = addressable
       ? hasStagedDelete(pending, activeConnectionId, table, pkValue)
       : false;
-    const editable = isEditableCell({
+    const applyingUpdate = addressable && stagedUpdateFor(applyingEntries, activeConnectionId, table, pkValue, column).staged;
+    const editable = !applyingUpdate && isEditableCell({
       pkColumn: tableRows?.pk_column ?? null,
       pkValue,
       column,
@@ -389,6 +391,7 @@ export function DbTab({
           <input
             autoFocus
             aria-label={`Edit ${column}`}
+            disabled={applyingUpdate}
             size={Math.min(Math.max((editing.draft ?? "").length + 1, 12), 60)}
             value={editing.draft ?? ""}
             onChange={(e) => setEditing({ ...editing, draft: e.target.value })}
@@ -401,6 +404,7 @@ export function DbTab({
           <button
             type="button"
             aria-label="Stage change"
+            disabled={applyingUpdate}
             onClick={stage}
             className={acceptButtonClass}
           >
@@ -613,6 +617,7 @@ export function DbTab({
                       return (
                         <button
                           type="button"
+                          disabled={hasStagedDelete(applyingEntries, activeConnectionId, table, pkValue)}
                           aria-label={
                             staged
                               ? `Undo staged delete of row ${pkValue}`

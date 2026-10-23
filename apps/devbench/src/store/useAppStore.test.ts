@@ -9,6 +9,18 @@ function reset() {
 }
 
 describe("useAppStore", () => {
+  it("does not clear a newer rollback failure when an older run succeeds", () => {
+    const store = useAppStore.getState();
+    store.recordQueryRollbackFailure("q1", "c1", "first failure");
+    const key = '["c1","q1"]';
+    const previous = useAppStore.getState().queryRollbackFailures[key];
+    store.recordQueryRollbackFailure("q1", "c1", "newer failure");
+    store.clearQueryRollbackFailure("q1", "c1", previous);
+    expect(useAppStore.getState().queryRollbackFailures[key]?.message).toBe("newer failure");
+    store.clearQueryRollbackFailure("q1", "c1", useAppStore.getState().queryRollbackFailures[key]);
+    expect(useAppStore.getState().queryRollbackFailures[key]).toBeUndefined();
+  });
+
   it("defaults to dark theme and no tabs", () => {
     reset();
     const state = useAppStore.getState();
