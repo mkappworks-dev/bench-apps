@@ -34,6 +34,17 @@ export default function App() {
   const setTheme = useAppStore((s) => s.setTheme);
   const tabs = useAppStore((s) => s.tabs);
   const activeTabId = useAppStore((s) => s.activeTabId);
+  const queryRollbackFailures = useAppStore((s) => s.queryRollbackFailures);
+  const savedQueries = useAppStore((s) => s.savedQueries);
+  const hiddenQueryFailures = Object.values(queryRollbackFailures).filter((failure) => route === "settings" || !tabs.some((tab) =>
+    tab.kind === "query" && (tab.id === activeTabId.left || tab.id === activeTabId.right) &&
+    tab.state.queryId === failure.queryId && tab.state.connectionId === failure.connectionId));
+  const rollbackWarnings = hiddenQueryFailures.map((failure) => (
+    <div key={JSON.stringify([failure.connectionId, failure.queryId])} role="alert" className="shrink-0 border-b border-border bg-danger-bg px-3 py-2 text-xs text-danger">
+      Query “{savedQueries.find((query) => query.id === failure.queryId)?.name ?? "Saved query"}” could not be rolled back.
+      Check its database before continuing. ({failure.message})
+    </div>
+  ));
   const tabController = useTabController();
   // Ephemeral: never persisted to tab.state. Only the email deep link sets
   // it, and it targets one specific tab instance — see SplitContent.
@@ -140,6 +151,7 @@ export default function App() {
         <div data-tauri-drag-region className="flex h-11 shrink-0 items-center border-b border-border">
           <BrandLockup />
         </div>
+        {rollbackWarnings}
         <SettingsScreen onBack={() => setRoute("workspace")} />
       </div>
     );
@@ -161,6 +173,7 @@ export default function App() {
         // stops the button from looking broken while it does.
         chatToggleDisabled={applyInFlight && chatOpen}
       />
+      {rollbackWarnings}
       {/* Three columns. The chat dock RESIZES this row rather than overlaying
           it — it is a grid track, not a fixed-position panel (DESIGN.md). */}
       <div className="flex min-h-0 flex-1">

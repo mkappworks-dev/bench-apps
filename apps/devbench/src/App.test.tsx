@@ -18,6 +18,25 @@ describe("App shell", () => {
     vi.restoreAllMocks();
   });
 
+  it("surfaces an unresolved rollback after its query tab has closed", () => {
+    useAppStore.setState({ route: "workspace", queryRollbackFailures: {
+      '["c1","q1"]': { queryId: "q1", connectionId: "c1", message: "uncertain transaction" },
+    } });
+    render(<App />);
+    expect(screen.getByRole("alert")).toHaveTextContent("uncertain transaction");
+    useAppStore.setState({ queryRollbackFailures: {} });
+  });
+
+  it("keeps rollback warnings visible in settings when their query tab is active", () => {
+    useAppStore.setState({ route: "settings", tabs: [{ id: "qt", kind: "query", pane: "left", ordinal: 0, state: { queryId: "q1", connectionId: "c1" } }],
+      activeTabId: { left: "qt", right: null }, queryRollbackFailures: {
+        '["c1","q1"]': { queryId: "q1", connectionId: "c1", message: "uncertain transaction" },
+      } });
+    render(<App />);
+    expect(screen.getByRole("alert")).toHaveTextContent("uncertain transaction");
+    useAppStore.setState({ route: "workspace", tabs: [], activeTabId: { left: null, right: null }, queryRollbackFailures: {} });
+  });
+
   it("renders the three-column workspace", () => {
     render(<App />);
     expect(screen.getByRole("complementary", { name: "Sessions" })).toBeInTheDocument();

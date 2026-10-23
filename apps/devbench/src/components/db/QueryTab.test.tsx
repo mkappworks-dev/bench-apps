@@ -14,6 +14,7 @@ function seed(sql = "SELECT 1;") {
   useAppStore.setState({
     savedQueries: [{ id: "q1", connection_id: "c1", name: "failed orders", sql, created_at: 1 }],
     pending: [],
+    queryRollbackFailures: {},
     activeConnectionId: "c1",
   });
 }
@@ -137,6 +138,79 @@ describe("QueryTab", () => {
   });
 
   const WRITE_PREVIEW = { preview_id: "p1", columns: [], rows: [], rows_affected: 3 };
+
+  it.each([false, true])("discards a late success after SQL changes, including edit-back=%s, and still rolls it back", async (editBack) => {
+    let finish!: (preview: typeof WRITE_PREVIEW) => void;
+    vi.spyOn(tauriLib, "invokePreviewQuery").mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const rollback = vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+    renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+    fireEvent.change(screen.getByRole("textbox", { name: "SQL" }), { target: { value: "SELECT 2;" } });
+    if (editBack) fireEvent.change(screen.getByRole("textbox", { name: "SQL" }), { target: { value: "SELECT 1;" } });
+    await act(async () => { finish(WRITE_PREVIEW); });
+    expect(rollback).toHaveBeenCalledWith("p1");
+    expect(screen.queryByText("Add to pending")).not.toBeInTheDocument();
+    expect(screen.queryByText(/rolled back — nothing is written/)).not.toBeInTheDocument();
+  });
+
+  it("does not show a late error for SQL the editor has replaced", async () => {
+    let fail!: (error: Error) => void;
+    vi.spyOn(tauriLib, "invokePreviewQuery").mockReturnValue(new Promise((_, reject) => { fail = reject; }));
+    renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+    fireEvent.change(screen.getByRole("textbox", { name: "SQL" }), { target: { value: "SELECT 2;" } });
+    await act(async () => { fail(new Error("old statement failed")); });
+    expect(screen.queryByText("old statement failed")).not.toBeInTheDocument();
+  });
+
+  it("rolls back a preview even when its tab unmounts before the response", async () => {
+    let finish!: (preview: typeof WRITE_PREVIEW) => void;
+    vi.spyOn(tauriLib, "invokePreviewQuery").mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const rollback = vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
+    const { unmount } = renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+    unmount();
+    await act(async () => { finish(WRITE_PREVIEW); });
+    expect(rollback).toHaveBeenCalledWith("p1");
+    expect(useAppStore.getState().pending).toEqual([]);
+  });
+
+  it("keeps rollback failure visible after the statement has changed", async () => {
+    let finish!: (preview: typeof WRITE_PREVIEW) => void;
+    vi.spyOn(tauriLib, "invokePreviewQuery").mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    vi.spyOn(tauriLib, "invokeRollbackPreview").mockRejectedValue(new Error("connection lost"));
+    renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+    fireEvent.change(screen.getByRole("textbox", { name: "SQL" }), { target: { value: "SELECT 2;" } });
+    await act(async () => { finish(WRITE_PREVIEW); });
+    expect(screen.getByText(/could not be rolled back/)).toBeInTheDocument();
+    expect(screen.queryByText("Add to pending")).not.toBeInTheDocument();
+  });
+
+  it.each(["before", "after"] as const)("retains rollback failures when the tab closes %s the response", async (when) => {
+    let finish!: (preview: typeof WRITE_PREVIEW) => void;
+    vi.spyOn(tauriLib, "invokePreviewQuery").mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    vi.spyOn(tauriLib, "invokeRollbackPreview").mockRejectedValue(new Error("uncertain transaction"));
+    const first = renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+    if (when === "before") first.unmount();
+    await act(async () => { finish(WRITE_PREVIEW); });
+    if (when === "after") first.unmount();
+    renderTab();
+    expect(screen.getByText(/uncertain transaction/)).toBeInTheDocument();
+  });
+
+  it("does not offer staging while rollback is still pending", async () => {
+    vi.spyOn(tauriLib, "invokePreviewQuery").mockResolvedValue(WRITE_PREVIEW);
+    let finish!: () => void;
+    vi.spyOn(tauriLib, "invokeRollbackPreview").mockReturnValue(new Promise<void>((resolve) => { finish = resolve; }));
+    renderTab();
+    fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByText("Add to pending")).not.toBeInTheDocument();
+    await act(async () => { finish(); });
+    expect(screen.getByRole("button", { name: "Add to pending" })).toBeEnabled();
+  });
   const SELECT_PREVIEW = {
     preview_id: "p2",
     columns: ["id", "status"],
@@ -214,30 +288,15 @@ describe("QueryTab", () => {
     expect(screen.queryByRole("button", { name: "Add to pending" })).not.toBeInTheDocument();
   });
 
-  it("stages the statement that ran, even if the query's sql has since moved", async () => {
+  it("clears a standing result when another route changes the saved SQL", async () => {
     vi.spyOn(tauriLib, "invokePreviewQuery").mockResolvedValue(WRITE_PREVIEW);
     vi.spyOn(tauriLib, "invokeRollbackPreview").mockResolvedValue(undefined);
-
     renderTab();
     fireEvent.click(screen.getByRole("button", { name: /Run query/ }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Add to pending" })).toBeEnabled());
-
-    // Mutates the store directly, bypassing onSqlChange, to simulate some other route moving the sql out from under a result still on screen.
-    act(() => {
-      useAppStore.getState().patchSavedQuery("q1", { sql: "DROP TABLE orders;" });
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Add to pending" }));
-
-    expect(useAppStore.getState().pending).toEqual([
-      {
-        kind: "sql",
-        connection_id: "c1",
-        table: null,
-        statement: "SELECT 1;",
-        previewed_effect: "3 rows affected",
-      },
-    ]);
+    act(() => { useAppStore.getState().patchSavedQuery("q1", { sql: "SELECT 2;" }); });
+    expect(screen.queryByRole("button", { name: "Add to pending" })).not.toBeInTheDocument();
+    expect(useAppStore.getState().pending).toEqual([]);
   });
 
   it("discards the result and stages nothing", async () => {

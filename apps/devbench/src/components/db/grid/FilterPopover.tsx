@@ -41,7 +41,10 @@ export function FilterPopover({
       ) : null}
 
       {draft.map((condition, index) => {
-        const operators = OPERATORS_FOR_FAMILY[familyOf(condition.column)];
+        const familyOperators = OPERATORS_FOR_FAMILY[familyOf(condition.column)];
+        const operators: FilterOp[] = condition.op === "eq_typed"
+          ? ["eq_typed", ...familyOperators.filter((op) => op !== "eq")]
+          : familyOperators;
         const needsValue = !VALUELESS_OPS.includes(condition.op);
         return (
           <div key={index} className="mb-1.5 flex items-center gap-1.5">

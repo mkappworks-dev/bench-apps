@@ -318,9 +318,10 @@ This replaces the green/neutral pills. The green pill asserted a value
 judgement: green reads as "good", but `is_deleted = true` is not good. A
 checkbox carries no such claim.
 
-Values are still inferred from the string `"true"` / `"false"`. Once
-`describe_columns` is available that inference can be replaced by the real
-column type; that is a follow-up, not part of this design.
+Boolean presentation uses real Postgres result types. Table rows, FK previews,
+and query results carry `column_types` in data-column order, including aliased
+expressions and zero-row query results. A text value containing `"true"` or
+`"false"` remains text. Unknown metadata renders as text until it is available.
 
 ## 8. Foreign keys
 
@@ -477,10 +478,14 @@ The bottom drawer is gone (§3b). What was the query console is now a query tab,
 and its Preview/Commit pair becomes Run query / Add to pending.
 
 **Run query** opens a transaction, runs the statement, captures the effect and
-rolls back — all within the one user action. The rollback is fired in the same
-continuation the result arrives in, not deferred to a later click and not tied
-to a React lifecycle, so an abandoned tab or a mid-flight unmount still releases
-the transaction. **No lock is held while the user decides.** That is the Slice 3
+rolls back — all within the one user action. The rollback is requested in the
+same continuation the result arrives in and awaited before results or staging
+are offered. It is not deferred to a later click or cancelled by unmount, so an
+abandoned tab still releases the transaction. SQL edits invalidate the run
+generation; late results and query errors are ignored even after edit-away and
+edit-back. Rollback failures are retained by query/connection outside the tab
+and persisted locally. Inactive or closed documents surface them in a workspace
+warning; reopening the query restores its warning and staging remains blocked. **No lock is held while the user decides.** That is the Slice 3
 principle ("staged intent holds no transaction") applied to this path; the
 earlier wording, which implied the transaction stayed open until Discard or Add
 to pending, would have reinstated exactly the hazard §15 retired.
@@ -637,7 +642,10 @@ That reasoning covers cell staging and stops there. **Apply is a genuine round
 trip**, and it has exactly the windows the retired guards existed for. They are
 closed explicitly rather than by construction:
 
-- The grid stays live while Apply is out, so the set can grow mid-flight. On
+- The grid stays live while Apply is out, so the set can grow mid-flight. Cells
+  and deletes submitted by that Apply are locked until it settles; store actions
+  enforce the same locks as the UI. This prevents same-cell coalescing from
+  discarding a correction or retaining an obsolete conflict baseline. On
   success the panel removes **only the entries it sent**, by identity — never
   the whole set, which would silently destroy anything staged since.
 - The panel is the only place a conflict can be reported, so it **refuses to be
@@ -797,35 +805,12 @@ Slice 4: `docs/superpowers/plans/2026-08-19-table-view-slice-4-queries.md`.
   window for a conflict. Acceptable and honest, but more visible than today.
 - **Re-run divergence.** A staged SQL statement's effect at Apply can differ
   from its preview (§12). Displayed, not prevented.
-- **Retiring the edit guards.** They fixed a verified Critical bug. The new
-  model should make them unnecessary rather than merely unused; that reasoning
-  needs explicit review, not assumption.
 - **Staged values are not re-queried.** A staged cell is not re-sorted or
   re-filtered by its pending value, because the database does not know about it
   yet. A row can therefore stay visible under a filter its staged value no
   longer matches. Accepted: re-sorting rows as you edit them would be worse.
 - **SQL entries group alone.** A staged statement has no table, so it files
   under its own heading rather than under the table it touches.
-- **A run in flight outlives an edit to its statement.** Editing the SQL clears
-  a standing result (§12), but a run already in flight still sets one when its
-  response lands, so the result block reappears showing the *pre-edit* run's
-  effect against an editor that has since moved. What Add to pending stages is
-  the statement captured at Run, not the field's current contents, so the
-  staged entry stays truthful — this is confusing, not incorrect. Guarding it
-  would mean reintroducing the generation-counter machinery §15 retired, for a
-  window that cannot produce a wrong write. Left as is, deliberately.
-- **Popover and jump can disagree on a match.** `get_referenced_row` binds the
-  lookup value cast to the referenced column's real type (`= $1::timestamptz`,
-  say). The jump's pinned filter compiles through the filter compiler to
-  `"col"::text = $1`, comparing string representations instead. For a target
-  column whose display rendering differs from Postgres's own `::text` output
-  — `timestamptz` and `float8` extremes are the known cases — the two checks
-  disagree: the popover finds and shows the row, then the jump lands on an
-  empty grid with no error. Accepted for now: foreign keys overwhelmingly
-  target int, uuid or text primary keys, where both renderings agree. The
-  real fix is a change to the filter compiler's casting strategy, which
-  affects every filter in the application and belongs in its own change.
-
 - **A bare `COMMIT`/`ROLLBACK` still reaches the server (residual of the
   multi-command refusal).** Run now refuses multi-command input — the path
   that could actually write, where `BEGIN; UPDATE …; COMMIT;` committed the
@@ -865,3 +850,30 @@ Slice 4: `docs/superpowers/plans/2026-08-19-table-view-slice-4-queries.md`.
 
 Regression tests cover all four changes. Browser measurements and merge gates:
 [`2026-10-23-table-view-merge.md`](../reviews/2026-10-23-table-view-merge.md).
+
+### Remaining polish completed (2026-10-23)
+
+- **Count cache.** Counts are shared by session, connection, schema, table and
+  applied filter. Pending requests deduplicate, failures can retry, and stale
+  requests cannot repopulate invalidated entries. Refresh invalidates all
+  filters for the table; successful Apply invalidates its actual connection,
+  as do connection edits/deletion. Paging and sorting reuse the count, while
+  rows load independently and the pager displays `of —` for an unknown count.
+- **Boolean types.** `column_types` replaces boolean-looking string inference
+  in the table grid and query results. NULL remains distinct from false.
+- **Stale runs.** Generation guards suppress obsolete results/errors without
+  skipping rollback. Staging waits for rollback. Unresolved rollback failures
+  survive closing/reopening a query and app-state reconstruction; an older run
+  cannot clear a newer failure. When local storage is unavailable, live store
+  warnings still survive tab unmount within the running app.
+- **FK equality.** Pinned FK filters use `eq_typed`, whose cast type is looked
+  up and validated by Rust. Values remain bound. Popover, row query and count
+  agree for timestamp offsets, float extremes, empty keys and hostile text.
+  Ordinary user-authored equality filters retain display-text semantics.
+- **Edit-guard audit.** §15's cell-staging rationale is confirmed: staging is
+  synchronous local intent with no transaction to leak. Apply still needs
+  sent-entry identity, submitted-cell/delete locks, dock dismissal protection,
+  and cleanup on both failure paths. Query execution retains rollback and the
+  server preview sweep; unresolved outcomes are kept outside the owning tab.
+
+Evidence: [`2026-10-23-db-polish-completion.md`](../reviews/2026-10-23-db-polish-completion.md).

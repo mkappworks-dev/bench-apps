@@ -164,7 +164,7 @@ export function FkPopover({
         ) : (
           row.columns.map((column, index) => {
             const value = row.rows[0][index] ?? null;
-            const { text, className } = cellDisplay(value);
+            const { text, className } = cellDisplay(value, row.column_types?.[index]);
             return (
               <div key={column} className="flex gap-3 py-0.75 font-mono text-xs">
                 <span className="min-w-24 shrink-0 text-text-faint">{column}</span>

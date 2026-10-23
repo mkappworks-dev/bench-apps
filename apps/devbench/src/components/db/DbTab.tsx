@@ -7,6 +7,7 @@ import { FkLinkButton, FkPopover } from "./grid/FkPopover";
 import { readLayout, writeLayout, type GridLayout } from "./grid/gridLayout";
 import { SecondaryButton } from "../ui/SecondaryButton";
 import { normalizeTable, tableKey } from "../../lib/tableIdentity";
+import { tableCountCache } from "../../lib/tableCountCache";
 import {
   invokeListTableRows,
   invokeCountTableRows,
@@ -91,6 +92,7 @@ export function DbTab({
 }) {
   const table = normalizeTable(tableProp);
   const activeConnectionId = useAppStore((s) => s.activeConnectionId);
+  const activeSessionId = useAppStore((s) => s.activeSessionId);
   const setActiveConnectionId = useAppStore((s) => s.setActiveConnectionId);
   const setWatchedTables = useAppStore((s) => s.setWatchedTables);
   const setDockPanel = useAppStore((s) => s.setDockPanel);
@@ -98,6 +100,7 @@ export function DbTab({
   const setInsertTarget = useAppStore((s) => s.setInsertTarget);
   const setChatOpen = useAppStore((s) => s.setChatOpen);
   const pending = useAppStore((s) => s.pending);
+  const applyingEntries = useAppStore((s) => s.applyingEntries);
   const applyGeneration = useAppStore((s) => s.applyGeneration);
   const stagePendingUpdate = useAppStore((s) => s.stagePendingUpdate);
   const togglePendingDelete = useAppStore((s) => s.togglePendingDelete);
@@ -118,7 +121,7 @@ export function DbTab({
   const [page, setPage] = useState(0);
   const [filter, setFilter] = useState<FilterCondition[]>([]);
   const [limit, setLimit] = useState(100);
-  const [total, setTotal] = useState(0);
+  const [total, setTotal] = useState<number | null>(null);
 
   const limitRef = useRef(limit);
 
@@ -149,12 +152,13 @@ export function DbTab({
     const requestId = ++requestIdRef.current;
     setLoading(true);
     setError(null);
-    void invokeCountTableRows(connId, t, activeFilter)
+    setTotal(null);
+    void tableCountCache.get(activeSessionId, connId, t, activeFilter, () => invokeCountTableRows(connId, t, activeFilter))
       .then((n) => {
         if (requestId === requestIdRef.current) setTotal(n);
       })
       .catch(() => {
-        if (requestId === requestIdRef.current) setTotal(0);
+        if (requestId === requestIdRef.current) setTotal(null);
       });
     try {
       const result = await invokeListTableRows(connId, t, {
@@ -188,7 +192,7 @@ export function DbTab({
     setFilter(jumpFilter);
     setLimit(100);
     limitRef.current = 100;
-    setTotal(0);
+    setTotal(null);
     setTableRows(null);
     setLastKnownColumns([]);
     setError(null);
@@ -200,7 +204,7 @@ export function DbTab({
     }
     // table is re-wrapped into a fresh object each render, so keying on tableKey(table) avoids re-fetching every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [table ? tableKey(table) : null, activeConnectionId]);
+  }, [table ? tableKey(table) : null, activeConnectionId, activeSessionId]);
 
   useEffect(() => {
     if (!table || !activeConnectionId) {
@@ -270,7 +274,7 @@ export function DbTab({
     const targetTable: QualifiedTable = { schema: target.schema, name: target.table };
     const targetKey = tableKey(targetTable);
     const jumpFilter: FilterCondition[] = [
-      { column: target.column, op: "eq", value, enabled: true },
+      { column: target.column, op: "eq_typed", value, enabled: true },
     ];
 
     closeFk();
@@ -364,7 +368,8 @@ export function DbTab({
     const stagedDelete = addressable
       ? hasStagedDelete(pending, activeConnectionId, table, pkValue)
       : false;
-    const editable = isEditableCell({
+    const applyingUpdate = addressable && stagedUpdateFor(applyingEntries, activeConnectionId, table, pkValue, column).staged;
+    const editable = !applyingUpdate && isEditableCell({
       pkColumn: tableRows?.pk_column ?? null,
       pkValue,
       column,
@@ -386,6 +391,7 @@ export function DbTab({
           <input
             autoFocus
             aria-label={`Edit ${column}`}
+            disabled={applyingUpdate}
             size={Math.min(Math.max((editing.draft ?? "").length + 1, 12), 60)}
             value={editing.draft ?? ""}
             onChange={(e) => setEditing({ ...editing, draft: e.target.value })}
@@ -398,6 +404,7 @@ export function DbTab({
           <button
             type="button"
             aria-label="Stage change"
+            disabled={applyingUpdate}
             onClick={stage}
             className={acceptButtonClass}
           >
@@ -415,7 +422,8 @@ export function DbTab({
       );
     }
 
-    const { className, kind } = cellDisplay(shown);
+    const udt = tableRows?.column_types?.[columnIndex] ?? columnMeta.find((info) => info.name === column)?.udt;
+    const { className, kind } = cellDisplay(shown, udt);
 
     if (kind === "bool-true" || kind === "bool-false") {
       const checked = kind === "bool-true";
@@ -459,7 +467,7 @@ export function DbTab({
         } ${editable ? "hover:cursor-text hover:bg-surface-2" : ""}`}
       >
         <span className={`min-w-0 flex-1 truncate ${alignClass}`}>
-          <CellValue value={shown} />
+          <CellValue value={shown} udt={udt} />
         </span>
         {editable ? (
           <span aria-hidden className="hidden shrink-0 text-[10.5px] text-text-faint group-hover:inline">
@@ -609,6 +617,7 @@ export function DbTab({
                       return (
                         <button
                           type="button"
+                          disabled={hasStagedDelete(applyingEntries, activeConnectionId, table, pkValue)}
                           aria-label={
                             staged
                               ? `Undo staged delete of row ${pkValue}`
@@ -647,7 +656,7 @@ export function DbTab({
                           void fetchRows(table!, activeConnectionId!, filter, next, 0, limitRef.current);
                         }}
                         page={page + 1}
-                        pageCount={Math.max(1, Math.ceil(total / limit))}
+                        pageCount={total === null ? null : Math.max(1, Math.ceil(total / limit))}
                         onPageChange={(next) => {
                           abandonEditForQueryChange();
                           setPage(next - 1);
@@ -663,6 +672,7 @@ export function DbTab({
                         }}
                         onRefresh={() => {
                           abandonEditForQueryChange();
+                          tableCountCache.invalidateTable(activeConnectionId!, table!);
                           void fetchRows(table!, activeConnectionId!, filter, sort, page, limitRef.current);
                         }}
                         onInsert={() => {

@@ -4,7 +4,7 @@ use sqlx::{Column, Either, Row};
 use std::sync::Arc;
 use tauri::State;
 
-use crate::commands::db::cell_to_string;
+use crate::commands::db::{cell_to_string, column_types};
 use crate::connection_registry::ConnectionRegistry;
 use crate::local_db::LocalDb;
 use crate::preview_state::{PendingPreviewRegistry, PREVIEW_TIMEOUT_MS};
@@ -14,6 +14,7 @@ use crate::secrets::SecretStore;
 pub struct QueryPreview {
     pub preview_id: String,
     pub columns: Vec<String>,
+    pub column_types: Vec<String>,
     pub rows: Vec<Vec<Option<String>>>,
     /// `Some(n)` = a write that returned no rows; `None` = read-shaped.
     pub rows_affected: Option<u64>,
@@ -25,7 +26,7 @@ pub struct QueryPreview {
 async fn describe_result_columns(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     sql: &str,
-) -> Result<Option<Vec<String>>, String> {
+) -> Result<Option<(Vec<String>, Vec<String>)>, String> {
     if sqlx::query("SAVEPOINT devbench_describe").execute(&mut **tx).await.is_err() {
         return Ok(None);
     }
@@ -36,7 +37,7 @@ async fn describe_result_columns(
     match described {
         Ok(d) => {
             let columns: Vec<String> = d.columns().iter().map(|c| c.name().to_string()).collect();
-            Ok((!columns.is_empty()).then_some(columns))
+            Ok((!columns.is_empty()).then(|| (columns, column_types(d.columns()))))
         }
         Err(e) if is_multiple_commands(&e) => Err(MULTIPLE_COMMANDS_MESSAGE.to_string()),
         Err(_) => Ok(None),
@@ -60,7 +61,7 @@ fn is_multiple_commands(err: &sqlx::Error) -> bool {
 async fn execute_with_honest_result(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     sql: &str,
-) -> Result<(Vec<String>, Vec<Vec<Option<String>>>, Option<u64>), String> {
+) -> Result<(Vec<String>, Vec<String>, Vec<Vec<Option<String>>>, Option<u64>), String> {
     let described_columns = describe_result_columns(tx, sql).await?;
 
     let mut rows: Vec<sqlx::postgres::PgRow> = Vec::new();
@@ -75,16 +76,16 @@ async fn execute_with_honest_result(
         }
     }
 
-    let columns = match described_columns {
+    let (columns, column_types) = match described_columns {
         Some(columns) => columns,
-        None if !rows.is_empty() => rows[0].columns().iter().map(|c| c.name().to_string()).collect(),
-        None => return Ok((Vec::new(), Vec::new(), Some(rows_affected))),
+        None if !rows.is_empty() => (rows[0].columns().iter().map(|c| c.name().to_string()).collect(), column_types(rows[0].columns())),
+        None => return Ok((Vec::new(), Vec::new(), Vec::new(), Some(rows_affected))),
     };
     let out_rows = rows
         .iter()
         .map(|row| (0..columns.len()).map(|i| cell_to_string(row, i)).collect())
         .collect();
-    Ok((columns, out_rows, None))
+    Ok((columns, column_types, out_rows, None))
 }
 
 pub async fn preview_query_impl(
@@ -98,9 +99,9 @@ pub async fn preview_query_impl(
 ) -> Result<QueryPreview, String> {
     let pool = registry.pool_for(connection_id, db, secrets).await?;
     let mut tx = pool.begin().await.map_err(|e| format!("failed to open a transaction: {e}"))?;
-    let (columns, rows, rows_affected) = execute_with_honest_result(&mut tx, sql).await?;
+    let (columns, column_types, rows, rows_affected) = execute_with_honest_result(&mut tx, sql).await?;
     let preview_id = previews.hold(tx, now_ms, PREVIEW_TIMEOUT_MS);
-    Ok(QueryPreview { preview_id, columns, rows, rows_affected })
+    Ok(QueryPreview { preview_id, columns, column_types, rows, rows_affected })
 }
 
 pub async fn rollback_preview_impl(previews: &PendingPreviewRegistry, preview_id: &str) -> Result<(), String> {
@@ -329,7 +330,7 @@ mod tests {
         let mut tx = raw.begin().await.unwrap();
         sqlx::query("CREATE TEMP TABLE scratch_temp (id int, status text)").execute(&mut *tx).await.unwrap();
 
-        let (columns, rows, rows_affected) =
+        let (columns, _types, rows, rows_affected) =
             execute_with_honest_result(&mut tx, "SELECT id, status FROM scratch_temp WHERE id = 999999").await.unwrap();
 
         assert_eq!(columns, vec!["id", "status"], "describe() must see the temp table created earlier in this same transaction");
@@ -487,6 +488,23 @@ mod tests {
     async fn rolling_back_an_unknown_preview_id_is_a_clear_error() {
         let previews = PendingPreviewRegistry::new();
         assert!(rollback_preview_impl(&previews, "not-a-real-id").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn result_metadata_distinguishes_boolean_expressions_and_text_even_without_rows() {
+        let (_dir, sqlite) = db().await;
+        let secrets = InMemorySecretStore::default();
+        let created = create_connection_impl(&sqlite.pool, &secrets, local_dev_input()).await.unwrap();
+        let registry = ConnectionRegistry::new();
+        let previews = PendingPreviewRegistry::new();
+        for suffix in ["", " WHERE false"] {
+            let sql = format!("SELECT true AS actual_bool, 'true'::text AS text_bool{suffix}");
+            let preview = preview_query_impl(&registry, &previews, &sqlite.pool, &secrets, &created.id, &sql, 0).await.unwrap();
+            let wire = serde_json::to_value(&preview).unwrap();
+            rollback_preview_impl(&previews, &preview.preview_id).await.unwrap();
+            assert_eq!(wire["column_types"], serde_json::json!(["bool", "text"]));
+            assert_eq!(preview.columns, vec!["actual_bool", "text_bool"]);
+        }
     }
 
 }

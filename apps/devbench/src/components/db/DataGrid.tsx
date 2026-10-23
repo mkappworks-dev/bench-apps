@@ -29,6 +29,7 @@ export interface SortTerm {
 export interface DataGridProps {
   // Column names in DATA order — the order row arrays are indexed by, not the on-screen position. Cell/row callbacks below use this index.
   columns: string[];
+  columnTypes?: string[];
   rows: (string | null)[][];
   getRowLabel?: (rowIndex: number) => string;
   sort?: SortTerm[];
@@ -45,19 +46,18 @@ export interface DataGridProps {
 
 export type CellKind = "null" | "unsupported" | "number" | "bool-true" | "bool-false" | "text";
 
-// No column-type metadata on the wire, so "is this boolean" is a best-effort inference — a text column literally containing "true"/"false" also gets the pill.
-export function cellDisplay(value: string | null): { text: string; className: string; kind: CellKind } {
+export function cellDisplay(value: string | null, udt?: string): { text: string; className: string; kind: CellKind } {
   if (value === null) return { text: "NULL", className: "italic text-text-faint", kind: "null" };
   if (value === "<unsupported type>") return { text: value, className: "italic text-warning", kind: "unsupported" };
-  if (value === "true" || value === "false") {
+  if (udt?.toLowerCase() === "bool" && (value === "true" || value === "false")) {
     return { text: value, className: "", kind: value === "true" ? "bool-true" : "bool-false" };
   }
   if (/^-?\d+(\.\d+)?$/.test(value)) return { text: value, className: "text-right tabular-nums", kind: "number" };
   return { text: value, className: "", kind: "text" };
 }
 
-export function CellValue({ value }: { value: string | null }) {
-  const { text, kind } = cellDisplay(value);
+export function CellValue({ value, udt }: { value: string | null; udt?: string }) {
+  const { text, kind } = cellDisplay(value, udt);
   if (kind === "bool-true" || kind === "bool-false") {
     return (
       <input
@@ -147,6 +147,7 @@ function rowAsJson(columns: string[], row: (string | null)[]): string {
 
 export function DataGrid({
   columns,
+  columnTypes = [],
   rows,
   getRowLabel = (rowIndex) => String(rowIndex + 1),
   sort = [],
@@ -485,8 +486,8 @@ export function DataGrid({
                             className={`flex min-w-0 items-center border-r border-border px-3 text-text-muted ${pinnedClass}`}
                           >
                             {/* Truncation lives on this span, not the cell — text-overflow has no effect on a flex container's own anonymous text child. */}
-                            <span className={`min-w-0 flex-1 truncate ${cellDisplay(value).className}`}>
-                              <CellValue value={value} />
+                            <span className={`min-w-0 flex-1 truncate ${cellDisplay(value, columnTypes[columnIndex]).className}`}>
+                              <CellValue value={value} udt={columnTypes[columnIndex]} />
                             </span>
                           </div>
                         );
