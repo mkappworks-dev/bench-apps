@@ -1,6 +1,6 @@
 import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { QueryTab } from "./QueryTab";
+import { QueryTab, MIN_EDITOR_PX, MAX_EDITOR_PX } from "./QueryTab";
 import * as tauriLib from "../../lib/tauri";
 import { useAppStore } from "../../store/useAppStore";
 import type { Tab } from "../../store/useAppStore";
@@ -90,6 +90,37 @@ describe("QueryTab", () => {
     renderTab();
     const grip = screen.getByRole("separator", { name: "Resize query editor" });
     expect(grip).toHaveAttribute("aria-orientation", "horizontal");
+  });
+
+  it("makes the resize grip focusable and reports its current size and bounds", () => {
+    renderTab();
+    const grip = screen.getByRole("separator", { name: "Resize query editor" });
+    expect(grip).toHaveAttribute("tabindex", "0");
+    expect(grip).toHaveAttribute("aria-valuemin", String(MIN_EDITOR_PX));
+    expect(grip).toHaveAttribute("aria-valuemax", String(MAX_EDITOR_PX));
+    expect(grip).toHaveAttribute("aria-valuenow", "220");
+  });
+
+  it("resizes in ten-pixel steps and clamps keyboard input at both bounds", () => {
+    renderTab();
+    const grip = screen.getByRole("separator", { name: "Resize query editor" });
+    fireEvent.keyDown(grip, { key: "ArrowDown" });
+    expect(grip).toHaveAttribute("aria-valuenow", "230");
+    fireEvent.keyDown(grip, { key: "ArrowUp" });
+    expect(grip).toHaveAttribute("aria-valuenow", "220");
+    fireEvent.keyDown(grip, { key: "Home" });
+    fireEvent.keyDown(grip, { key: "ArrowUp" });
+    expect(grip).toHaveAttribute("aria-valuenow", String(MIN_EDITOR_PX));
+    fireEvent.keyDown(grip, { key: "End" });
+    fireEvent.keyDown(grip, { key: "ArrowDown" });
+    expect(grip).toHaveAttribute("aria-valuenow", String(MAX_EDITOR_PX));
+  });
+
+  it("prevents scrolling for resize keys and leaves unrelated keys alone", () => {
+    renderTab();
+    const grip = screen.getByRole("separator", { name: "Resize query editor" });
+    expect(fireEvent.keyDown(grip, { key: "ArrowDown" })).toBe(false);
+    expect(fireEvent.keyDown(grip, { key: "Tab" })).toBe(true);
   });
 
   it("shows the Pending button only when something is staged", () => {
