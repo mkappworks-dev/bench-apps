@@ -1112,6 +1112,31 @@ describe("DbTab", () => {
     expect(useAppStore.getState().pending).toEqual([]);
   });
 
+  it("names copy controls with the primary key column and value", async () => {
+    vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["status", "order_id"], rows: [["pending", "42"], ["paid", "99"]], pk_column: "order_id",
+    });
+
+    renderDb(ORDERS);
+
+    expect(await screen.findByRole("button", { name: "Copy row order_id 42" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy row order_id 99" })).toBeInTheDocument();
+  });
+
+  it("uses page-aware copy labels when there is no primary key", async () => {
+    const listRows = vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
+      columns: ["status"], rows: [["pending"]], pk_column: null,
+    });
+    vi.spyOn(tauriLib, "invokeCountTableRows").mockResolvedValue(150);
+
+    renderDb(ORDERS);
+    expect(await screen.findByRole("button", { name: "Copy row 1" })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Next page" }));
+
+    await waitFor(() => expect(listRows).toHaveBeenLastCalledWith("c1", ORDERS, expect.objectContaining({ offset: 100 })));
+    expect(await screen.findByRole("button", { name: "Copy row 101" })).toBeInTheDocument();
+  });
+
   it("offers no delete action when the table has no single-column primary key", async () => {
     vi.spyOn(tauriLib, "invokeListTableRows").mockResolvedValue({
       columns: ["id", "status"], rows: [["42", "pending"]], pk_column: null,

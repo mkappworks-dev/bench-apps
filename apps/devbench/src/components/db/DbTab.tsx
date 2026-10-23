@@ -587,6 +587,12 @@ export function DbTab({
                   <DataGrid
                     columns={tableRows.columns}
                     rows={tableRows.rows}
+                    getRowLabel={(rowIndex) => {
+                      const pkValue = pkValueForRow(rowIndex);
+                      return pkValue === null
+                        ? String(page * limit + rowIndex + 1)
+                        : `${tableRows.pk_column} ${pkValue}`;
+                    }}
                     sort={sort}
                     onSort={handleSort}
                     renderCell={renderCell}

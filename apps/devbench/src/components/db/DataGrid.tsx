@@ -30,6 +30,7 @@ export interface DataGridProps {
   // Column names in DATA order — the order row arrays are indexed by, not the on-screen position. Cell/row callbacks below use this index.
   columns: string[];
   rows: (string | null)[][];
+  getRowLabel?: (rowIndex: number) => string;
   sort?: SortTerm[];
   onSort?: (column: string, additive: boolean) => void;
   renderCell?: (rowIndex: number, columnIndex: number, value: string | null) => ReactNode;
@@ -147,6 +148,7 @@ function rowAsJson(columns: string[], row: (string | null)[]): string {
 export function DataGrid({
   columns,
   rows,
+  getRowLabel = (rowIndex) => String(rowIndex + 1),
   sort = [],
   onSort,
   renderCell,
@@ -432,6 +434,7 @@ export function DataGrid({
                 {virtualizer.getVirtualItems().map((virtualRow) => {
                   const dataRowIndex = virtualRow.index;
                   const row = rows[dataRowIndex];
+                  const copyLabel = `Copy row ${getRowLabel(dataRowIndex)}`;
                   return (
                     <div
                       key={dataRowIndex}
@@ -492,7 +495,7 @@ export function DataGrid({
                         <button
                           type="button"
                           data-copy-menu-trigger
-                          aria-label="Copy row"
+                          aria-label={copyLabel}
                           aria-haspopup="menu"
                           aria-expanded={copyMenuRow === dataRowIndex}
                           onClick={() => setCopyMenuRow(copyMenuRow === dataRowIndex ? null : dataRowIndex)}
@@ -504,7 +507,7 @@ export function DataGrid({
                           <div
                             ref={copyMenuRef}
                             role="menu"
-                            aria-label="Copy row"
+                            aria-label={copyLabel}
                             className="absolute right-0 top-full z-20 mt-1 min-w-30 rounded-lg border border-border bg-surface p-1 shadow-lg"
                           >
                             <button
