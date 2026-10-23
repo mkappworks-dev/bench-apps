@@ -66,4 +66,4 @@ Files: `grid/types.ts`, `DbTab.tsx`, `src-tauri/src/commands/{db_filter,db,db_co
 - [x] Update the spec and add a concise review/verification record, preserving accepted trade-offs rather than claiming all risks are eliminated.
 - [x] Run frontend suite/build, full Rust suite, and real-browser checks for boolean/text presentation, cached pagination, and hit targets.
 - [x] Request one fresh read-only review; reproduce important findings with failing tests and fix them, then rerun full gates.
-- [ ] Merge locally only after green checks, retain the worktree and restart its app on Local Demo. Do not push or open a PR.
+- [x] Merge locally only after green checks, retain the worktree and restart its app on Local Demo. Do not push or open a PR.

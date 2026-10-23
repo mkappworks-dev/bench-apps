@@ -33,6 +33,8 @@ Final worktree gates:
 
 The Rust gate included integration/smoke compilation and execution. Tests use their own uniquely named fixtures in `devbench_test`, separate from `devbench_demo`. The healthy DevBench Compose container owns host 5432; sibling databases were not stopped. Existing React act and Node localStorage warnings remain in test output.
 
+Local merge `8c03314` was checked independently: 601 frontend tests / 53 files, clean production build (276 modules), and full `cargo test` with 265 library plus 6 smoke tests passed, 1 ignored. The worktree was fast-forwarded to that merge and retained. `bun run tauri dev` then compiled and launched from the worktree, with its `DEVBENCH_DATA_DIR` override confirmed. Local Demo still contains 500 customers, 300 products, 1,200 orders and 1,200 order items. Nothing was pushed and no PR was opened.
+
 New regression coverage includes cache key boundaries, retries/in-flight invalidation, Refresh/Apply/connection invalidation, unknown count UI, typed booleans and text, stale runs, awaited rollback, durable warnings, submitted-cell locks, and popover/list/count typed equality.
 
 ## Browser measurements
