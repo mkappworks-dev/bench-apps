@@ -57,6 +57,23 @@ export function QueryTab({
   const [rollbackFailure, setRollbackFailure] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
 
+  const runGeneration = useRef(0);
+  const mounted = useRef(false);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      runGeneration.current++;
+    };
+  }, []);
+
+  useEffect(() => {
+    runGeneration.current++;
+    setResult(null);
+    setRunError(null);
+  }, [tab.id, queryId, pinnedConnectionId, query?.sql]);
+
   function debouncedWrite(key: string, write: () => Promise<unknown>) {
     const existing = writeTimers.current.get(key);
     if (existing !== undefined) clearTimeout(existing);
@@ -87,11 +104,11 @@ export function QueryTab({
 
   function onSqlChange(sql: string) {
     if (!queryId) return;
+    runGeneration.current++;
     patchSavedQuery(queryId, { sql });
     // A result describes the statement that produced it — editing the SQL makes it stale, so Add to pending must not see it.
     setResult(null);
     setRunError(null);
-    setRollbackFailure(null);
     debouncedWrite("sql", () => invokeSetSavedQuerySql(queryId, sql));
   }
 
@@ -103,21 +120,24 @@ export function QueryTab({
   async function run() {
     if (running || !pinnedConnectionId || !query) return;
     const statement = query.sql;
+    const generation = runGeneration.current;
+    const current = () => mounted.current && generation === runGeneration.current;
     setRunError(null);
     setResult(null);
-    setRollbackFailure(null);
     setRunning(true);
     try {
       const preview = await invokePreviewQuery(pinnedConnectionId, statement);
-      // Rolled back asynchronously so no lock is held while the user decides.
-      void invokeRollbackPreview(preview.preview_id).catch((err) =>
-        setRollbackFailure(err instanceof Error ? err.message : String(err)),
-      );
-      setResult({ preview, statement });
+      try {
+        await invokeRollbackPreview(preview.preview_id);
+        if (mounted.current) setRollbackFailure(null);
+      } catch (err) {
+        if (mounted.current) setRollbackFailure(err instanceof Error ? err.message : String(err));
+      }
+      if (current()) setResult({ preview, statement });
     } catch (err) {
-      setRunError(err instanceof Error ? err.message : String(err));
+      if (current()) setRunError(err instanceof Error ? err.message : String(err));
     } finally {
-      setRunning(false);
+      if (mounted.current) setRunning(false);
     }
   }
 
@@ -243,18 +263,19 @@ export function QueryTab({
 
         <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-auto bg-bg px-3.5 py-3">
           {runError ? <div className="text-xs text-danger">{runError}</div> : null}
+          {rollbackFailure ? (
+            <div className="flex items-start gap-2 rounded-lg border border-border bg-danger-bg p-2.5 text-xs text-danger">
+              <span className="shrink-0 rounded-full bg-danger px-2 py-0.5 font-bold text-accent-on">RAN</span>
+              <span>
+                this run's transaction could not be rolled back, so whether the statement was
+                written is unknown — check the database before doing anything else. Staging is
+                blocked until you run again. ({rollbackFailure})
+              </span>
+            </div>
+          ) : null}
           {result ? (
             <>
-              {rollbackFailure ? (
-                <div className="flex items-start gap-2 rounded-lg border border-border bg-danger-bg p-2.5 text-xs text-danger">
-                  <span className="shrink-0 rounded-full bg-danger px-2 py-0.5 font-bold text-accent-on">RAN</span>
-                  <span>
-                    this run's transaction could not be rolled back, so whether the statement was
-                    written is unknown — check the database before doing anything else. Staging is
-                    blocked until you run again. ({rollbackFailure})
-                  </span>
-                </div>
-              ) : (
+              {!rollbackFailure ? (
                 <div className="flex items-center gap-2 text-xs text-text-faint">
                   <span className="rounded-full bg-surface-2 px-2 py-0.5 font-bold text-text-faint">RAN</span>
                   <span>
@@ -262,7 +283,7 @@ export function QueryTab({
                     Pending and Apply
                   </span>
                 </div>
-              )}
+              ) : null}
               {result.preview.rows_affected === null ? (
                 <DataGrid columns={result.preview.columns} columnTypes={result.preview.column_types} rows={result.preview.rows} />
               ) : (
