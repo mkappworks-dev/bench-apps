@@ -469,11 +469,12 @@ mod tests {
 
     async fn test_pool() -> Pool<Postgres> {
         let host = std::env::var("PGHOST").unwrap_or_else(|_| "localhost".into());
+        let port = std::env::var("PGPORT").map(|p| p.parse::<u16>().expect("PGPORT must be a valid port")).unwrap_or(5432);
         let database = std::env::var("PGDATABASE").unwrap_or_else(|_| "devbench_test".into());
         let username = std::env::var("PGUSER").unwrap_or_else(|_| "postgres".into());
         let password = std::env::var("PGPASSWORD").unwrap_or_else(|_| "postgres".into());
         let connection_string = crate::connection_registry::postgres_connection_string(
-            &host, 5432, &database, &username, Some(&password), "disable",
+            &host, port, &database, &username, Some(&password), "disable",
         );
         sqlx::postgres::PgPoolOptions::new()
             // Capped so the suite's parallel tests can't collectively exhaust
@@ -579,7 +580,7 @@ mod tests {
                 method: "POST".to_string(),
                 url: format!("{}/orders", server.url()),
                 headers: vec![],
-            body: None,
+                body: None,
             },
             Some(pool.clone()),
             vec![public("orders_e2e"), public("untouched_e2e")],
@@ -681,8 +682,7 @@ mod tests {
         let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
 
         let url = format!("{}/ping", server.url());
-        let request = FireRequestInput { method: "GET".to_string(), url: url.clone(), headers: vec![],
-            body: None };
+        let request = FireRequestInput { method: "GET".to_string(), url: url.clone(), headers: vec![], body: None };
         let method = request.method.clone();
 
         let result = run_correlated_request_impl(request, None, vec![], &crate::log_state::LogState::new()).await.unwrap();
@@ -702,7 +702,6 @@ mod tests {
     async fn a_correlated_request_persists_its_headers_and_body_in_history() {
         let dir = tempfile::tempdir().unwrap();
         let db = LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
-        let conn = test_connection();
 
         let mut server = mockito::Server::new_async().await;
         let mock = server
@@ -814,7 +813,7 @@ mod tests {
                 method: "GET".to_string(),
                 url: format!("{}/ping", server.url()),
                 headers: vec![],
-            body: None,
+                body: None,
             },
             None,
             vec![public("table_that_does_not_exist_anywhere")],
@@ -1414,7 +1413,7 @@ mod tests {
             .await;
 
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), body: None },
+            FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), headers: vec![], body: None },
             Some(pool.clone()),
             vec![],
             &logs,
@@ -1428,7 +1427,7 @@ mod tests {
         .unwrap();
         mock.assert_async().await;
 
-        let history_id = save_correlation_history(&edb.pool, "POST", "/orders", &result.response, None).await;
+        let history_id = save_correlation_history(&edb.pool, "POST", "/orders", &[], None, &result.response, None).await;
 
         let window = collect_correlation_window_impl(
             &registry,
@@ -1518,7 +1517,7 @@ mod tests {
             .await;
 
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
+            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), headers: vec![], body: None },
             Some(pool.clone()),
             vec![],
             &logs,
@@ -1532,7 +1531,7 @@ mod tests {
         .unwrap();
         mock.assert_async().await;
 
-        let history_id = save_correlation_history(&edb.pool, "GET", "/ping", &result.response, None).await;
+        let history_id = save_correlation_history(&edb.pool, "GET", "/ping", &[], None, &result.response, None).await;
         assert!(history_id.is_some(), "history save must succeed for this test to prove anything");
 
         let window = collect_correlation_window_impl(
@@ -1598,7 +1597,9 @@ mod tests {
             &edb.pool,
             "POST",
             "/orders",
-            &FireRequestOutput { status_code: 201, body: "{}".to_string(), duration_ms: 5 },
+            &[],
+            None,
+            &FireRequestOutput { status_code: 201, headers: vec![], body: "{}".to_string(), duration_ms: 5 },
             None,
         )
         .await;
@@ -1606,7 +1607,9 @@ mod tests {
             &edb.pool,
             "GET",
             "/ping",
-            &FireRequestOutput { status_code: 200, body: "pong".to_string(), duration_ms: 2 },
+            &[],
+            None,
+            &FireRequestOutput { status_code: 200, headers: vec![], body: "pong".to_string(), duration_ms: 2 },
             None,
         )
         .await;

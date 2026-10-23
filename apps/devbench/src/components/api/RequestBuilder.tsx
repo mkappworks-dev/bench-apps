@@ -22,7 +22,10 @@ export function RequestBuilder({
   onSendStart,
   onError,
 }: {
+  /** `null` when no connection is selected yet — Send stays a no-op until one is. */
   connectionId: string | null;
+  /** Real identities, not `"schema.name"` keys — this goes straight onto the
+   *  wire, and a Postgres identifier can legally contain a dot. */
   watchedTables: QualifiedTable[];
   method: string;
   url: string;

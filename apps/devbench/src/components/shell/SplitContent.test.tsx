@@ -172,6 +172,9 @@ describe("SplitContent", () => {
         duration_ms: 10,
         fired_at: "2026-07-30T14:02:11Z",
         session_id: null,
+        request_headers: [],
+        request_body: null,
+        response_headers: [],
       },
     ]);
 

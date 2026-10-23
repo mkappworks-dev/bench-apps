@@ -9,10 +9,11 @@ use sqlx::postgres::PgPoolOptions;
 
 fn test_connection_string() -> String {
     let host = std::env::var("PGHOST").unwrap_or_else(|_| "localhost".into());
+    let port = std::env::var("PGPORT").map(|p| p.parse::<u16>().expect("PGPORT must be a valid port")).unwrap_or(5432);
     let database = std::env::var("PGDATABASE").unwrap_or_else(|_| "devbench_test".into());
     let username = std::env::var("PGUSER").unwrap_or_else(|_| "postgres".into());
     let password = std::env::var("PGPASSWORD").unwrap_or_else(|_| "postgres".into());
-    postgres_connection_string(&host, 5432, &database, &username, Some(&password), "disable")
+    postgres_connection_string(&host, port, &database, &username, Some(&password), "disable")
 }
 
 async fn test_pool() -> sqlx::PgPool {
@@ -517,7 +518,7 @@ async fn a_correlated_requests_captured_mail_is_linked_to_the_request_end_to_end
 
     let started_at_ms = chrono::Utc::now().timestamp_millis();
     let result = run_correlated_request_impl_with_registry(
-        FireRequestInput { method: "POST".to_string(), url: format!("{}/checkout", server.url()), body: None },
+        FireRequestInput { method: "POST".to_string(), url: format!("{}/checkout", server.url()), headers: vec![], body: None },
         None,
         vec![],
         &logs,
@@ -540,6 +541,9 @@ async fn a_correlated_requests_captured_mail_is_linked_to_the_request_end_to_end
             response_body: result.response.body.clone(),
             duration_ms: result.response.duration_ms,
             session_id: None,
+            request_headers: vec![],
+            request_body: None,
+            response_headers: result.response.headers.clone(),
         },
     )
     .await

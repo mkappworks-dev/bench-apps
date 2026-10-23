@@ -307,4 +307,29 @@ describe("RequestBuilder", () => {
     const call = (tauriLib.invokeRunCorrelatedRequest as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(call.request.body).toBe('{"a":1}');
   });
+
+  it("keeps params synchronized with the URL through persisted state patches", () => {
+    const onPatchState = vi.fn();
+    function PersistedComposer() {
+      const [state, setState] = useState({ method: "GET", url: "/api/orders?status=pending" });
+      return <RequestBuilder connectionId="c1" watchedTables={[]} onResult={() => {}}
+        {...state} onPatchState={(patch) => {
+          onPatchState(patch);
+          setState((prev) => ({ ...prev, ...patch }));
+        }} />;
+    }
+    render(<PersistedComposer />);
+    fireEvent.click(screen.getByRole("button", { name: "Params" }));
+    expect(screen.getByPlaceholderText("key")).toHaveValue("status");
+    expect(screen.getByPlaceholderText("value")).toHaveValue("pending");
+
+    fireEvent.change(screen.getByPlaceholderText("value"), { target: { value: "paid" } });
+    expect(onPatchState).toHaveBeenCalledWith({ url: "/api/orders?status=paid" });
+    expect(screen.getByPlaceholderText("/api/orders")).toHaveValue("/api/orders?status=paid");
+
+    fireEvent.change(screen.getByPlaceholderText("/api/orders"), { target: { value: "/api/orders?limit=2" } });
+    expect(screen.getByPlaceholderText("key")).toHaveValue("limit");
+    expect(screen.getByPlaceholderText("value")).toHaveValue("2");
+  });
+
 });

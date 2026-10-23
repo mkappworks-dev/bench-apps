@@ -100,7 +100,7 @@ mod tests {
             name: "Test".to_string(),
             engine: "postgres".to_string(),
             host: std::env::var("PGHOST").unwrap_or_else(|_| "localhost".into()),
-            port: 5432,
+            port: std::env::var("PGPORT").map(|p| p.parse::<u16>().expect("PGPORT must be a valid port")).unwrap_or(5432),
             database: std::env::var("PGDATABASE").unwrap_or_else(|_| "devbench_test".into()),
             username: std::env::var("PGUSER").unwrap_or_else(|_| "postgres".into()),
             sslmode: "disable".to_string(),

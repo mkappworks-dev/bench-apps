@@ -448,6 +448,7 @@ mod tests {
         assert_eq!(all[0].request_body, None);
         assert_eq!(all[0].response_headers, vec![]);
     }
+
     #[tokio::test]
     async fn returns_the_generated_id_so_callers_can_link_to_it_later() {
         let (_dir, db) = db().await;
