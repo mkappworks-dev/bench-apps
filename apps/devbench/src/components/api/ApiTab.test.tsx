@@ -17,7 +17,7 @@ function deferred<T>() {
 function sendResult(body: string): CorrelationResult {
   return {
     correlation_id: `corr-${body}`,
-    response: { status_code: 201, body, duration_ms: 142 },
+    response: { status_code: 201, headers: [], body, duration_ms: 142 },
     table_diffs: [],
     db_error: null,
     history_id: `hist-${body}`,
@@ -61,7 +61,7 @@ describe("ApiTab", () => {
     vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
       correlation_id: "corr-1",
-      response: { status_code: 201, body: '{"id":1}', duration_ms: 10 },
+      response: { status_code: 201, headers: [], body: '{"id":1}', duration_ms: 10 },
       table_diffs: [{ schema: "public", table: "orders", inserted: 1, updated: 0, deleted: 0 }],
       db_error: null,
       history_id: null,
@@ -140,6 +140,9 @@ describe("ApiTab", () => {
         duration_ms: 142,
         fired_at: "2026-07-30T14:02:11Z",
         session_id: null,
+        request_headers: [],
+        request_body: null,
+        response_headers: [],
       },
     ]);
 
@@ -191,7 +194,7 @@ describe("ApiTab", () => {
     vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([]);
     vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
       correlation_id: "corr-1",
-      response: { status_code: 201, body: '{"id":8841}', duration_ms: 142 },
+      response: { status_code: 201, headers: [], body: '{"id":8841}', duration_ms: 142 },
       table_diffs: [],
       db_error: null,
       history_id: "hist-77",
@@ -323,6 +326,9 @@ describe("ApiTab", () => {
         duration_ms: 142,
         fired_at: "2026-07-30T14:02:11Z",
         session_id: null,
+        request_headers: [],
+        request_body: null,
+        response_headers: [],
       },
     ]);
 
@@ -338,5 +344,40 @@ describe("ApiTab", () => {
     );
 
     await waitFor(() => expect(screen.getByText('{"id":8841}')).toBeInTheDocument());
+  });
+  it("shows a read-only Sent disclosure only when a response was restored from history", async () => {
+    vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([
+      {
+        id: "1",
+        method: "POST",
+        url: "/api/orders",
+        status_code: 201,
+        response_body: '{"id":8841}',
+        duration_ms: 142,
+        fired_at: "2026-07-30T14:02:11Z",
+        session_id: null,
+        request_headers: [{ key: "Content-Type", value: "application/json" }],
+        request_body: '{"sku":"WIDGET-1"}',
+        response_headers: [{ key: "content-type", value: "application/json" }],
+      },
+    ]);
+
+    render(<ApiTab tab={tab({ url: "/api/orders" })} onPatchState={() => {}} onOpenDb={() => {}} onOpenLog={() => {}} onOpenEmail={() => {}} />);
+    const historyButton = await screen.findByRole("button", { name: /\/api\/orders/ });
+    fireEvent.click(historyButton);
+
+    await waitFor(() => expect(screen.getByText(/Sent: POST \/api\/orders/)).toBeInTheDocument());
+  });
+
+  it("does not show a Sent disclosure for a live send", async () => {
+    vi.spyOn(tauriLib, "invokeListHistory").mockResolvedValue([]);
+    vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue(sendResult('{"id":1}'));
+    vi.spyOn(tauriLib, "invokeCollectCorrelationWindow").mockReturnValue(new Promise(() => {}));
+
+    render(<ApiTab tab={tab({ url: "/api/orders" })} onPatchState={() => {}} onOpenDb={() => {}} onOpenLog={() => {}} onOpenEmail={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(screen.getByText('{"id":1}')).toBeInTheDocument());
+    expect(screen.queryByText(/^Sent:/)).not.toBeInTheDocument();
   });
 });

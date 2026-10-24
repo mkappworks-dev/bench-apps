@@ -14,14 +14,21 @@ export function invokeGetStartupStatus(): Promise<StartupStatus> {
   return invoke("get_startup_status");
 }
 
+export interface HeaderPair {
+  key: string;
+  value: string;
+}
+
 export interface FireRequestInput {
   method: string;
   url: string;
+  headers: HeaderPair[];
   body?: string;
 }
 
 export interface FireRequestOutput {
   status_code: number;
+  headers: HeaderPair[];
   body: string;
   duration_ms: number;
 }
@@ -40,11 +47,34 @@ export interface HistoryEntry {
   fired_at: string;
   /** `null` = unattributed: fired with no active session, or predating session scoping. */
   session_id: string | null;
+  request_headers: HeaderPair[];
+  /** `null` = no body was sent. */
+  request_body: string | null;
+  response_headers: HeaderPair[];
 }
 
 /** `sessionId` omitted or null lists every request ever fired (the unscoped view). */
 export function invokeListHistory(sessionId?: string | null): Promise<HistoryEntry[]> {
   return invoke("list_history", { sessionId: sessionId ?? null });
+}
+
+export type { SavedRequest, SavedRequestInput } from "./apiComposer";
+import type { SavedRequest, SavedRequestInput } from "./apiComposer";
+
+export function invokeListSavedRequests(sessionId?: string | null): Promise<SavedRequest[]> {
+  return invoke("list_saved_requests", { sessionId: sessionId ?? null });
+}
+export function invokeCreateSavedRequest(input: SavedRequestInput): Promise<SavedRequest> {
+  return invoke("create_saved_request", { input });
+}
+export function invokeUpdateSavedRequest(id: string, input: SavedRequestInput): Promise<SavedRequest> {
+  return invoke("update_saved_request", { id, input });
+}
+export function invokeRenameSavedRequest(id: string, name: string): Promise<SavedRequest> {
+  return invoke("rename_saved_request", { id, name });
+}
+export function invokeDeleteSavedRequest(id: string): Promise<void> {
+  return invoke("delete_saved_request", { id });
 }
 
 export interface TableDiff {

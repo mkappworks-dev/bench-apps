@@ -23,6 +23,9 @@ function entry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
     duration_ms: 142,
     fired_at: "2026-07-30T14:02:11Z",
     session_id: null,
+    request_headers: [],
+    request_body: null,
+    response_headers: [],
     ...overrides,
   };
 }
@@ -269,4 +272,17 @@ describe("HistorySidebar", () => {
     expect(screen.getByRole("button", { name: /refunds/ })).toHaveAttribute("aria-current", "true");
     expect(screen.getByRole("button", { name: /checkout/ })).toHaveAttribute("aria-current", "false");
   });
+});
+
+
+it("does not claim history is empty while its fetch is unresolved", async () => {
+  const pending = deferred<HistoryEntry[]>();
+  vi.spyOn(tauriLib, "invokeListHistory").mockReturnValue(pending.promise);
+  render(<HistorySidebar onSelect={() => {}} />);
+  expect(screen.getByText("Loading history…")).toBeInTheDocument();
+  expect(screen.queryByText("No requests yet.")).not.toBeInTheDocument();
+  expect(screen.queryByText("Couldn't load history.")).not.toBeInTheDocument();
+  pending.resolve([]);
+  await waitFor(() => expect(screen.getByText("No requests yet.")).toBeInTheDocument());
+  expect(screen.queryByText("Loading history…")).not.toBeInTheDocument();
 });

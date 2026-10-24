@@ -38,7 +38,7 @@ export function SplitContent({
 
   function paneOwnsItsLayout(pane: Pane): boolean {
     const kind = tabs.find((t) => t.pane === pane && t.id === activeTabId[pane])?.kind;
-    return kind === "db" || kind === "query";
+    return kind === "db" || kind === "query" || kind === "api";
   }
 
   function renderPane(pane: Pane) {

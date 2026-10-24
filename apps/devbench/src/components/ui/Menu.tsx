@@ -17,6 +17,7 @@ export function Menu({
   options,
   value,
   onSelect,
+  closeOnSelect = false,
   trigger,
   triggerClassName,
   align = "start",
@@ -30,6 +31,8 @@ export function Menu({
   options: MenuOption[];
   value?: string;
   onSelect: (value: string) => void;
+  /** Single-choice pickers can close on selection without changing action menus. */
+  closeOnSelect?: boolean;
   trigger: React.ReactNode;
   triggerClassName?: string;
   align?: "start" | "end";
@@ -48,7 +51,7 @@ export function Menu({
 
   const body = options.map((option) =>
     isPicker ? (
-      <BaseMenu.RadioItem key={option.value} value={option.value} className={ITEM_CLASS}>
+      <BaseMenu.RadioItem key={option.value} value={option.value} closeOnClick={closeOnSelect} className={ITEM_CLASS}>
         <OptionBody option={option} />
         <BaseMenu.RadioItemIndicator className="ml-auto text-text-faint">
           <CheckIcon />

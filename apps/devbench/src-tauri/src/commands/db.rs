@@ -335,11 +335,12 @@ mod tests {
 
     async fn test_pool() -> PgPool {
         let host = std::env::var("PGHOST").unwrap_or_else(|_| "localhost".into());
+        let port = std::env::var("PGPORT").map(|p| p.parse::<u16>().expect("PGPORT must be a valid port")).unwrap_or(5432);
         let database = std::env::var("PGDATABASE").unwrap_or_else(|_| "devbench_test".into());
         let username = std::env::var("PGUSER").unwrap_or_else(|_| "postgres".into());
         let password = std::env::var("PGPASSWORD").unwrap_or_else(|_| "postgres".into());
         let connection_string = crate::connection_registry::postgres_connection_string(
-            &host, 5432, &database, &username, Some(&password), "disable",
+            &host, port, &database, &username, Some(&password), "disable",
         );
         sqlx::postgres::PgPoolOptions::new()
             // Capped so the suite's parallel tests can't collectively exhaust

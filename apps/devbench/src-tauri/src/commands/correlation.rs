@@ -6,7 +6,7 @@ use tauri::State;
 
 use super::db::{get_primary_key_column, validate_identifier_labeled};
 use super::history::{save_history_entry_impl, HistoryEntryInput};
-use super::request::{fire_request_impl, FireRequestInput, FireRequestOutput};
+use super::request::{fire_request_impl, FireRequestInput, FireRequestOutput, HeaderPair};
 use crate::commands::qualified_table::QualifiedTable;
 use crate::connection_registry::ConnectionRegistry;
 use crate::local_db::LocalDb;
@@ -181,6 +181,8 @@ async fn save_correlation_history(
     pool: &sqlx::SqlitePool,
     method: &str,
     url: &str,
+    request_headers: &[HeaderPair],
+    request_body: Option<&str>,
     response: &FireRequestOutput,
     session_id: Option<&str>,
 ) -> Option<String> {
@@ -191,6 +193,9 @@ async fn save_correlation_history(
         response_body: response.body.clone(),
         duration_ms: response.duration_ms,
         session_id: session_id.map(str::to_string),
+        request_headers: request_headers.to_vec(),
+        request_body: request_body.map(str::to_string),
+        response_headers: response.headers.clone(),
     };
     match save_history_entry_impl(pool, entry).await {
         Ok(id) => Some(id),
@@ -369,6 +374,8 @@ pub async fn run_correlated_request(
     let pool = connection_registry.pool_for(&connection_id, &db.pool, secrets.as_ref()).await.ok();
     let method = request.method.clone();
     let url = request.url.clone();
+    let request_headers = request.headers.clone();
+    let request_body = request.body.clone();
     let window_ms = crate::commands::settings::get_settings_impl(&db.pool)
         .await
         .map(|s| s.correlation_window_ms)
@@ -385,8 +392,16 @@ pub async fn run_correlated_request(
         window_ms,
     )
     .await?;
-    result.history_id =
-        save_correlation_history(&db.pool, &method, &url, &result.response, session_id.as_deref()).await;
+    result.history_id = save_correlation_history(
+        &db.pool,
+        &method,
+        &url,
+        &request_headers,
+        request_body.as_deref(),
+        &result.response,
+        session_id.as_deref(),
+    )
+    .await;
     Ok(result)
 }
 
@@ -454,11 +469,12 @@ mod tests {
 
     async fn test_pool() -> Pool<Postgres> {
         let host = std::env::var("PGHOST").unwrap_or_else(|_| "localhost".into());
+        let port = std::env::var("PGPORT").map(|p| p.parse::<u16>().expect("PGPORT must be a valid port")).unwrap_or(5432);
         let database = std::env::var("PGDATABASE").unwrap_or_else(|_| "devbench_test".into());
         let username = std::env::var("PGUSER").unwrap_or_else(|_| "postgres".into());
         let password = std::env::var("PGPASSWORD").unwrap_or_else(|_| "postgres".into());
         let connection_string = crate::connection_registry::postgres_connection_string(
-            &host, 5432, &database, &username, Some(&password), "disable",
+            &host, port, &database, &username, Some(&password), "disable",
         );
         sqlx::postgres::PgPoolOptions::new()
             // Capped so the suite's parallel tests can't collectively exhaust
@@ -563,6 +579,7 @@ mod tests {
             FireRequestInput {
                 method: "POST".to_string(),
                 url: format!("{}/orders", server.url()),
+                headers: vec![],
                 body: None,
             },
             Some(pool.clone()),
@@ -634,7 +651,9 @@ mod tests {
             &db.pool,
             "POST",
             "/orders",
-            &FireRequestOutput { status_code: 201, body: "{\"id\":1}".to_string(), duration_ms: 42 },
+            &[],
+            None,
+            &FireRequestOutput { status_code: 201, headers: vec![], body: "{\"id\":1}".to_string(), duration_ms: 42 },
             None,
         )
         .await;
@@ -663,11 +682,11 @@ mod tests {
         let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
 
         let url = format!("{}/ping", server.url());
-        let request = FireRequestInput { method: "GET".to_string(), url: url.clone(), body: None };
+        let request = FireRequestInput { method: "GET".to_string(), url: url.clone(), headers: vec![], body: None };
         let method = request.method.clone();
 
         let result = run_correlated_request_impl(request, None, vec![], &crate::log_state::LogState::new()).await.unwrap();
-        save_correlation_history(&db.pool, &method, &url, &result.response, None).await;
+        save_correlation_history(&db.pool, &method, &url, &[], None, &result.response, None).await;
 
         mock.assert_async().await;
 
@@ -677,6 +696,57 @@ mod tests {
         assert_eq!(entries[0].url, url);
         assert_eq!(entries[0].status_code, 200);
         assert_eq!(entries[0].response_body, "pong");
+    }
+
+    #[tokio::test]
+    async fn a_correlated_request_persists_its_headers_and_body_in_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = LocalDb::connect(dir.path().to_path_buf()).await.unwrap();
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/orders")
+            .with_status(201)
+            .with_header("x-request-id", "req_1")
+            .with_body("{\"id\":1}")
+            .create_async()
+            .await;
+
+        let url = format!("{}/orders", server.url());
+        let request = FireRequestInput {
+            method: "POST".to_string(),
+            url: url.clone(),
+            headers: vec![HeaderPair { key: "Content-Type".to_string(), value: "application/json".to_string() }],
+            body: Some("{\"sku\":\"WIDGET-1\"}".to_string()),
+        };
+        let method = request.method.clone();
+        let request_headers = request.headers.clone();
+        let request_body = request.body.clone();
+
+        let result = run_correlated_request_impl(request, None, vec![], &crate::log_state::LogState::new())
+            .await
+            .unwrap();
+        save_correlation_history(
+            &db.pool,
+            &method,
+            &url,
+            &request_headers,
+            request_body.as_deref(),
+            &result.response,
+            None,
+        )
+        .await;
+
+        mock.assert_async().await;
+
+        let entries = crate::commands::history::list_history_impl(&db.pool, None).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].request_headers,
+            vec![HeaderPair { key: "Content-Type".to_string(), value: "application/json".to_string() }]
+        );
+        assert_eq!(entries[0].request_body.as_deref(), Some("{\"sku\":\"WIDGET-1\"}"));
+        assert!(entries[0].response_headers.iter().any(|h| h.key.eq_ignore_ascii_case("x-request-id")));
     }
 
     #[tokio::test]
@@ -691,7 +761,9 @@ mod tests {
             &db.pool,
             "POST",
             "/orders",
-            &FireRequestOutput { status_code: 201, body: "{}".to_string(), duration_ms: 42 },
+            &[],
+            None,
+            &FireRequestOutput { status_code: 201, headers: vec![], body: "{}".to_string(), duration_ms: 42 },
             Some(&session.id),
         )
         .await;
@@ -715,7 +787,9 @@ mod tests {
             &db.pool,
             "GET",
             "/ping",
-            &FireRequestOutput { status_code: 200, body: "pong".to_string(), duration_ms: 3 },
+            &[],
+            None,
+            &FireRequestOutput { status_code: 200, headers: vec![], body: "pong".to_string(), duration_ms: 3 },
             None,
         )
         .await;
@@ -738,6 +812,7 @@ mod tests {
             FireRequestInput {
                 method: "GET".to_string(),
                 url: format!("{}/ping", server.url()),
+                headers: vec![],
                 body: None,
             },
             None,
@@ -761,7 +836,7 @@ mod tests {
         let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
 
         let result = run_correlated_request_impl(
-            FireRequestInput { method: "GET".to_string(), url: format!("{}/ping", server.url()), body: None },
+            FireRequestInput { method: "GET".to_string(), url: format!("{}/ping", server.url()), headers: vec![], body: None },
             Some(pool.clone()),
             vec![],
             &crate::log_state::LogState::new(),
@@ -807,7 +882,7 @@ mod tests {
             .await;
 
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), body: None },
+            FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), headers: vec![], body: None },
             Some(pool.clone()),
             vec![],
             &logs,
@@ -857,7 +932,7 @@ mod tests {
         let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
 
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
+            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), headers: vec![], body: None },
             None,
             vec![],
             &logs,
@@ -975,7 +1050,7 @@ mod tests {
             .await;
 
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), body: None },
+            FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), headers: vec![], body: None },
             Some(pool.clone()),
             vec![],
             &logs,
@@ -1070,7 +1145,7 @@ mod tests {
 
         let started_at_ms = chrono::Utc::now().timestamp_millis();
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), body: None },
+            FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), headers: vec![], body: None },
             Some(pool.clone()),
             vec![],
             &logs,
@@ -1132,7 +1207,7 @@ mod tests {
         let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
 
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
+            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), headers: vec![], body: None },
             Some(pool.clone()),
             vec![],
             &logs,
@@ -1178,7 +1253,7 @@ mod tests {
         let mock = server.mock("GET", "/ping").with_status(200).with_body("pong").create_async().await;
 
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
+            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), headers: vec![], body: None },
             Some(pool.clone()),
             vec![],
             &logs,
@@ -1263,7 +1338,7 @@ mod tests {
             .await;
 
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
+            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), headers: vec![], body: None },
             Some(pool.clone()),
             vec![],
             &logs,
@@ -1338,7 +1413,7 @@ mod tests {
             .await;
 
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), body: None },
+            FireRequestInput { method: "POST".to_string(), url: format!("{}/orders", server.url()), headers: vec![], body: None },
             Some(pool.clone()),
             vec![],
             &logs,
@@ -1352,7 +1427,7 @@ mod tests {
         .unwrap();
         mock.assert_async().await;
 
-        let history_id = save_correlation_history(&edb.pool, "POST", "/orders", &result.response, None).await;
+        let history_id = save_correlation_history(&edb.pool, "POST", "/orders", &[], None, &result.response, None).await;
 
         let window = collect_correlation_window_impl(
             &registry,
@@ -1442,7 +1517,7 @@ mod tests {
             .await;
 
         let result = run_correlated_request_impl_with_registry(
-            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), body: None },
+            FireRequestInput { method: "GET".into(), url: format!("{}/ping", server.url()), headers: vec![], body: None },
             Some(pool.clone()),
             vec![],
             &logs,
@@ -1456,7 +1531,7 @@ mod tests {
         .unwrap();
         mock.assert_async().await;
 
-        let history_id = save_correlation_history(&edb.pool, "GET", "/ping", &result.response, None).await;
+        let history_id = save_correlation_history(&edb.pool, "GET", "/ping", &[], None, &result.response, None).await;
         assert!(history_id.is_some(), "history save must succeed for this test to prove anything");
 
         let window = collect_correlation_window_impl(
@@ -1522,7 +1597,9 @@ mod tests {
             &edb.pool,
             "POST",
             "/orders",
-            &FireRequestOutput { status_code: 201, body: "{}".to_string(), duration_ms: 5 },
+            &[],
+            None,
+            &FireRequestOutput { status_code: 201, headers: vec![], body: "{}".to_string(), duration_ms: 5 },
             None,
         )
         .await;
@@ -1530,7 +1607,9 @@ mod tests {
             &edb.pool,
             "GET",
             "/ping",
-            &FireRequestOutput { status_code: 200, body: "pong".to_string(), duration_ms: 2 },
+            &[],
+            None,
+            &FireRequestOutput { status_code: 200, headers: vec![], body: "pong".to_string(), duration_ms: 2 },
             None,
         )
         .await;

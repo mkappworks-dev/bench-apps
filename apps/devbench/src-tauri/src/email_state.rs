@@ -452,6 +452,9 @@ mod tests {
                 response_body: "{}".to_string(),
                 duration_ms: 12,
                 session_id: None,
+                request_headers: vec![],
+                request_body: None,
+                response_headers: vec![],
             },
         )
         .await

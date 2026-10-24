@@ -1,3 +1,4 @@
+import { readComposerDraft, type ComposerDraft } from "../../lib/apiComposer";
 import { useState } from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -6,6 +7,12 @@ import * as tauriLib from "../../lib/tauri";
 import type { CorrelationResult } from "../../lib/tauri";
 
 describe("RequestBuilder", () => {
+  function Composer({ onResult }: { onResult: (result: CorrelationResult) => void }) {
+    const [state, setState] = useState<ComposerDraft>(readComposerDraft({}));
+    return <RequestBuilder connectionId="c1" watchedTables={[]} onResult={onResult}
+      {...state} onPatchState={(patch) => setState((prev) => ({ ...prev, ...patch }))} />;
+  }
+
   beforeEach(() => {
     vi.restoreAllMocks();
   });
@@ -14,7 +21,7 @@ describe("RequestBuilder", () => {
     const onResult = vi.fn();
     vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
       correlation_id: "corr-1",
-      response: { status_code: 201, body: '{"id":8841}', duration_ms: 142 },
+      response: { status_code: 201, headers: [], body: '{"id":8841}', duration_ms: 142 },
       table_diffs: [{ schema: "public", table: "orders", inserted: 1, updated: 0, deleted: 0 }],
       db_error: null,
       history_id: "hist-1",
@@ -35,14 +42,14 @@ describe("RequestBuilder", () => {
     await waitFor(() =>
       expect(onResult).toHaveBeenCalledWith({
         correlation_id: "corr-1",
-        response: { status_code: 201, body: '{"id":8841}', duration_ms: 142 },
+        response: { status_code: 201, headers: [], body: '{"id":8841}', duration_ms: 142 },
         table_diffs: [{ schema: "public", table: "orders", inserted: 1, updated: 0, deleted: 0 }],
         db_error: null,
         history_id: "hist-1",
       }),
     );
     expect(tauriLib.invokeRunCorrelatedRequest).toHaveBeenCalledWith({
-      request: { method: "GET", url: "/api/orders", body: undefined },
+      request: { method: "GET", url: "/api/orders", headers: [], body: undefined },
       connectionId: "c1",
       watchedTables: [{ schema: "public", name: "orders" }],
       sessionId: null,
@@ -52,7 +59,7 @@ describe("RequestBuilder", () => {
   it("attributes the request to the active session", async () => {
     const invoked = vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
       correlation_id: "corr-3",
-      response: { status_code: 200, body: "{}", duration_ms: 5 },
+      response: { status_code: 200, headers: [], body: "{}", duration_ms: 5 },
       table_diffs: [],
       db_error: null,
       history_id: "hist-3",
@@ -104,7 +111,7 @@ describe("RequestBuilder", () => {
 
     resolveRequest({
       correlation_id: "corr-2",
-      response: { status_code: 200, body: "{}", duration_ms: 5 },
+      response: { status_code: 200, headers: [], body: "{}", duration_ms: 5 },
       table_diffs: [],
       db_error: null,
       history_id: "hist-2",
@@ -203,4 +210,178 @@ describe("RequestBuilder", () => {
     expect(invoked).not.toHaveBeenCalled();
     expect(onResult).not.toHaveBeenCalled();
   });
+
+  it("assembles headers, resolved auth, and url params into the actual request payload", async () => {
+    const onResult = vi.fn();
+    vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
+      correlation_id: "corr-9",
+      history_id: "hist-9",
+      response: { status_code: 200, headers: [], body: "{}", duration_ms: 5 },
+      table_diffs: [],
+      db_error: null,
+    });
+
+    render(<Composer onResult={onResult} />);
+
+    fireEvent.change(screen.getByPlaceholderText("/api/orders"), { target: { value: "/api/orders?status=pending" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Add header" }));
+    const [keyInput] = screen.getAllByPlaceholderText("key");
+    const [valueInput] = screen.getAllByPlaceholderText("value");
+    fireEvent.change(keyInput, { target: { value: "X-Debug" } });
+    fireEvent.change(valueInput, { target: { value: "true" } });
+
+    fireEvent.click(screen.getByText("Auth"));
+    fireEvent.click(screen.getByRole("button", { name: "Auth type" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Bearer Token" }));
+    fireEvent.change(screen.getByPlaceholderText("Bearer token"), { target: { value: "abc123" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(onResult).toHaveBeenCalled());
+    const call = (tauriLib.invokeRunCorrelatedRequest as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.request.url).toBe("/api/orders?status=pending");
+    expect(call.request.headers).toEqual(
+      expect.arrayContaining([
+        { key: "X-Debug", value: "true" },
+        { key: "Authorization", value: "Bearer abc123" },
+      ]),
+    );
+  });
+
+  it("excludes an unchecked header from the sent request", async () => {
+    const onResult = vi.fn();
+    vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
+      correlation_id: "corr-10",
+      history_id: "hist-10",
+      response: { status_code: 200, headers: [], body: "{}", duration_ms: 5 },
+      table_diffs: [],
+      db_error: null,
+    });
+
+    render(<Composer onResult={onResult} />);
+    fireEvent.change(screen.getByPlaceholderText("/api/orders"), { target: { value: "/api/orders" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add header" }));
+    fireEvent.change(screen.getAllByPlaceholderText("key")[0], { target: { value: "X-Debug" } });
+    fireEvent.change(screen.getAllByPlaceholderText("value")[0], { target: { value: "true" } });
+    fireEvent.click(screen.getByRole("checkbox"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(onResult).toHaveBeenCalled());
+    const call = (tauriLib.invokeRunCorrelatedRequest as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.request.headers).toEqual([]);
+  });
+
+  it("sends undefined body when bodyType is none", async () => {
+    const onResult = vi.fn();
+    vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
+      correlation_id: "corr-11",
+      history_id: "hist-11",
+      response: { status_code: 200, headers: [], body: "{}", duration_ms: 5 },
+      table_diffs: [],
+      db_error: null,
+    });
+    render(<Composer onResult={onResult} />);
+    fireEvent.change(screen.getByPlaceholderText("/api/orders"), { target: { value: "/api/orders" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onResult).toHaveBeenCalled());
+    const call = (tauriLib.invokeRunCorrelatedRequest as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.request.body).toBeUndefined();
+  });
+
+  it("sends the body text when bodyType is json", async () => {
+    const onResult = vi.fn();
+    vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
+      correlation_id: "corr-12",
+      history_id: "hist-12",
+      response: { status_code: 201, headers: [], body: "{}", duration_ms: 5 },
+      table_diffs: [],
+      db_error: null,
+    });
+    render(<Composer onResult={onResult} />);
+    fireEvent.change(screen.getByPlaceholderText("/api/orders"), { target: { value: "/api/orders" } });
+    fireEvent.click(screen.getByText("Body"));
+    fireEvent.click(screen.getByRole("button", { name: "Body type" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "JSON" }));
+    fireEvent.change(screen.getByPlaceholderText("Raw request body"), { target: { value: '{"a":1}' } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onResult).toHaveBeenCalled());
+    const call = (tauriLib.invokeRunCorrelatedRequest as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.request.body).toBe('{"a":1}');
+  });
+
+  it("keeps params synchronized with the URL through persisted state patches", () => {
+    const onPatchState = vi.fn();
+    function PersistedComposer() {
+      const [state, setState] = useState({ method: "GET", url: "/api/orders?status=pending" });
+      return <RequestBuilder connectionId="c1" watchedTables={[]} onResult={() => {}}
+        {...state} onPatchState={(patch) => {
+          onPatchState(patch);
+          setState((prev) => ({ ...prev, ...patch }));
+        }} />;
+    }
+    render(<PersistedComposer />);
+    fireEvent.click(screen.getByRole("tab", { name: "Params" }));
+    expect(screen.getByPlaceholderText("key")).toHaveValue("status");
+    expect(screen.getByPlaceholderText("value")).toHaveValue("pending");
+
+    fireEvent.change(screen.getByPlaceholderText("value"), { target: { value: "paid" } });
+    expect(onPatchState).toHaveBeenCalledWith({ url: "/api/orders?status=paid" });
+    expect(screen.getByPlaceholderText("/api/orders")).toHaveValue("/api/orders?status=paid");
+
+    fireEvent.change(screen.getByPlaceholderText("/api/orders"), { target: { value: "/api/orders?limit=2" } });
+    expect(screen.getByPlaceholderText("key")).toHaveValue("limit");
+    expect(screen.getByPlaceholderText("value")).toHaveValue("2");
+  });
+
+  it("keeps incomplete param rows editable while only persisting named params", async () => {
+    const invoked = vi.spyOn(tauriLib, "invokeRunCorrelatedRequest").mockResolvedValue({
+      correlation_id: "draft", history_id: null, response: { status_code: 200, headers: [], body: "{}", duration_ms: 1 }, table_diffs: [], db_error: null,
+    });
+    render(<Composer onResult={() => {}} />);
+    const url = screen.getByPlaceholderText("/api/orders");
+    fireEvent.change(url, { target: { value: "/orders#frag" } });
+    fireEvent.click(screen.getByText("Params"));
+    fireEvent.click(screen.getByRole("button", { name: "Add param" }));
+    const value = screen.getByPlaceholderText("value");
+    fireEvent.change(value, { target: { value: "pending" } });
+    const key = screen.getByPlaceholderText("key");
+    fireEvent.change(key, { target: { value: "status" } });
+    expect(url).toHaveValue("/orders?status=pending#frag");
+    key.focus();
+    fireEvent.change(key, { target: { value: "" } });
+    expect(key).toHaveFocus();
+    expect(value).toHaveValue("pending");
+    expect(url).toHaveValue("/orders#frag");
+    fireEvent.change(key, { target: { value: "status" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add param" }));
+    expect(screen.getAllByPlaceholderText("key")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(invoked).toHaveBeenCalled());
+    expect(invoked.mock.calls[0][0].request.url).toBe("/orders?status=pending#frag");
+    fireEvent.change(url, { target: { value: "/other?limit=2" } });
+    expect(screen.getAllByPlaceholderText("key")).toHaveLength(1);
+    expect(screen.getByPlaceholderText("key")).toHaveValue("limit");
+    fireEvent.change(url, { target: { value: "/orders?status=pending#frag" } });
+    expect(screen.getAllByPlaceholderText("key")).toHaveLength(1);
+  });
+
+  it("drops stale draft rows when the controlled URL changes externally", () => {
+    const props = { connectionId: "c1", watchedTables: [], onResult: () => {}, method: "GET", onPatchState: () => {} };
+    function ExternallyControlled({ url }: { url: string }) {
+      const [activeReqTab, setActiveReqTab] = useState<ComposerDraft["activeReqTab"]>("headers");
+      return <RequestBuilder {...props} url={url} activeReqTab={activeReqTab}
+        onPatchState={(patch) => { if (patch.activeReqTab) setActiveReqTab(patch.activeReqTab); }} />;
+    }
+    const { rerender } = render(<ExternallyControlled url="/a" />);
+    fireEvent.click(screen.getByRole("tab", { name: "Params" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add param" }));
+    expect(screen.getByPlaceholderText("key")).toHaveValue("");
+    rerender(<ExternallyControlled url="/b" />);
+    expect(screen.queryByPlaceholderText("key")).not.toBeInTheDocument();
+    rerender(<ExternallyControlled url="/a" />);
+    expect(screen.queryByPlaceholderText("key")).not.toBeInTheDocument();
+  });
+
 });
