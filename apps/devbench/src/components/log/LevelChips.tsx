@@ -10,7 +10,7 @@ export function LevelChips({
   onToggle: (level: string) => void;
 }) {
   return (
-    <div className="flex gap-1">
+    <div className="log-level-chips" role="group" aria-label="Filter by log level">
       {LIVE_LEVELS.map((level) => {
         const on = selected.includes(level);
         return (
@@ -18,9 +18,8 @@ export function LevelChips({
             key={level}
             onClick={() => onToggle(level)}
             aria-pressed={on}
-            className={`rounded-sm px-2 py-1 text-[11px] font-bold ${
-              on ? "bg-surface-2 text-text" : "text-text-faint hover:bg-surface-2"
-            }`}
+            className="log-level-chip"
+            data-level={level}
           >
             {level}
           </button>

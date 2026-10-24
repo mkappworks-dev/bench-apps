@@ -1,3 +1,5 @@
+import { LogIcon } from "./LogIcon";
+
 export interface SearchQuery {
   query: string;
   /** Minimum severity; "" means no level constraint. */
@@ -8,7 +10,7 @@ export interface SearchQuery {
 
 export const SEARCH_LEVELS = ["DEBUG", "INFO", "WARN", "ERROR", "FATAL"] as const;
 
-const CONTROL_CLASS = "rounded-sm border border-border bg-bg px-2.5 py-1.5 text-sm text-text";
+const CONTROL_CLASS = "log-control";
 
 /** `1754121600000` -> `2026-08-02T10:00`, the format `datetime-local` wants. */
 function toLocalInput(ms: number | null): string {
@@ -36,17 +38,20 @@ export function SearchBar({
   busy: boolean;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b border-border p-2.5">
+    <div className="log-search-form">
+      <label className="log-field log-search-query">Search text
       <input
+        aria-label="Search history"
         value={value.query}
         onChange={(e) => onChange({ ...value, query: e.target.value })}
         onKeyDown={(e) => {
           if (e.key === "Enter") onSubmit();
         }}
         placeholder="Search history…"
-        className={`min-w-40 flex-1 ${CONTROL_CLASS}`}
+        className={CONTROL_CLASS}
       />
-      <label className="flex items-center gap-1.5 text-xs text-text-muted">
+      </label>
+      <label className="log-field">
         <span>Level</span>
         <select
           aria-label="Minimum level"
@@ -62,7 +67,8 @@ export function SearchBar({
           ))}
         </select>
       </label>
-      <label className="flex items-center gap-1.5 text-xs text-text-muted">
+      <div className="log-search-range">
+      <label className="log-field">
         <span>From</span>
         <input
           aria-label="From"
@@ -72,7 +78,7 @@ export function SearchBar({
           className={CONTROL_CLASS}
         />
       </label>
-      <label className="flex items-center gap-1.5 text-xs text-text-muted">
+      <label className="log-field">
         <span>To</span>
         <input
           aria-label="To"
@@ -82,12 +88,13 @@ export function SearchBar({
           className={CONTROL_CLASS}
         />
       </label>
+      </div>
       <button
         onClick={onSubmit}
         disabled={busy}
-        className="rounded-sm bg-accent px-4 py-1.5 text-sm font-bold text-accent-on disabled:opacity-60"
+        className="log-primary-button"
       >
-        {busy ? "Searching…" : "Search"}
+        <LogIcon name="search" />{busy ? "Searching…" : "Search"}
       </button>
     </div>
   );

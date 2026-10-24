@@ -12,7 +12,7 @@ function levelClass(level: string | null): string {
     case "WARN":
       return "text-warning";
     default:
-      return "text-text-faint";
+      return "text-text-muted";
   }
 }
 
@@ -60,23 +60,22 @@ export function LogStream({
 
   if (lines.length === 0) {
     return (
-      <div className="p-4 text-sm text-text-faint">
-        No log lines yet. Add a source, or pipe your backend's output with{" "}
-        <code className="font-mono">yourapp 2&gt;&amp;1 | tee /tmp/devbench.log</code>.
+      <div className="log-empty">
+        No log lines yet. Add a file, command, or Docker source to start capturing output.
       </div>
     );
   }
 
   if (visible.length === 0) {
     return (
-      <div className="p-4 text-sm text-text-faint">
+      <div className="log-empty">
         No lines match {filter.trim() ? `"${filter}"` : "the current filter"}.
       </div>
     );
   }
 
   return (
-    <div ref={parentRef} className="h-full overflow-y-auto font-mono text-xs" data-testid="log-stream">
+    <div ref={parentRef} className="log-stream font-mono text-xs" data-testid="log-stream">
       <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
         {virtualizer.getVirtualItems().map((item) => {
           const l = visible[item.index];
@@ -84,12 +83,14 @@ export function LogStream({
             <div
               key={l.id}
               data-testid="log-line"
-              className="absolute left-0 flex w-full items-baseline gap-2.5 px-3"
+              data-level={l.level ?? undefined}
+              title={l.raw}
+              className="log-line absolute left-0"
               style={{ top: 0, transform: `translateY(${item.start}px)`, height: item.size }}
             >
-              <span className="w-24 shrink-0 tabular-nums text-text-faint">{shortTime(l.timestamp)}</span>
+              <span className="log-line-time w-24 shrink-0 tabular-nums text-text-muted">{shortTime(l.timestamp)}</span>
               <span className={`w-12 shrink-0 font-bold ${levelClass(l.level)}`}>{l.level ?? ""}</span>
-              <span className="truncate text-text">{l.message}</span>
+              <span className="min-w-0 truncate text-text">{l.message}</span>
             </div>
           );
         })}

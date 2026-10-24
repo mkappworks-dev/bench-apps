@@ -44,6 +44,13 @@ describe("SearchResults", () => {
     expect(screen.getByTestId("search-result")).toHaveTextContent("2026-07-30");
   });
 
+  it("identifies the source of each result and preserves attribution for a removed source", () => {
+    render(<SearchResults lines={[line(1), line(2, { source_id: "removed-worker" })]}
+      sources={[{ id: "src1", label: "server.log" }]} searched={true} error={null} />);
+    expect(screen.getAllByTestId("search-result")[0]).toHaveTextContent("server.log");
+    expect(screen.getAllByTestId("search-result")[1]).toHaveTextContent("removed-worker");
+  });
+
   it("shows a search error", () => {
     render(<SearchResults lines={[]} searched={true} error="failed to search log lines: disk full" />);
     expect(screen.getByText(/disk full/)).toBeInTheDocument();

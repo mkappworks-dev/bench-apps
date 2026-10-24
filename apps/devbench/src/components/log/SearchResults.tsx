@@ -1,4 +1,4 @@
-import type { LogLine } from "../../lib/tauri";
+import type { LogLine, LogSourceStatus } from "../../lib/tauri";
 
 function levelClass(level: string | null): string {
   switch (level) {
@@ -8,7 +8,7 @@ function levelClass(level: string | null): string {
     case "WARN":
       return "text-warning";
     default:
-      return "text-text-faint";
+      return "text-text-muted";
   }
 }
 
@@ -26,10 +26,12 @@ function stamp(capturedAtMs: number): string {
  */
 export function SearchResults({
   lines,
+  sources = [],
   searched,
   error,
 }: {
   lines: LogLine[];
+  sources?: Pick<LogSourceStatus, "id" | "label">[];
   /** False until a search has actually run, so "no results" and "nothing
    *  searched yet" render as the different states they are. */
   searched: boolean;
@@ -40,28 +42,30 @@ export function SearchResults({
   }
   if (!searched) {
     return (
-      <div className="p-4 text-sm text-text-faint">
+      <div className="log-empty">
         Search persisted log history — including sources you have since removed.
       </div>
     );
   }
   if (lines.length === 0) {
-    return <div className="p-4 text-sm text-text-faint">No stored lines match this search.</div>;
+    return <div className="log-empty">No stored lines match this search.</div>;
   }
 
+  const labels = new Map(sources.map((source) => [source.id, source.label]));
+
   return (
-    <div className="h-full overflow-y-auto font-mono text-xs" data-testid="search-results">
-      {lines.map((l) => (
-        <div
-          key={l.id}
-          data-testid="search-result"
-          className="flex items-baseline gap-2.5 border-b border-border px-3 py-1"
-        >
-          <span className="w-36 shrink-0 tabular-nums text-text-faint">{stamp(l.captured_at_ms)}</span>
-          <span className={`w-12 shrink-0 font-bold ${levelClass(l.level)}`}>{l.level ?? ""}</span>
-          <span className="break-all text-text">{l.message}</span>
-        </div>
-      ))}
+    <div className="log-search-results" data-testid="search-results">
+      <p className="log-search-meta">{lines.length} stored line{lines.length === 1 ? "" : "s"} shown · newest first</p>
+      <div className="log-results-list font-mono">
+        {lines.map((line) => (
+          <div key={line.id} data-testid="search-result" className="log-search-row">
+            <span className="tabular-nums text-text-muted">{stamp(line.captured_at_ms)}</span>
+            <span className="log-search-source min-w-0 truncate text-text-muted" title={line.source_id}>{labels.get(line.source_id) ?? line.source_id}</span>
+            <span className={`log-search-level font-bold ${levelClass(line.level)}`}>{line.level ?? ""}</span>
+            <span className="log-search-message min-w-0 whitespace-pre-wrap break-words text-text">{line.message}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

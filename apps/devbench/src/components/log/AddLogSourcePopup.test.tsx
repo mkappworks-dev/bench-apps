@@ -48,6 +48,16 @@ describe("AddLogSourcePopup", () => {
     expect(screen.queryByPlaceholderText("my-container")).not.toBeInTheDocument();
   });
 
+  it.each([
+    { kind: "Command" as const, present: ["Program", "Arguments", "Working directory", "Label"], absent: ["File path", "Container name"] },
+    { kind: "Docker" as const, present: ["Container name", "Label"], absent: ["File path", "Program", "Arguments", "Working directory"] },
+  ])("shows only its own fields for a $kind source", ({ kind, present, absent }) => {
+    render(<AddLogSourcePopup onSubmit={() => {}} onCancel={() => {}} error={null} />);
+    pickKind(kind);
+    for (const label of present) expect(screen.getByLabelText(label, { exact: true })).toBeInTheDocument();
+    for (const label of absent) expect(screen.queryByLabelText(label, { exact: true })).not.toBeInTheDocument();
+  });
+
   it("submits a command source with parsed args and an optional cwd", () => {
     const onSubmit = vi.fn();
     render(<AddLogSourcePopup onSubmit={onSubmit} onCancel={() => {}} error={null} />);

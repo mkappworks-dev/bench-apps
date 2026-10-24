@@ -88,7 +88,7 @@ describe("LogSourcesSidebar", () => {
         onAdd={() => {}}
       />,
     );
-    expect(screen.getByTestId("kind-s-exited")).toHaveTextContent("$");
+    expect(screen.getByTestId("kind-s-exited").querySelector("svg")).toHaveAttribute("data-icon", "command");
   });
 
   it("explains an exited source only when it is the selected one", () => {

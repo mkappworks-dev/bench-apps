@@ -31,6 +31,16 @@ describe("LogTab", () => {
     expect(screen.queryByPlaceholderText("Search history…")).not.toBeInTheDocument();
   });
 
+  it("opens the chosen Add Source form inside the sources sidebar", () => {
+    render(<LogTab sourceId={null} mode="live" onPatchState={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add log source" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Command/ }));
+    const sidebar = screen.getByRole("complementary", { name: "Log sources" });
+    expect(sidebar).toContainElement(screen.getByLabelText("Program"));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByLabelText("Program")).not.toBeInTheDocument();
+  });
+
   it("renders the search UI in search mode", () => {
     render(<LogTab sourceId={null} mode="search" onPatchState={() => {}} />);
     expect(screen.getByPlaceholderText("Search history…")).toBeInTheDocument();

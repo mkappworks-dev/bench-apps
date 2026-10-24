@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LogSourcesSidebar } from "./LogSourcesSidebar";
-import { AddLogSourcePopup } from "./AddLogSourcePopup";
+import { AddLogSourcePopup, LOG_SOURCE_OPTIONS, type AddSourceKind } from "./AddLogSourcePopup";
+import { Menu } from "../ui/Menu";
+import { LogIcon } from "./LogIcon";
+import "./log.css";
 import { LogStream } from "./LogStream";
 import { LevelChips } from "./LevelChips";
 import { SearchBar, type SearchQuery } from "./SearchBar";
@@ -37,7 +40,7 @@ export function LogTab({
   const [lines, setLines] = useState<LogLine[]>([]);
   const [filter, setFilter] = useState("");
   const [levels, setLevels] = useState<string[]>([]);
-  const [showAdd, setShowAdd] = useState(false);
+  const [addKind, setAddKind] = useState<AddSourceKind | null>(null);
   const [addError, setAddError] = useState<string | null>(null);
   const [dropped, setDropped] = useState(0);
   const [search, setSearch] = useState<SearchQuery>(EMPTY_SEARCH);
@@ -101,7 +104,7 @@ export function LogTab({
     setAddError(null);
     try {
       await invokeAddLogSource(input);
-      setShowAdd(false);
+      setAddKind(null);
       await refreshSources();
     } catch (err) {
       setAddError(err instanceof Error ? err.message : String(err));
@@ -144,54 +147,41 @@ export function LogTab({
     setLevels((prev) => (prev.includes(level) ? prev.filter((l) => l !== level) : [...prev, level]));
   }
 
+  const live = sources.some((source) => source.state === "live" && (sourceId === null || source.id === sourceId));
+
   return (
-    <div className="-m-6 flex h-full">
-      <LogSourcesSidebar
-        sources={sources}
-        activeSourceId={sourceId}
-        onSelect={(id) => onPatchState({ sourceId: id })}
-        onRemove={handleRemove}
-        onAdd={() => setShowAdd(true)}
+    <div className="log-tool -m-6">
+      <LogSourcesSidebar sources={sources} activeSourceId={sourceId}
+        onSelect={(id) => onPatchState({ sourceId: id })} onRemove={handleRemove} onAdd={() => setAddKind("file")}
+        addControl={<Menu label="Add log source" options={LOG_SOURCE_OPTIONS} onSelect={(kind) => { setAddError(null); setAddKind(kind as AddSourceKind); }}
+          triggerClassName="log-icon-button" trigger={<LogIcon name="plus" />} />}
+        addForm={addKind ? <AddLogSourcePopup key={addKind} initialKind={addKind} onSubmit={handleAdd} onCancel={() => setAddKind(null)} error={addError} /> : null}
       />
-      <div className="flex flex-1 flex-col overflow-hidden">
-        {showAdd ? (
-          <AddLogSourcePopup onSubmit={handleAdd} onCancel={() => setShowAdd(false)} error={addError} />
-        ) : null}
-
-        <div className="flex items-center gap-1 border-b border-border px-2.5 py-1.5">
-          <ModeButton mode="live" current={mode} onSelect={onPatchState} label="Live" />
-          <ModeButton mode="search" current={mode} onSelect={onPatchState} label="Search" />
+      <div className="log-main">
+        <div className="log-toolbar">
+          {mode === "live" ? (
+            <>
+              <input aria-label="Filter live logs" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter…" className="log-control log-live-filter" />
+              <LevelChips selected={levels} onToggle={toggleLevel} />
+            </>
+          ) : <span className="log-history-label">Persisted history</span>}
+          <div className="log-toolbar-end">
+            <div className="log-mode-switch" role="group" aria-label="Log mode">
+              <ModeButton mode="live" current={mode} onSelect={onPatchState} label="Live" />
+              <ModeButton mode="search" current={mode} onSelect={onPatchState} label="Search" />
+            </div>
+            {mode === "live" ? <span className="log-live-indicator" role="status"><span className={`log-live-dot ${live ? "is-live" : ""}`} />{live ? "Live" : "Idle"}</span> : null}
+          </div>
         </div>
-
         {mode === "live" ? (
           <>
-            <div className="flex items-center gap-2 border-b border-border p-2.5">
-              <input
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                placeholder="Filter…"
-                className="flex-1 rounded-sm border border-border bg-bg px-2.5 py-1.5 text-sm text-text"
-              />
-              <LevelChips selected={levels} onToggle={toggleLevel} />
-              <span className="text-xs font-semibold text-text-muted">
-                {sources.some((s) => s.state === "live") ? "Live" : "Idle"}
-              </span>
-            </div>
-            {dropped > 0 ? (
-              <div className="border-b border-border bg-warning-bg px-3 py-1.5 text-xs text-warning">
-                {dropped} earlier line{dropped === 1 ? "" : "s"} scrolled out of the buffer and are not shown.
-              </div>
-            ) : null}
-            <div className="flex-1 overflow-hidden">
-              <LogStream lines={lines} filter={filter} levels={levels} />
-            </div>
+            {dropped > 0 ? <div className="border-b border-border bg-warning-bg px-3 py-1.5 text-xs text-warning">{dropped} earlier line{dropped === 1 ? "" : "s"} scrolled out of the buffer and are not shown.</div> : null}
+            <div className="min-h-0 flex-1 overflow-hidden"><LogStream lines={lines} filter={filter} levels={levels} /></div>
           </>
         ) : (
           <>
             <SearchBar value={search} onChange={setSearch} onSubmit={runSearch} busy={searching} />
-            <div className="flex-1 overflow-hidden">
-              <SearchResults lines={results} searched={searched} error={searchError} />
-            </div>
+            <div className="min-h-0 flex-1 overflow-hidden"><SearchResults lines={results} sources={sources} searched={searched} error={searchError} /></div>
           </>
         )}
       </div>
@@ -218,9 +208,7 @@ function ModeButton({
       // Search mode also renders a "Search" submit button; naming the toggle
       // "<mode> mode" keeps the two apart for assistive tech.
       aria-label={`${label} mode`}
-      className={`rounded-sm px-3 py-1 text-xs font-semibold ${
-        active ? "bg-surface-2 text-text" : "text-text-muted hover:bg-surface-2"
-      }`}
+      className="log-mode-button"
     >
       {label}
     </button>
