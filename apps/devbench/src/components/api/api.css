@@ -14,7 +14,7 @@
   overflow: hidden;
 }
 
-.api-root .api-history {
+.api-root .api-sidebar {
   width: 220px;
   min-width: 0;
   flex-shrink: 0;
@@ -53,7 +53,7 @@
 
 @container api-pane (max-width: 640px) {
   .api-layout { flex-direction: column; }
-  .api-root .api-history {
+  .api-root .api-sidebar {
     width: 100%;
     max-height: 160px;
     border-right: 0;
@@ -77,4 +77,18 @@
 /* The rollup's faint copy is supporting text, so it needs text contrast here. */
 .api-root .text-text-faint {
   color: var(--text-muted);
+}
+
+.api-sidebar .api-history {
+  width: 100%;
+  min-width: 0;
+  border-right: 0;
+  overflow: visible;
+}
+.api-root .api-sidebar {
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+}
+@container api-pane (max-width: 640px) {
+  .api-root .api-sidebar { border-right: 0; }
 }

@@ -1,3 +1,4 @@
+import { SecondaryButton } from "../ui/SecondaryButton";
 import type { ComposerDraft, SavedHeaderRow } from "../../lib/apiComposer";
 import { useEffect, useState } from "react";
 import { invokeRunCorrelatedRequest, type CorrelationResult, type QualifiedTable, type HeaderPair } from "../../lib/tauri";
@@ -138,10 +139,10 @@ export function RequestBuilder({
           placeholder="/api/orders"
           className="api-url h-9 min-w-0 flex-1 rounded-sm border border-border bg-bg px-2.5 font-mono text-sm text-text placeholder:text-text-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         />
-        {onSave ? <button type="button" onClick={onSave} disabled={saving}
-          className="api-save h-9 shrink-0 rounded-sm border border-border px-3 text-sm font-semibold text-text-muted hover:bg-surface-2 hover:text-text disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+        {onSave ? <SecondaryButton onClick={onSave} disabled={saving}
+          className="api-save h-9 shrink-0 px-3 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
           {saving ? "Saving…" : "Save"}
-        </button> : null}
+        </SecondaryButton> : null}
         <button
           type="button"
           onClick={handleSend}
