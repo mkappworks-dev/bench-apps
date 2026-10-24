@@ -86,14 +86,20 @@ pub fn parse_log_line(raw: &str) -> ParsedLine {
     ParsedLine { timestamp, level, message }
 }
 
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
+use uuid::Uuid;
 
-/// How many parsed lines are kept in memory across all sources. Old lines are
-/// evicted; `evicted_through_id` lets a caller detect that it lost some.
-pub const MAX_BUFFERED_LINES: usize = 5_000;
+/// How many parsed lines are kept in memory PER SOURCE. Old lines are
+/// evicted from that source's own buffer only — a chatty source can no
+/// longer push a quiet source's lines out. SQLite (Task 4) is the durable,
+/// unbounded-by-comparison tier; this is just the hot live-tail cache.
+pub const SOURCE_BUFFER_CAPACITY: usize = 1_000;
 
 /// Ceiling on bytes read from one source in one poll. Checked INSIDE the read
 /// loop so a source that grows by a gigabyte between polls neither stalls the
@@ -109,99 +115,99 @@ pub const MAX_LINE_BYTES: usize = 64 * 1024;
 /// read again, rather than reading the whole appended region at once.
 const READ_CHUNK_BYTES: usize = 32 * 1024;
 
+/// The result of truncating (if needed) and parsing one raw line, ready to
+/// be handed to `LogBuffer::insert` once the caller has allocated an id.
+struct PreparedLine {
+    raw: String,
+    timestamp: Option<String>,
+    level: Option<String>,
+    message: String,
+}
+
+fn prepare_line(raw: &str) -> PreparedLine {
+    let (raw, truncated) = if raw.len() > MAX_LINE_BYTES {
+        // Cut on a char boundary so the String stays valid UTF-8.
+        let mut end = MAX_LINE_BYTES;
+        while end > 0 && !raw.is_char_boundary(end) {
+            end -= 1;
+        }
+        (&raw[..end], true)
+    } else {
+        (raw, false)
+    };
+
+    let mut parsed = parse_log_line(raw);
+    if truncated {
+        parsed.message.push_str("… (line truncated)");
+    }
+    PreparedLine { raw: raw.to_string(), timestamp: parsed.timestamp, level: parsed.level, message: parsed.message }
+}
+
 pub struct LogBuffer {
     lines: VecDeque<LogLine>,
     capacity: usize,
-    next_id: u64,
     evicted_through_id: u64,
+    evicted_count: u64,
 }
 
 impl LogBuffer {
     pub fn new(capacity: usize) -> Self {
-        Self {
-            lines: VecDeque::with_capacity(capacity.min(1024)),
-            capacity,
-            next_id: 1,
-            evicted_through_id: 0,
-        }
+        Self { lines: VecDeque::with_capacity(capacity.min(1024)), capacity, evicted_through_id: 0, evicted_count: 0 }
     }
 
-    /// The id the NEXT pushed line will receive. Correlation snapshots this
-    /// before firing a request, then selects ids strictly greater than it.
-    pub fn next_id(&self) -> u64 {
-        self.next_id
-    }
-
-    /// The highest id that has been dropped from the buffer. A caller whose
-    /// `from_id` is at or below this knows its view is incomplete.
+    /// The highest id that has been dropped from this buffer. A caller
+    /// whose `from_id` is at or below this knows its view is incomplete.
     pub fn evicted_through_id(&self) -> u64 {
         self.evicted_through_id
     }
 
-    pub fn push(&mut self, source_id: &str, raw: &str, captured_at_ms: i64) -> u64 {
-        let (raw, truncated) = if raw.len() > MAX_LINE_BYTES {
-            // Cut on a char boundary so the String stays valid UTF-8.
-            let mut end = MAX_LINE_BYTES;
-            while end > 0 && !raw.is_char_boundary(end) {
-                end -= 1;
-            }
-            (&raw[..end], true)
+    /// How many lines this buffer has ever evicted, total. Eviction is FIFO
+    /// on a strictly increasing id sequence, so every evicted id is below
+    /// every id still held — that ordering is what makes `dropped_since`
+    /// below sound.
+    pub fn evicted_count(&self) -> u64 {
+        self.evicted_count
+    }
+
+    /// How many of this buffer's evictions a caller reading from `after_id`
+    /// could have missed. Exact whenever `after_id` is older than every
+    /// eviction that ever happened here (the common case: a caller reading
+    /// from scratch, or one that hasn't polled since before eviction
+    /// started) — once `after_id` lands strictly inside the evicted range,
+    /// this over-reports, because only the count and the highest evicted id
+    /// are tracked, not each evicted line's own id.
+    pub fn dropped_since(&self, after_id: u64) -> u64 {
+        if after_id >= self.evicted_through_id {
+            0
         } else {
-            (raw, false)
-        };
-
-        let mut parsed = parse_log_line(raw);
-        if truncated {
-            parsed.message.push_str("… (line truncated)");
+            self.evicted_count
         }
-
-        self.insert(source_id, captured_at_ms, parsed.timestamp, parsed.level, parsed.message, raw.to_string())
     }
 
-    /// Inserts a synthetic operational note (e.g. a rotation warning) whose
-    /// level is asserted directly rather than guessed from content: it is
-    /// DevBench's own annotation, not a line read from the target, so running
-    /// it through `parse_log_line` would leave it with no level at all.
-    fn push_note(&mut self, source_id: &str, level: &str, message: &str, captured_at_ms: i64) -> u64 {
-        self.insert(source_id, captured_at_ms, None, Some(level.to_string()), message.to_string(), message.to_string())
-    }
-
-    fn insert(
+    /// Inserts one line under an id the caller already allocated from
+    /// LogState's single shared counter — this buffer never assigns ids
+    /// itself, so two different sources' buffers can never collide.
+    pub fn insert(
         &mut self,
+        id: u64,
         source_id: &str,
         captured_at_ms: i64,
         timestamp: Option<String>,
         level: Option<String>,
         message: String,
         raw: String,
-    ) -> u64 {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.lines.push_back(LogLine {
-            id,
-            source_id: source_id.to_string(),
-            captured_at_ms,
-            timestamp,
-            level,
-            message,
-            raw,
-        });
+    ) {
+        self.lines.push_back(LogLine { id, source_id: source_id.to_string(), captured_at_ms, timestamp, level, message, raw });
         while self.lines.len() > self.capacity {
             if let Some(dropped) = self.lines.pop_front() {
                 self.evicted_through_id = dropped.id;
+                self.evicted_count += 1;
             }
         }
-        id
     }
 
-    pub fn since(&self, after_id: u64, source_id: Option<&str>, limit: usize) -> Vec<LogLine> {
-        self.lines
-            .iter()
-            .filter(|l| l.id > after_id)
-            .filter(|l| source_id.is_none_or(|s| l.source_id == s))
-            .take(limit)
-            .cloned()
-            .collect()
+    pub fn since(&self, after_id: u64, limit: usize) -> Vec<LogLine> {
+        self.lines.iter().filter(|l| l.id > after_id).take(limit).cloned().collect()
     }
 
     /// Lines captured strictly after `after_id` and no later than
@@ -213,6 +219,19 @@ impl LogBuffer {
             .cloned()
             .collect()
     }
+
+    /// Lines with id greater than `flushed_through_id` — used by the
+    /// persistence sweep (Task 5). Read-only; does not touch eviction.
+    pub fn unflushed_since(&self, flushed_through_id: u64) -> Vec<LogLine> {
+        self.lines.iter().filter(|l| l.id > flushed_through_id).cloned().collect()
+    }
+}
+
+/// What a source captures from. `Command` is added in Task 3.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SourceKind {
+    File { path: PathBuf },
+    Command { program: String, args: Vec<String>, cwd: Option<PathBuf> },
 }
 
 /// Tails one regular file. Holds the byte offset it has consumed and the
@@ -232,14 +251,7 @@ pub struct SourceTailer {
 
 impl SourceTailer {
     pub fn new(source_id: String, path: PathBuf) -> Self {
-        Self {
-            source_id,
-            path,
-            offset: 0,
-            pending: String::new(),
-            started: false,
-            skipping_overlong_line: false,
-        }
+        Self { source_id, path, offset: 0, pending: String::new(), started: false, skipping_overlong_line: false }
     }
 
     pub fn path(&self) -> &PathBuf {
@@ -247,12 +259,13 @@ impl SourceTailer {
     }
 
     /// Reads whatever has been appended since the last call, bounded by
-    /// `MAX_BYTES_PER_POLL`, and pushes complete lines into `buffer`.
+    /// `MAX_BYTES_PER_POLL`, and pushes complete lines into `buffer`, each
+    /// under an id allocated from `next_id` (LogState's shared counter).
     ///
     /// On the very first call the tailer seeks to EOF instead of reading the
     /// file's history — pointing DevBench at an existing multi-gigabyte log
     /// must not replay it.
-    pub fn poll_once(&mut self, buffer: &mut LogBuffer, now_ms: i64) -> Result<(), String> {
+    pub fn poll_once(&mut self, buffer: &mut LogBuffer, next_id: &mut u64, now_ms: i64) -> Result<(), String> {
         let metadata = std::fs::metadata(&self.path)
             .map_err(|e| format!("cannot read log source {}: {e}", self.path.display()))?;
         let len = metadata.len();
@@ -264,14 +277,18 @@ impl SourceTailer {
         }
 
         if len < self.offset {
-            // Rotated or truncated. Never silently resync: the v1 spec requires
-            // a visible warning, because a silent reset looks identical to
-            // "the backend went quiet".
-            buffer.push_note(
+            // Rotated or truncated. Never silently resync: a silent reset
+            // looks identical to "the backend went quiet."
+            let id = *next_id;
+            *next_id += 1;
+            buffer.insert(
+                id,
                 &self.source_id,
-                "WARN",
-                "log source rotated or truncated — resuming from the start of the file",
                 now_ms,
+                None,
+                Some("WARN".to_string()),
+                "log source rotated or truncated — resuming from the start of the file".to_string(),
+                "log source rotated or truncated — resuming from the start of the file".to_string(),
             );
             self.offset = 0;
             self.pending.clear();
@@ -303,8 +320,8 @@ impl SourceTailer {
 
             // Lossy conversion: a log file can contain a partial multi-byte
             // sequence at a chunk boundary or genuinely invalid bytes. Dropping
-            // the whole chunk would be a silent data loss, which principle 4
-            // forbids; a replacement character is the honest rendering.
+            // the whole chunk would be silent data loss; a replacement
+            // character is the honest rendering.
             self.pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
 
             loop {
@@ -325,7 +342,10 @@ impl SourceTailer {
                     let line: String = self.pending.drain(..=newline).collect();
                     let line = line.trim_end_matches(['\n', '\r']);
                     if !line.is_empty() {
-                        buffer.push(&self.source_id, line, now_ms);
+                        let prepared = prepare_line(line);
+                        let id = *next_id;
+                        *next_id += 1;
+                        buffer.insert(id, &self.source_id, now_ms, prepared.timestamp, prepared.level, prepared.message, prepared.raw);
                     }
                 } else {
                     break;
@@ -338,7 +358,10 @@ impl SourceTailer {
             // of this same physical line instead of re-buffering it piecemeal.
             if !self.skipping_overlong_line && self.pending.len() > MAX_LINE_BYTES {
                 let flushed = std::mem::take(&mut self.pending);
-                buffer.push(&self.source_id, &flushed, now_ms);
+                let prepared = prepare_line(&flushed);
+                let id = *next_id;
+                *next_id += 1;
+                buffer.insert(id, &self.source_id, now_ms, prepared.timestamp, prepared.level, prepared.message, prepared.raw);
                 self.skipping_overlong_line = true;
             }
         }
@@ -347,17 +370,21 @@ impl SourceTailer {
     }
 }
 
-use std::sync::Mutex;
-use uuid::Uuid;
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LogSourceStatus {
     pub id: String,
     pub label: String,
+    /// Human-readable location: the file path for a file source, or the
+    /// invocation (`program` + `args` joined) for a command source.
     pub path: String,
-    /// "live" while the last poll succeeded, "error" once one failed.
+    /// "file" | "command"
+    pub kind: String,
+    /// "live" while the last poll/read succeeded, "error" once one failed,
+    /// "exited" once a command source's process ended on its own.
     pub state: String,
     pub error: Option<String>,
+    /// Set only when `state == "exited"`.
+    pub exit_code: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -370,57 +397,144 @@ pub struct LogPage {
     pub dropped: u64,
 }
 
-struct Source {
-    status: LogSourceStatus,
-    tailer: SourceTailer,
+/// What actually pulls bytes in for one source. `Command` is fully wired up
+/// in Task 3 — the running child process and its reader tasks are tracked
+/// separately (see `LogState::commands`), not inside this enum, because a
+/// `tokio::process::Child` needs to be shared with async reader tasks in a
+/// way a value living behind a `std::sync::Mutex` can't be.
+enum Ingestor {
+    File(SourceTailer),
+    Command,
 }
 
-/// Shared, Tauri-managed log observation state. Interior mutability behind one
-/// `Mutex` because every operation is short (a metadata call plus a bounded
-/// read) and the alternative — a lock per source plus one for the buffer —
-/// buys nothing at the handful-of-sources scale this tool operates at.
+struct SourceEntry {
+    status: LogSourceStatus,
+    ingestor: Ingestor,
+    buffer: LogBuffer,
+    /// High-water mark for the periodic persistence sweep (Task 5) — the id
+    /// through which this source's lines have already been written to SQLite.
+    flushed_through_id: u64,
+}
+
+/// Shared, Tauri-managed log observation state. `inner` is one `Mutex`
+/// because every operation on it is short (a metadata call plus a bounded
+/// read, or a buffer insert) and the alternative — a lock per source plus
+/// one for bookkeeping — buys nothing at the handful-of-sources scale this
+/// tool operates at.
 pub struct LogState {
     inner: Mutex<Inner>,
+    /// Running command sources' child processes, keyed by source id — kept
+    /// here (not inside `Inner`) because sharing a `Child` between the async
+    /// task waiting on its exit and a synchronous `remove_source` call needs
+    /// a `tokio::sync::Mutex`, not the `std::sync::Mutex` `Inner` uses for
+    /// its short, non-async critical sections.
+    commands: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<tokio::process::Child>>>>,
+    source_buffer_capacity: usize,
 }
 
 struct Inner {
-    buffer: LogBuffer,
-    sources: Vec<Source>,
+    sources: Vec<SourceEntry>,
+    /// ONE counter shared across every source's buffer, so ids stay globally
+    /// monotonic and ordering/`after_id` cursors work the same whether a
+    /// caller is looking at one source or the merged view of all of them.
+    next_id: u64,
 }
 
 impl LogState {
     pub fn new() -> Self {
-        Self::with_capacity(MAX_BUFFERED_LINES)
+        Self::with_capacity(SOURCE_BUFFER_CAPACITY)
     }
 
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub fn with_capacity(source_buffer_capacity: usize) -> Self {
         Self {
-            inner: Mutex::new(Inner { buffer: LogBuffer::new(capacity), sources: Vec::new() }),
+            inner: Mutex::new(Inner { sources: Vec::new(), next_id: 1 }),
+            commands: std::sync::Mutex::new(HashMap::new()),
+            source_buffer_capacity,
         }
     }
 
-    pub fn add_source(&self, label: String, path: PathBuf) -> Result<LogSourceStatus, String> {
-        let metadata = std::fs::metadata(&path)
-            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        if !metadata.is_file() {
-            return Err(format!(
-                "{} is not a regular file — DevBench v1 tails regular files only; \
-                 pipe stdout with `yourapp 2>&1 | tee /tmp/devbench.log` and point at that file",
-                path.display()
-            ));
+    /// Pushes one already-captured line: allocates the next global id and
+    /// inserts it into `source_id`'s buffer. File sources go through
+    /// `poll_all`/`SourceTailer` instead — this is for command sources,
+    /// whose reader tasks call it directly as lines arrive.
+    pub fn push_line(&self, source_id: &str, raw: &str, captured_at_ms: i64) {
+        let mut inner = match self.inner.lock() {
+            Ok(i) => i,
+            Err(_) => return,
+        };
+        let id = inner.next_id;
+        inner.next_id += 1;
+        let prepared = prepare_line(raw);
+        if let Some(entry) = inner.sources.iter_mut().find(|e| e.status.id == source_id) {
+            entry.buffer.insert(id, source_id, captured_at_ms, prepared.timestamp, prepared.level, prepared.message, prepared.raw);
         }
+    }
 
+    /// Marks a command source as having exited on its own. Never
+    /// auto-restarted — surfaced honestly, same as the file tailer's
+    /// rotation warning, rather than silently respawned.
+    pub fn mark_exited(&self, source_id: &str, exit_code: Option<i32>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            if let Some(entry) = inner.sources.iter_mut().find(|e| e.status.id == source_id) {
+                entry.status.state = "exited".to_string();
+                entry.status.exit_code = exit_code;
+            }
+        }
+        if let Ok(mut commands) = self.commands.lock() {
+            commands.remove(source_id);
+        }
+    }
+
+    pub fn add_source(&self, label: String, kind: SourceKind) -> Result<LogSourceStatus, String> {
+        self.add_source_with_id(Uuid::new_v4().to_string(), label, kind)
+    }
+
+    /// Same as `add_source`, but under a caller-supplied id instead of a
+    /// fresh one — used by restore so a source reloaded from `log_sources`
+    /// keeps the id its `log_lines` history and its DB row were already
+    /// filed under, instead of forking a new identity every restart.
+    pub fn add_source_with_id(&self, id: String, label: String, kind: SourceKind) -> Result<LogSourceStatus, String> {
+        let (display_path, kind_label) = match &kind {
+            SourceKind::File { path } => {
+                let metadata = std::fs::metadata(path)
+                    .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+                if !metadata.is_file() {
+                    return Err(format!(
+                        "{} is not a regular file — DevBench tails regular files or spawns \
+                         commands; pipe stdout with `yourapp 2>&1 | tee /tmp/devbench.log` and \
+                         point at that file, or add a Command source instead",
+                        path.display()
+                    ));
+                }
+                (path.display().to_string(), "file")
+            }
+            SourceKind::Command { program, args, .. } => {
+                let invocation = std::iter::once(program.clone()).chain(args.iter().cloned()).collect::<Vec<_>>().join(" ");
+                (invocation, "command")
+            }
+        };
         let status = LogSourceStatus {
-            id: Uuid::new_v4().to_string(),
+            id,
             label,
-            path: path.display().to_string(),
+            path: display_path,
+            kind: kind_label.to_string(),
             state: "live".to_string(),
             error: None,
+            exit_code: None,
         };
-        let tailer = SourceTailer::new(status.id.clone(), path);
+        let ingestor = match &kind {
+            SourceKind::File { path } => Ingestor::File(SourceTailer::new(status.id.clone(), path.clone())),
+            SourceKind::Command { .. } => Ingestor::Command,
+        };
+        let entry = SourceEntry {
+            status: status.clone(),
+            ingestor,
+            buffer: LogBuffer::new(self.source_buffer_capacity),
+            flushed_through_id: 0,
+        };
 
         let mut inner = self.inner.lock().map_err(|_| "log state poisoned".to_string())?;
-        inner.sources.push(Source { status: status.clone(), tailer });
+        inner.sources.push(entry);
         Ok(status)
     }
 
@@ -430,6 +544,24 @@ impl LogState {
         inner.sources.retain(|s| s.status.id != id);
         if inner.sources.len() == before {
             return Err(format!("no log source with id {id}"));
+        }
+        drop(inner);
+
+        let removed_child = {
+            let mut commands = self.commands.lock().map_err(|_| "log state poisoned".to_string())?;
+            commands.remove(id)
+        };
+        if let Some(child) = removed_child {
+            // Spawned rather than awaited here, so `remove_source` itself stays
+            // synchronous. `.lock().await`, not `try_lock()`: the wait task
+            // (see spawn_command_source) holds this same lock only briefly, once
+            // per try_wait() poll tick, so a try_lock() here could collide and
+            // silently skip the kill — with the registry entry already gone by
+            // then, nothing could ever reach that child again to retry.
+            tokio::spawn(async move {
+                let mut guard = child.lock().await;
+                let _ = guard.start_kill();
+            });
         }
         Ok(())
     }
@@ -442,20 +574,55 @@ impl LogState {
     }
 
     pub fn read_since(&self, after_id: u64, source_id: Option<&str>, limit: usize) -> LogPage {
-        match self.inner.lock() {
-            Ok(inner) => {
-                let lines = inner.buffer.since(after_id, source_id, limit);
-                let next_id = lines.last().map(|l| l.id).unwrap_or(after_id);
-                let dropped = inner.buffer.evicted_through_id().saturating_sub(after_id);
-                LogPage { lines, next_id, dropped }
+        let inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(_) => return LogPage { lines: Vec::new(), next_id: after_id, dropped: 0 },
+        };
+        let lines = match source_id {
+            Some(sid) => inner
+                .sources
+                .iter()
+                .find(|e| e.status.id == sid)
+                .map(|e| e.buffer.since(after_id, limit))
+                .unwrap_or_default(),
+            None => {
+                let mut merged: Vec<LogLine> =
+                    inner.sources.iter().flat_map(|e| e.buffer.since(after_id, usize::MAX)).collect();
+                merged.sort_by_key(|l| l.id);
+                merged.truncate(limit);
+                merged
             }
-            Err(_) => LogPage { lines: Vec::new(), next_id: after_id, dropped: 0 },
+        };
+        let dropped: u64 = match source_id {
+            Some(sid) => inner
+                .sources
+                .iter()
+                .find(|e| e.status.id == sid)
+                .map(|e| e.buffer.dropped_since(after_id))
+                .unwrap_or(0),
+            None => inner.sources.iter().map(|e| e.buffer.dropped_since(after_id)).sum(),
+        };
+        let next_id = lines.last().map(|l| l.id).unwrap_or(after_id);
+        LogPage { lines, next_id, dropped }
+    }
+
+    /// Reconciles the in-memory id counter with what's already durable in
+    /// SQLite after a restart (a fresh `LogState` otherwise starts back at
+    /// 1, colliding with a previous session's still-persisted `log_lines`
+    /// primary keys). Only ever moves the counter forward — a lower `next`
+    /// is ignored so a call racing after some lines were already captured
+    /// can't regress it and reopen the exact collision this exists to close.
+    pub fn seed_next_id(&self, next: u64) {
+        if let Ok(mut inner) = self.inner.lock() {
+            if next > inner.next_id {
+                inner.next_id = next;
+            }
         }
     }
 
     pub fn next_line_id(&self) -> u64 {
         match self.inner.lock() {
-            Ok(inner) => inner.buffer.next_id(),
+            Ok(inner) => inner.next_id,
             Err(_) => 0,
         }
     }
@@ -468,34 +635,76 @@ impl LogState {
         if inner.sources.is_empty() {
             return None;
         }
-        Some(inner.buffer.between(after_id, until_ms))
+        let mut merged: Vec<LogLine> = inner.sources.iter().flat_map(|e| e.buffer.between(after_id, until_ms)).collect();
+        merged.sort_by_key(|l| l.id);
+        Some(merged)
     }
 
-    /// Polls every configured source once. Errors are recorded on the source's
-    /// status rather than propagated — one broken source must not stop the
-    /// others, and the Log tab surfaces the error next to that source.
+    /// Polls every FILE source once. Command sources capture via their own
+    /// background reader tasks (Task 3) and are skipped here. Errors are
+    /// recorded on the source's status rather than propagated — one broken
+    /// source must not stop the others.
     pub fn poll_all(&self, now_ms: i64) {
         let mut inner = match self.inner.lock() {
             Ok(i) => i,
             Err(_) => return,
         };
-        let Inner { buffer, sources } = &mut *inner;
-        for source in sources.iter_mut() {
-            match source.tailer.poll_once(buffer, now_ms) {
+        let Inner { sources, next_id } = &mut *inner;
+        for entry in sources.iter_mut() {
+            let Ingestor::File(tailer) = &mut entry.ingestor else { continue };
+            match tailer.poll_once(&mut entry.buffer, next_id, now_ms) {
                 Ok(()) => {
-                    source.status.state = "live".to_string();
-                    source.status.error = None;
+                    entry.status.state = "live".to_string();
+                    entry.status.error = None;
                 }
                 Err(e) => {
-                    // Push a synthetic warning only on the transition into the
-                    // error state, not on every 250 ms poll.
-                    if source.status.state != "error" {
-                        buffer.push_note(&source.status.id, "WARN", &format!("log source unreadable: {e}"), now_ms);
+                    if entry.status.state != "error" {
+                        let source_id = entry.status.id.clone();
+                        let id = *next_id;
+                        *next_id += 1;
+                        let note = format!("log source unreadable: {e}");
+                        entry.buffer.insert(id, &source_id, now_ms, None, Some("WARN".to_string()), note.clone(), note);
                     }
-                    source.status.state = "error".to_string();
-                    source.status.error = Some(e);
+                    entry.status.state = "error".to_string();
+                    entry.status.error = Some(e);
                 }
             }
+        }
+    }
+
+    /// Collects every line added to every source since that source's last
+    /// flush, and advances each source's flush cursor to match. A line that
+    /// arrives mid-call lands in the NEXT call's batch, never this one and
+    /// never lost — the cursor only advances to what was actually read here.
+    pub fn take_unflushed(&self) -> Vec<LogLine> {
+        let mut inner = match self.inner.lock() {
+            Ok(i) => i,
+            Err(_) => return Vec::new(),
+        };
+        let mut batch = Vec::new();
+        for entry in inner.sources.iter_mut() {
+            let new_lines = entry.buffer.unflushed_since(entry.flushed_through_id);
+            if let Some(last) = new_lines.last() {
+                entry.flushed_through_id = last.id;
+            }
+            batch.extend(new_lines);
+        }
+        batch
+    }
+
+    /// Kills every currently-running command source. Called once from the
+    /// app's graceful-shutdown hook (Task 5) — `kill_on_drop` on each
+    /// `Command` stays set as defense-in-depth, but this is the guarantee
+    /// the shutdown path actually relies on, since it doesn't depend on
+    /// exactly when a detached task's last `Arc<Child>` reference drops.
+    pub async fn kill_all_commands(&self) {
+        let handles: Vec<_> = match self.commands.lock() {
+            Ok(commands) => commands.values().cloned().collect(),
+            Err(_) => Vec::new(),
+        };
+        for child in handles {
+            let mut guard = child.lock().await;
+            let _ = guard.start_kill();
         }
     }
 }
@@ -503,6 +712,96 @@ impl LogState {
 impl Default for LogState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Spawns `program` with `args` (and `cwd` if given), captures its stdout
+/// and stderr directly — no shell, no `2>&1` redirection, so no
+/// shell-quoting/injection surface — and registers it as a log source.
+/// `.kill_on_drop(true)` plus `LogState::remove_source`'s explicit kill are
+/// two independent backstops for the same guarantee: the process never
+/// outlives its source.
+pub async fn spawn_command_source(
+    logs: Arc<LogState>,
+    label: String,
+    program: String,
+    args: Vec<String>,
+    cwd: Option<PathBuf>,
+) -> Result<LogSourceStatus, String> {
+    spawn_command_source_with_id(logs, Uuid::new_v4().to_string(), label, program, args, cwd).await
+}
+
+/// Same as `spawn_command_source`, but under a caller-supplied id — see
+/// `add_source_with_id` for why restore needs this instead of a fresh id.
+pub async fn spawn_command_source_with_id(
+    logs: Arc<LogState>,
+    id: String,
+    label: String,
+    program: String,
+    args: Vec<String>,
+    cwd: Option<PathBuf>,
+) -> Result<LogSourceStatus, String> {
+    let mut cmd = tokio::process::Command::new(&program);
+    cmd.args(&args);
+    if let Some(dir) = &cwd {
+        cmd.current_dir(dir);
+    }
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
+
+    let mut child = cmd.spawn().map_err(|e| format!("failed to run `{program}`: {e}"))?;
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let stderr = child.stderr.take().expect("stderr is piped");
+
+    let status = logs.add_source_with_id(id, label, SourceKind::Command { program, args, cwd })?;
+
+    let child = Arc::new(tokio::sync::Mutex::new(child));
+    logs.commands
+        .lock()
+        .map_err(|_| "log state poisoned".to_string())?
+        .insert(status.id.clone(), Arc::clone(&child));
+
+    let out_logs = Arc::clone(&logs);
+    let out_id = status.id.clone();
+    tokio::spawn(async move { drain_pipe(&out_logs, &out_id, stdout).await });
+
+    let err_logs = Arc::clone(&logs);
+    let err_id = status.id.clone();
+    tokio::spawn(async move { drain_pipe(&err_logs, &err_id, stderr).await });
+
+    let wait_logs = Arc::clone(&logs);
+    let wait_id = status.id.clone();
+    tokio::spawn(async move {
+        // try_wait() in a poll loop, not `wait().await` while holding the
+        // guard: `wait()` would hold the lock for the process's entire
+        // remaining lifetime, and neither `remove_source` nor
+        // `kill_all_commands` (both `lock().await`) could ever get a turn to
+        // kill a still-running process. This loop drops the guard during
+        // its sleep specifically so they can.
+        let code = loop {
+            let mut guard = child.lock().await;
+            match guard.try_wait() {
+                Ok(Some(exit_status)) => break exit_status.code(),
+                Ok(None) => {
+                    drop(guard);
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                Err(_) => break None,
+            }
+        };
+        wait_logs.mark_exited(&wait_id, code);
+    });
+
+    Ok(status)
+}
+
+async fn drain_pipe<R: tokio::io::AsyncRead + Unpin>(logs: &LogState, source_id: &str, pipe: R) {
+    use tokio::io::AsyncBufReadExt;
+    let mut lines = tokio::io::BufReader::new(pipe).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        logs.push_line(source_id, &line, now_ms);
     }
 }
 
@@ -551,6 +850,44 @@ mod tests {
         assert_eq!(parsed.message, raw);
     }
 
+    #[test]
+    fn buffer_evicts_oldest_lines_and_records_how_far_it_evicted() {
+        let mut buffer = LogBuffer::new(3);
+        for i in 0..5u64 {
+            buffer.insert(i + 1, "src1", 1_000 + i as i64, None, None, format!("line {i}"), format!("line {i}"));
+        }
+        let lines = buffer.since(0, 100);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].message, "line 2");
+        // ids 1 and 2 are gone; a caller holding from_id = 0 must be able to tell.
+        assert_eq!(buffer.evicted_through_id(), 2);
+    }
+
+    #[test]
+    fn buffer_between_selects_by_id_lower_bound_and_capture_time_upper_bound() {
+        let mut buffer = LogBuffer::new(100);
+        buffer.insert(1, "src1", 1_000, None, None, "before".into(), "before".into());
+        buffer.insert(2, "src1", 1_500, None, None, "inside".into(), "inside".into());
+        buffer.insert(3, "src1", 9_999, None, None, "after the window".into(), "after the window".into());
+
+        let selected = buffer.between(1, 2_000);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].message, "inside");
+    }
+
+    #[test]
+    fn buffer_unflushed_since_returns_only_lines_after_the_flush_cursor() {
+        let mut buffer = LogBuffer::new(100);
+        buffer.insert(1, "src1", 1_000, None, None, "a".into(), "a".into());
+        buffer.insert(2, "src1", 1_001, None, None, "b".into(), "b".into());
+        buffer.insert(3, "src1", 1_002, None, None, "c".into(), "c".into());
+
+        let unflushed = buffer.unflushed_since(1);
+        assert_eq!(unflushed.len(), 2);
+        assert_eq!(unflushed[0].message, "b");
+        assert_eq!(unflushed[1].message, "c");
+    }
+
     use std::io::Write as _;
 
     fn write_and_flush(path: &std::path::Path, contents: &str) {
@@ -565,24 +902,22 @@ mod tests {
         let path = dir.path().join("app.log");
         std::fs::write(&path, "first line\n").unwrap();
 
-        let mut buffer = LogBuffer::new(MAX_BUFFERED_LINES);
+        let mut buffer = LogBuffer::new(SOURCE_BUFFER_CAPACITY);
+        let mut next_id = 1u64;
         let mut tailer = SourceTailer::new("src1".to_string(), path.clone());
 
-        // A brand-new tailer starts at the END of the file: a developer who
-        // points DevBench at a 2 GB log does not want 2 GB of history.
-        tailer.poll_once(&mut buffer, 1_000).unwrap();
-        assert_eq!(buffer.since(0, None, 100).len(), 0);
+        tailer.poll_once(&mut buffer, &mut next_id, 1_000).unwrap();
+        assert_eq!(buffer.since(0, 100).len(), 0);
 
         write_and_flush(&path, "second line\n");
-        tailer.poll_once(&mut buffer, 2_000).unwrap();
-        let lines = buffer.since(0, None, 100);
+        tailer.poll_once(&mut buffer, &mut next_id, 2_000).unwrap();
+        let lines = buffer.since(0, 100);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].message, "second line");
         assert_eq!(lines[0].captured_at_ms, 2_000);
 
-        // No new bytes -> no new lines, and no re-reading of what we already read.
-        tailer.poll_once(&mut buffer, 3_000).unwrap();
-        assert_eq!(buffer.since(0, None, 100).len(), 1);
+        tailer.poll_once(&mut buffer, &mut next_id, 3_000).unwrap();
+        assert_eq!(buffer.since(0, 100).len(), 1);
     }
 
     #[test]
@@ -591,15 +926,15 @@ mod tests {
         let path = dir.path().join("app.log");
         std::fs::write(&path, "aaaa\nbbbb\n").unwrap();
 
-        let mut buffer = LogBuffer::new(MAX_BUFFERED_LINES);
+        let mut buffer = LogBuffer::new(SOURCE_BUFFER_CAPACITY);
+        let mut next_id = 1u64;
         let mut tailer = SourceTailer::new("src1".to_string(), path.clone());
-        tailer.poll_once(&mut buffer, 1_000).unwrap();
+        tailer.poll_once(&mut buffer, &mut next_id, 1_000).unwrap();
 
-        // logrotate-style: file replaced with a shorter one.
         std::fs::write(&path, "cccc\n").unwrap();
-        tailer.poll_once(&mut buffer, 2_000).unwrap();
+        tailer.poll_once(&mut buffer, &mut next_id, 2_000).unwrap();
 
-        let lines = buffer.since(0, None, 100);
+        let lines = buffer.since(0, 100);
         assert_eq!(lines.len(), 2, "expected a warning line plus the new content");
         assert_eq!(lines[0].level.as_deref(), Some("WARN"));
         assert!(lines[0].message.contains("rotated or truncated"));
@@ -612,11 +947,14 @@ mod tests {
         let path = dir.path().join("app.log");
         std::fs::write(&path, "").unwrap();
 
-        let mut buffer = LogBuffer::new(MAX_BUFFERED_LINES);
+        // Capacity well above the 2,000 lines below: this test is about the
+        // tailer's per-poll byte budget, not buffer eviction (SOURCE_BUFFER_CAPACITY
+        // is too small here and would cap both polls at the same count).
+        let mut buffer = LogBuffer::new(3_000);
+        let mut next_id = 1u64;
         let mut tailer = SourceTailer::new("src1".to_string(), path.clone());
-        tailer.poll_once(&mut buffer, 1_000).unwrap();
+        tailer.poll_once(&mut buffer, &mut next_id, 1_000).unwrap();
 
-        // Write comfortably more than one poll's byte budget.
         let line = "x".repeat(1023);
         let mut blob = String::new();
         for _ in 0..2_000 {
@@ -625,13 +963,13 @@ mod tests {
         }
         write_and_flush(&path, &blob);
 
-        tailer.poll_once(&mut buffer, 2_000).unwrap();
-        let after_first = buffer.since(0, None, 10_000).len();
+        tailer.poll_once(&mut buffer, &mut next_id, 2_000).unwrap();
+        let after_first = buffer.since(0, 10_000).len();
         assert!(after_first > 0, "first poll should have read something");
         assert!(after_first < 2_000, "first poll must stop at the per-poll byte budget");
 
-        tailer.poll_once(&mut buffer, 3_000).unwrap();
-        assert!(buffer.since(0, None, 10_000).len() > after_first, "next poll resumes from the saved offset");
+        tailer.poll_once(&mut buffer, &mut next_id, 3_000).unwrap();
+        assert!(buffer.since(0, 10_000).len() > after_first, "next poll resumes from the saved offset");
     }
 
     #[test]
@@ -640,14 +978,15 @@ mod tests {
         let path = dir.path().join("app.log");
         std::fs::write(&path, "").unwrap();
 
-        let mut buffer = LogBuffer::new(MAX_BUFFERED_LINES);
+        let mut buffer = LogBuffer::new(SOURCE_BUFFER_CAPACITY);
+        let mut next_id = 1u64;
         let mut tailer = SourceTailer::new("src1".to_string(), path.clone());
-        tailer.poll_once(&mut buffer, 1_000).unwrap();
+        tailer.poll_once(&mut buffer, &mut next_id, 1_000).unwrap();
 
         write_and_flush(&path, &format!("{}\n", "y".repeat(MAX_LINE_BYTES * 2)));
-        tailer.poll_once(&mut buffer, 2_000).unwrap();
+        tailer.poll_once(&mut buffer, &mut next_id, 2_000).unwrap();
 
-        let lines = buffer.since(0, None, 100);
+        let lines = buffer.since(0, 100);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].raw.len() <= MAX_LINE_BYTES + 32);
         assert!(lines[0].message.ends_with("… (line truncated)"));
@@ -657,49 +996,12 @@ mod tests {
     fn tailer_reports_an_unreadable_source_as_an_error_not_as_silence() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("does-not-exist.log");
-        let mut buffer = LogBuffer::new(MAX_BUFFERED_LINES);
+        let mut buffer = LogBuffer::new(SOURCE_BUFFER_CAPACITY);
+        let mut next_id = 1u64;
         let mut tailer = SourceTailer::new("src1".to_string(), path);
-        let result = tailer.poll_once(&mut buffer, 1_000);
+        let result = tailer.poll_once(&mut buffer, &mut next_id, 1_000);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("does-not-exist.log"));
-    }
-
-    #[test]
-    fn buffer_evicts_oldest_lines_and_records_how_far_it_evicted() {
-        let mut buffer = LogBuffer::new(3);
-        for i in 0..5 {
-            buffer.push("src1", &format!("line {i}"), 1_000 + i as i64);
-        }
-        let lines = buffer.since(0, None, 100);
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0].message, "line 2");
-        // ids 1 and 2 are gone; a caller holding from_id = 0 must be able to tell.
-        assert_eq!(buffer.evicted_through_id(), 2);
-    }
-
-    #[test]
-    fn buffer_between_selects_by_id_lower_bound_and_capture_time_upper_bound() {
-        let mut buffer = LogBuffer::new(MAX_BUFFERED_LINES);
-        buffer.push("src1", "before", 1_000);
-        let from_id = buffer.next_id() - 1;
-        buffer.push("src1", "inside", 1_500);
-        buffer.push("src1", "after the window", 9_999);
-
-        let selected = buffer.between(from_id, 2_000);
-        assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].message, "inside");
-    }
-
-    #[test]
-    fn buffer_since_can_filter_to_a_single_source() {
-        let mut buffer = LogBuffer::new(MAX_BUFFERED_LINES);
-        buffer.push("server", "a", 1_000);
-        buffer.push("worker", "b", 1_001);
-        buffer.push("server", "c", 1_002);
-
-        let only_server = buffer.since(0, Some("server"), 100);
-        assert_eq!(only_server.len(), 2);
-        assert!(only_server.iter().all(|l| l.source_id == "server"));
     }
 
     #[test]
@@ -715,7 +1017,7 @@ mod tests {
         std::fs::write(&path, "").unwrap();
 
         let state = LogState::new();
-        state.add_source("server.log".into(), path).unwrap();
+        state.add_source("server.log".into(), SourceKind::File { path }).unwrap();
 
         assert_eq!(state.collect_window(0, 10_000), Some(vec![]));
     }
@@ -726,7 +1028,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("gone.log");
         std::fs::write(&path, "").unwrap();
-        let source = state.add_source("gone.log".into(), path.clone()).unwrap();
+        let source = state.add_source("gone.log".into(), SourceKind::File { path: path.clone() }).unwrap();
 
         std::fs::remove_file(&path).unwrap();
         state.poll_all(1_000);
@@ -743,7 +1045,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("app.log");
         std::fs::write(&path, "").unwrap();
-        state.add_source("app.log".into(), path.clone()).unwrap();
+        state.add_source("app.log".into(), SourceKind::File { path: path.clone() }).unwrap();
         state.poll_all(1_000);
 
         let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
@@ -760,11 +1062,278 @@ mod tests {
     }
 
     #[test]
+    fn read_since_merged_dropped_is_the_real_eviction_count_not_a_sum_of_id_distances() {
+        let state = LogState::with_capacity(2);
+        let dir = tempfile::tempdir().unwrap();
+        let path_a = dir.path().join("a.log");
+        let path_b = dir.path().join("b.log");
+        std::fs::write(&path_a, "").unwrap();
+        std::fs::write(&path_b, "").unwrap();
+        state.add_source("a".into(), SourceKind::File { path: path_a.clone() }).unwrap();
+        state.add_source("b".into(), SourceKind::File { path: path_b.clone() }).unwrap();
+        state.poll_all(1_000);
+
+        use std::io::Write as _;
+        // A gets ids 1..=5 (capacity 2, so it evicts 3: ids 1,2,3).
+        let mut fa = std::fs::OpenOptions::new().append(true).open(&path_a).unwrap();
+        for i in 0..5 {
+            writeln!(fa, "a line {i}").unwrap();
+        }
+        fa.flush().unwrap();
+        // B gets ids 6..=9 (capacity 2, so it evicts 2: ids 6,7).
+        let mut fb = std::fs::OpenOptions::new().append(true).open(&path_b).unwrap();
+        for i in 0..4 {
+            writeln!(fb, "b line {i}").unwrap();
+        }
+        fb.flush().unwrap();
+        state.poll_all(2_000);
+
+        let merged = state.read_since(0, None, 100);
+        // Real evictions: 3 (A) + 2 (B) = 5. The old formula summed each
+        // source's evicted_through_id verbatim — (3-0) + (7-0) = 10 — because
+        // B's evicted_through_id already counts A's ids too (one shared,
+        // globally-monotonic id space), so the per-source distances overlap
+        // and the sum roughly doubles the true count.
+        assert_eq!(merged.dropped, 5);
+    }
+
+    #[test]
     fn add_source_rejects_a_path_that_is_not_a_regular_file() {
         let dir = tempfile::tempdir().unwrap();
         let state = LogState::new();
-        let result = state.add_source("a directory".into(), dir.path().to_path_buf());
+        let result = state.add_source("a directory".into(), SourceKind::File { path: dir.path().to_path_buf() });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("regular file"));
+    }
+
+    // --- New: this is the whole point of the per-source-buffer refactor ---
+
+    #[test]
+    fn a_chatty_source_does_not_evict_a_quiet_sources_lines() {
+        let state = LogState::with_capacity(3);
+        let dir = tempfile::tempdir().unwrap();
+        let quiet_path = dir.path().join("quiet.log");
+        let chatty_path = dir.path().join("chatty.log");
+        std::fs::write(&quiet_path, "").unwrap();
+        std::fs::write(&chatty_path, "").unwrap();
+
+        let quiet = state.add_source("quiet".into(), SourceKind::File { path: quiet_path.clone() }).unwrap();
+        let chatty = state.add_source("chatty".into(), SourceKind::File { path: chatty_path.clone() }).unwrap();
+        state.poll_all(1_000);
+
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&quiet_path).unwrap();
+        writeln!(f, "the one line the quiet source will ever write").unwrap();
+        f.flush().unwrap();
+
+        let mut f = std::fs::OpenOptions::new().append(true).open(&chatty_path).unwrap();
+        for i in 0..10 {
+            writeln!(f, "chatty line {i}").unwrap();
+        }
+        f.flush().unwrap();
+
+        state.poll_all(2_000);
+
+        let quiet_page = state.read_since(0, Some(&quiet.id), 100);
+        assert_eq!(quiet_page.lines.len(), 1, "the chatty source's 10 lines (against a capacity-3 buffer) must not evict the quiet source's one line");
+        assert_eq!(quiet_page.dropped, 0);
+
+        let chatty_page = state.read_since(0, Some(&chatty.id), 100);
+        assert_eq!(chatty_page.lines.len(), 3, "the chatty source's own buffer, capacity 3, evicts its own oldest lines");
+        assert!(chatty_page.dropped > 0);
+    }
+
+    #[test]
+    fn read_since_with_no_source_id_merges_every_sources_lines_in_id_order() {
+        let state = LogState::new();
+        let dir = tempfile::tempdir().unwrap();
+        let path_a = dir.path().join("a.log");
+        let path_b = dir.path().join("b.log");
+        std::fs::write(&path_a, "").unwrap();
+        std::fs::write(&path_b, "").unwrap();
+        state.add_source("a".into(), SourceKind::File { path: path_a.clone() }).unwrap();
+        state.add_source("b".into(), SourceKind::File { path: path_b.clone() }).unwrap();
+        state.poll_all(1_000);
+
+        use std::io::Write as _;
+        // B (added second, so later in `sources`) gets the lower id here and A
+        // (added first) gets the higher one — the opposite of vector order. A
+        // naive per-source concatenation without `read_since`'s sort by id
+        // would then yield A's higher-id line before B's lower-id one, so this
+        // only passes if the sort actually runs.
+        let mut fb = std::fs::OpenOptions::new().append(true).open(&path_b).unwrap();
+        writeln!(fb, "from b").unwrap();
+        fb.flush().unwrap();
+        state.poll_all(2_000);
+
+        let mut fa = std::fs::OpenOptions::new().append(true).open(&path_a).unwrap();
+        writeln!(fa, "from a").unwrap();
+        fa.flush().unwrap();
+        state.poll_all(3_000);
+
+        let merged = state.read_since(0, None, 100);
+        assert_eq!(merged.lines.len(), 2);
+        let ids: Vec<u64> = merged.lines.iter().map(|l| l.id).collect();
+        assert!(ids[0] < ids[1], "merged view must stay in id order across sources");
+    }
+
+    #[tokio::test]
+    async fn a_command_source_captures_both_stdout_and_stderr() {
+        let state = Arc::new(LogState::new());
+        let status = spawn_command_source(
+            Arc::clone(&state),
+            "printer".into(),
+            "sh".into(),
+            vec!["-c".into(), "echo from-stdout; echo from-stderr 1>&2".into()],
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Give the child a moment to run and its reader tasks a moment to drain it.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let page = state.read_since(0, Some(&status.id), 100);
+        let messages: Vec<&str> = page.lines.iter().map(|l| l.message.as_str()).collect();
+        assert!(messages.contains(&"from-stdout"), "{messages:?}");
+        assert!(messages.contains(&"from-stderr"), "{messages:?}");
+    }
+
+    #[tokio::test]
+    async fn a_command_source_that_exits_on_its_own_is_marked_exited_not_error() {
+        let state = Arc::new(LogState::new());
+        let status = spawn_command_source(Arc::clone(&state), "one-shot".into(), "sh".into(), vec!["-c".into(), "exit 3".into()], None)
+            .await
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let sources = state.list_sources();
+        let found = sources.iter().find(|s| s.id == status.id).unwrap();
+        assert_eq!(found.state, "exited");
+        assert_eq!(found.exit_code, Some(3));
+    }
+
+    #[tokio::test]
+    async fn removing_a_command_source_kills_its_process() {
+        let marker_dir = tempfile::tempdir().unwrap();
+        let marker = marker_dir.path().join("still-alive");
+        let state = Arc::new(LogState::new());
+        // The marker only appears if the process was still running ~2s after
+        // being told to stop — a real proof of death, unlike checking the
+        // registry alone (remove_source empties that synchronously regardless
+        // of whether the kill actually lands).
+        let status = spawn_command_source(
+            Arc::clone(&state),
+            "long-runner".into(),
+            "sh".into(),
+            vec!["-c".into(), format!("sleep 2; touch {}", marker.display())],
+            None,
+        )
+        .await
+        .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        state.remove_source(&status.id).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(2_200)).await;
+
+        assert!(!marker.exists(), "remove_source should have killed the process before it could touch the marker file");
+        // Removed synchronously by remove_source itself, independent of the
+        // kill's outcome — bookkeeping, not proof of death (see above).
+        assert!(state.commands.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn kill_all_commands_terminates_every_running_command_source() {
+        let marker_dir = tempfile::tempdir().unwrap();
+        let marker = marker_dir.path().join("still-alive");
+        let state = Arc::new(LogState::new());
+        spawn_command_source(
+            Arc::clone(&state),
+            "slow".into(),
+            "sh".into(),
+            vec!["-c".into(), format!("sleep 5; touch {}", marker.display())],
+            None,
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        state.kill_all_commands().await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        assert!(!marker.exists(), "kill_all_commands should have killed the sleep before it could touch the marker file");
+        assert!(state.commands.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn collect_window_merges_lines_from_every_source() {
+        let state = LogState::new();
+        let dir = tempfile::tempdir().unwrap();
+        let path_a = dir.path().join("a.log");
+        let path_b = dir.path().join("b.log");
+        std::fs::write(&path_a, "").unwrap();
+        std::fs::write(&path_b, "").unwrap();
+        state.add_source("a".into(), SourceKind::File { path: path_a.clone() }).unwrap();
+        state.add_source("b".into(), SourceKind::File { path: path_b.clone() }).unwrap();
+        state.poll_all(1_000);
+
+        use std::io::Write as _;
+        let mut fa = std::fs::OpenOptions::new().append(true).open(&path_a).unwrap();
+        writeln!(fa, "from a").unwrap();
+        fa.flush().unwrap();
+        let mut fb = std::fs::OpenOptions::new().append(true).open(&path_b).unwrap();
+        writeln!(fb, "from b").unwrap();
+        fb.flush().unwrap();
+        state.poll_all(1_500);
+
+        let window = state.collect_window(0, 2_000).expect("sources are running");
+        assert_eq!(window.len(), 2);
+    }
+
+    #[test]
+    fn take_unflushed_returns_new_lines_once_and_advances_the_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.log");
+        std::fs::write(&path, "").unwrap();
+        let state = LogState::new();
+        state.add_source("app.log".into(), SourceKind::File { path: path.clone() }).unwrap();
+        state.poll_all(1_000);
+
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(f, "one").unwrap();
+        writeln!(f, "two").unwrap();
+        f.flush().unwrap();
+        state.poll_all(2_000);
+
+        let first_batch = state.take_unflushed();
+        assert_eq!(first_batch.len(), 2);
+
+        // Nothing new since the last call — the cursor advanced, so the
+        // same two lines must not come back.
+        let second_batch = state.take_unflushed();
+        assert_eq!(second_batch.len(), 0);
+
+        writeln!(f, "three").unwrap();
+        f.flush().unwrap();
+        state.poll_all(3_000);
+        let third_batch = state.take_unflushed();
+        assert_eq!(third_batch.len(), 1);
+        assert_eq!(third_batch[0].message, "three");
+    }
+
+    #[test]
+    fn seed_next_id_moves_the_counter_forward_but_never_backward() {
+        let state = LogState::new();
+        assert_eq!(state.next_line_id(), 1);
+
+        state.seed_next_id(100);
+        assert_eq!(state.next_line_id(), 100);
+
+        // A lower value must not regress a counter that's already ahead —
+        // e.g. a line captured before seeding happened to run.
+        state.seed_next_id(5);
+        assert_eq!(state.next_line_id(), 100);
     }
 }

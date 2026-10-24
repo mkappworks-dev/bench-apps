@@ -67,4 +67,46 @@ describe("LogStream", () => {
     render(<LogStream lines={[line(1)]} filter="zzzz" />);
     expect(screen.getByText(/no lines match/i)).toBeInTheDocument();
   });
+
+  it("shows only lines whose level is selected", () => {
+    render(
+      <LogStream
+        lines={[line(1, { level: "INFO" }), line(2, { level: "ERROR" })]}
+        filter=""
+        levels={["ERROR"]}
+      />,
+    );
+    const rendered = screen.getAllByTestId("log-line");
+    expect(rendered).toHaveLength(1);
+    expect(rendered[0]).toHaveTextContent("line 2");
+  });
+
+  it("applies no level constraint when none are selected", () => {
+    render(
+      <LogStream lines={[line(1, { level: "INFO" }), line(2, { level: "ERROR" })]} filter="" levels={[]} />,
+    );
+    expect(screen.getAllByTestId("log-line")).toHaveLength(2);
+  });
+
+  it("combines the text filter and the level filter", () => {
+    render(
+      <LogStream
+        lines={[
+          line(1, { level: "ERROR", message: "boom" }),
+          line(2, { level: "ERROR", message: "quiet" }),
+          line(3, { level: "INFO", message: "boom" }),
+        ]}
+        filter="boom"
+        levels={["ERROR"]}
+      />,
+    );
+    const rendered = screen.getAllByTestId("log-line");
+    expect(rendered).toHaveLength(1);
+    expect(rendered[0]).toHaveTextContent("boom");
+  });
+
+  it("hides a line with no level when a level filter is active", () => {
+    render(<LogStream lines={[line(1, { level: null })]} filter="" levels={["INFO"]} />);
+    expect(screen.getByText(/No lines match/)).toBeInTheDocument();
+  });
 });

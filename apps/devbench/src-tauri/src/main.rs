@@ -19,6 +19,11 @@ const LOG_POLL_INTERVAL_MS: u64 = 250;
 /// longer than the timeout itself implies.
 const PREVIEW_SWEEP_INTERVAL_MS: u64 = 15_000;
 
+/// How often unflushed log lines are batch-written to SQLite. Slower than
+/// LOG_POLL_INTERVAL_MS on purpose — this is a durability sweep, not a
+/// latency-sensitive one; Live mode reads the in-memory buffers directly.
+const LOG_FLUSH_INTERVAL_MS: u64 = 1_000;
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -68,12 +73,36 @@ fn main() {
                 Ok((db, port))
             });
 
+            let logs = Arc::new(LogState::new());
+            app.manage(Arc::clone(&logs));
+
             // On success this is what the SMTP catcher binds below; on
             // failure there's no pool to persist captured mail into, so the
             // catcher never starts and the frontend shows a blocking error
             // screen instead (via `StartupStatus`, always managed either way).
             let smtp_target = match init_result {
                 Ok((db, smtp_port)) => {
+                    // Seed before restore: a restored command can immediately assign log IDs.
+                    tauri::async_runtime::block_on(async {
+                        if let Err(e) = devbench::commands::logs::seed_log_id_counter(&db.pool, &logs).await {
+                            eprintln!("failed to seed log line id counter: {e}");
+                        }
+                        devbench::commands::logs::restore_persisted_sources(&db.pool, &logs).await;
+                    });
+                    let db_pool_for_flush = db.pool.clone();
+                    let logs_for_flush = Arc::clone(&logs);
+                    tauri::async_runtime::spawn(async move {
+                        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(LOG_FLUSH_INTERVAL_MS));
+                        loop {
+                            ticker.tick().await;
+                            if let Err(e) = devbench::commands::logs::flush_new_lines(&db_pool_for_flush, &logs_for_flush).await {
+                                eprintln!("log flush failed: {e}");
+                            }
+                            if let Err(e) = devbench::commands::logs::prune_log_lines(&db_pool_for_flush).await {
+                                eprintln!("log prune failed: {e}");
+                            }
+                        }
+                    });
                     let smtp_pool = db.pool.clone();
                     handle.manage(db);
                     handle.manage(StartupStatus { db_error: None });
@@ -88,12 +117,9 @@ fn main() {
                 }
             };
 
-            let logs = Arc::new(LogState::new());
-            app.manage(Arc::clone(&logs));
-
-            // One background task polls every source. It outlives every
-            // request; correlation windows read from the buffer it fills,
-            // which is why no lines are lost between the two correlation calls.
+            // One background task polls every FILE source. Command sources
+            // capture via their own reader tasks, started when they're
+            // spawned (restore, above, or add_log_source later).
             tauri::async_runtime::spawn(async move {
                 let mut ticker =
                     tokio::time::interval(std::time::Duration::from_millis(LOG_POLL_INTERVAL_MS));
@@ -185,6 +211,7 @@ fn main() {
             commands::logs::remove_log_source,
             commands::logs::list_log_sources,
             commands::logs::read_log_lines,
+            commands::logs::search_log_lines,
             commands::email::list_emails,
             commands::email::get_email,
             commands::email::clear_emails,
@@ -224,6 +251,25 @@ fn main() {
             commands::query::preview_query,
             commands::query::rollback_preview,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running devbench");
+        .build(tauri::generate_context!())
+        .expect("error while building devbench")
+        .run(|app_handle, event| {
+            // Last chance to persist anything still sitting in the
+            // in-memory buffers, and to kill any still-running command
+            // sources, before the process actually exits — bounds
+            // worst-case data loss to an unclean exit, not a normal quit,
+            // and doesn't depend on exactly when kill_on_drop's Drop impl
+            // would otherwise fire for a detached reader task.
+            if let tauri::RunEvent::Exit = event {
+                let logs = app_handle.state::<Arc<LogState>>();
+                tauri::async_runtime::block_on(async {
+                    if let Some(db) = app_handle.try_state::<LocalDb>() {
+                        if let Err(e) = devbench::commands::logs::flush_new_lines(&db.pool, &logs).await {
+                            eprintln!("final log flush on shutdown failed: {e}");
+                        }
+                    }
+                    logs.kill_all_commands().await;
+                });
+            }
+        });
 }

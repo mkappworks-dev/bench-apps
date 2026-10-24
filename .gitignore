@@ -31,8 +31,7 @@ target/
 # each with its own nested .git - must never be swept into this repo)
 .claude/worktrees/
 
-# Superpowers SDD scratch workspace (ledgers, briefs, review packages —
-# per-session artifacts, not project history)
+# Superpowers scratch workspace and visual-companion session files
 .superpowers/
 
 # Playwright MCP scratch output (screenshots/snapshots from ad-hoc verification)

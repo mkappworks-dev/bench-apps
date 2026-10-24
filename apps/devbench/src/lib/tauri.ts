@@ -92,9 +92,15 @@ export interface LogLine {
 export interface LogSourceStatus {
   id: string;
   label: string;
+  /** File path for a file source, or the invocation (`program` + args) for a command source. */
   path: string;
+  /** "file" | "command" */
+  kind: string;
+  /** "live" | "error" | "exited" */
   state: string;
   error: string | null;
+  /** Set only when `state === "exited"`. */
+  exit_code: number | null;
 }
 
 export interface LogPage {
@@ -160,8 +166,51 @@ export function invokeSmtpStatus(): Promise<SmtpStatus> {
   return invoke("smtp_status");
 }
 
-export function invokeAddLogSource(label: string, path: string): Promise<LogSourceStatus> {
-  return invoke("add_log_source", { input: { label, path } });
+export interface AddLogSourceInput {
+  label: string;
+  kind: "file" | "command";
+  /** kind === "file" */
+  path?: string;
+  /** kind === "command" */
+  program?: string;
+  args?: string[];
+  cwd?: string;
+}
+
+export function invokeAddLogSource(input: AddLogSourceInput): Promise<LogSourceStatus> {
+  return invoke("add_log_source", {
+    input: {
+      label: input.label,
+      kind: input.kind,
+      path: input.path ?? null,
+      program: input.program ?? null,
+      args: input.args ?? [],
+      cwd: input.cwd ?? null,
+    },
+  });
+}
+
+export interface SearchLogLinesArgs {
+  query?: string;
+  /** Minimum severity: "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL". */
+  level?: string;
+  sourceId?: string;
+  afterMs?: number;
+  beforeMs?: number;
+  limit: number;
+}
+
+export function invokeSearchLogLines(args: SearchLogLinesArgs): Promise<LogLine[]> {
+  return invoke("search_log_lines", {
+    input: {
+      query: args.query ?? null,
+      level: args.level ?? null,
+      source_id: args.sourceId ?? null,
+      after_ms: args.afterMs ?? null,
+      before_ms: args.beforeMs ?? null,
+      limit: args.limit,
+    },
+  });
 }
 
 export function invokeRemoveLogSource(id: string): Promise<void> {

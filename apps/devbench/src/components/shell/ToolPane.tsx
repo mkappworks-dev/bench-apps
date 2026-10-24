@@ -63,7 +63,11 @@ export function ToolPane({
       );
     case "log":
       return (
-        <LogTab sourceId={typeof tab.state.sourceId === "string" ? tab.state.sourceId : null} onPatchState={onPatchState} />
+        <LogTab
+          sourceId={typeof tab.state.sourceId === "string" ? tab.state.sourceId : null}
+          mode={tab.state.mode === "search" ? "search" : "live"}
+          onPatchState={onPatchState}
+        />
       );
     case "email":
       return <EmailTab focusEmailId={emailFocusId} onOpenHistory={onOpenHistory} />;
