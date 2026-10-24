@@ -19,3 +19,5 @@ pub mod settings;
 pub mod startup;
 pub mod tabs;
 pub mod watched;
+
+pub mod saved_requests;
