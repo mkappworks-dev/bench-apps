@@ -11,6 +11,12 @@
     request_body: 'é🙂', response_headers: [{ key: 'content-type', value: 'application/json' },
       { key: 'set-cookie', value: 'demo=one' }, { key: 'set-cookie', value: 'demo=two' }],
   }];
+  let saved = [{
+    id: 'saved-demo', name: 'Create order', session_id: null, method: 'POST', url: '/api/orders?status=pending',
+    headers: [{ key: 'X-Debug', value: 'yes', enabled: false }], body: '{"sku":"WIDGET-1"}', body_type: 'json',
+    auth: { type: 'bearer', token: 'synthetic-token', username: '', password: '', keyName: 'X-Api-Key', keyValue: '', keyIn: 'header' },
+    created_at: '2026-10-23T12:00:00Z', updated_at: '2026-10-23T12:00:00Z',
+  }];
   let sequence = 0;
   let tabs = [
     { id: 'api-demo', kind: 'api', pane: 'left', ordinal: 0, session_id: null,
@@ -41,6 +47,27 @@
       if (scenario === 'history-failure') throw new Error('Synthetic history failure');
       return scenario === 'empty' ? [] : history;
     },
+    list_saved_requests: ({ sessionId }) => saved.filter((request) => !sessionId || request.session_id === sessionId),
+    create_saved_request: ({ input }) => {
+      const request = { ...input, id: `saved-${++sequence}`, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+      saved.push(request);
+      return request;
+    },
+    update_saved_request: ({ id, input }) => {
+      const current = saved.find((request) => request.id === id);
+      if (!current) throw new Error('Saved request not found');
+      const request = { ...current, ...input, updated_at: new Date().toISOString() };
+      saved = saved.map((old) => old.id === id ? request : old);
+      return request;
+    },
+    rename_saved_request: ({ id, name }) => {
+      const current = saved.find((request) => request.id === id);
+      if (!current) throw new Error('Saved request not found');
+      const request = { ...current, name, updated_at: new Date().toISOString() };
+      saved = saved.map((old) => old.id === id ? request : old);
+      return request;
+    },
+    delete_saved_request: ({ id }) => { saved = saved.filter((request) => request.id !== id); },
     run_correlated_request: async ({ request }) => {
       window.apiComposerFixture.requests.push(request);
       await pause(scenario === 'sending' ? 60000 : 300);
@@ -54,7 +81,7 @@
       log_lines: [], log_lines_truncated: false, emails: [], emails_truncated: false,
     }; },
   };
-  window.apiComposerFixture = { scenario, requests: [] };
+  window.apiComposerFixture = { scenario, requests: [], saved: () => saved };
   window.__TAURI_INTERNALS__ = {
     invoke: async (command, args = {}) => {
       if (!Object.hasOwn(handlers, command)) throw new Error(`Unstubbed QA command: ${command}`);
