@@ -1,3 +1,4 @@
+import { readComposerDraft, type ComposerDraft } from "../../lib/apiComposer";
 import { useState } from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -7,7 +8,7 @@ import type { CorrelationResult } from "../../lib/tauri";
 
 describe("RequestBuilder", () => {
   function Composer({ onResult }: { onResult: (result: CorrelationResult) => void }) {
-    const [state, setState] = useState({ method: "GET", url: "" });
+    const [state, setState] = useState<ComposerDraft>(readComposerDraft({}));
     return <RequestBuilder connectionId="c1" watchedTables={[]} onResult={onResult}
       {...state} onPatchState={(patch) => setState((prev) => ({ ...prev, ...patch }))} />;
   }
@@ -368,13 +369,18 @@ describe("RequestBuilder", () => {
 
   it("drops stale draft rows when the controlled URL changes externally", () => {
     const props = { connectionId: "c1", watchedTables: [], onResult: () => {}, method: "GET", onPatchState: () => {} };
-    const { rerender } = render(<RequestBuilder {...props} url="/a" />);
+    function ExternallyControlled({ url }: { url: string }) {
+      const [activeReqTab, setActiveReqTab] = useState<ComposerDraft["activeReqTab"]>("headers");
+      return <RequestBuilder {...props} url={url} activeReqTab={activeReqTab}
+        onPatchState={(patch) => { if (patch.activeReqTab) setActiveReqTab(patch.activeReqTab); }} />;
+    }
+    const { rerender } = render(<ExternallyControlled url="/a" />);
     fireEvent.click(screen.getByRole("tab", { name: "Params" }));
     fireEvent.click(screen.getByRole("button", { name: "Add param" }));
     expect(screen.getByPlaceholderText("key")).toHaveValue("");
-    rerender(<RequestBuilder {...props} url="/b" />);
+    rerender(<ExternallyControlled url="/b" />);
     expect(screen.queryByPlaceholderText("key")).not.toBeInTheDocument();
-    rerender(<RequestBuilder {...props} url="/a" />);
+    rerender(<ExternallyControlled url="/a" />);
     expect(screen.queryByPlaceholderText("key")).not.toBeInTheDocument();
   });
 

@@ -3,7 +3,8 @@ import { KeyValueEditor, type KeyValueRow } from "./KeyValueEditor";
 import { BodyEditor, type BodyType } from "./BodyEditor";
 import { AuthEditor, type AuthState } from "./AuthEditor";
 
-export type ReqTab = "params" | "headers" | "body" | "auth";
+import type { ReqTab } from "../../../lib/apiComposer";
+export type { ReqTab };
 
 const TABS: { id: ReqTab; label: string }[] = [
   { id: "params", label: "Params" },

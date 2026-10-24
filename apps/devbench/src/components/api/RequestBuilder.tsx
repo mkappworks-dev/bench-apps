@@ -1,3 +1,4 @@
+import type { ComposerDraft, SavedHeaderRow } from "../../lib/apiComposer";
 import { useEffect, useState } from "react";
 import { invokeRunCorrelatedRequest, type CorrelationResult, type QualifiedTable, type HeaderPair } from "../../lib/tauri";
 import { Menu, ChevronIcon } from "../ui/Menu";
@@ -18,6 +19,14 @@ export function RequestBuilder({
   method,
   url,
   onPatchState,
+  headers = [],
+  body = "",
+  bodyType = "none",
+  auth = DEFAULT_AUTH,
+  activeReqTab = "headers",
+  resetKey = 0,
+  onSave,
+  saving = false,
   onResult,
   onSendStart,
   onError,
@@ -29,24 +38,29 @@ export function RequestBuilder({
   watchedTables: QualifiedTable[];
   method: string;
   url: string;
-  onPatchState: (patch: { method?: string; url?: string }) => void;
+  onPatchState: (patch: Partial<ComposerDraft>) => void;
+  headers?: SavedHeaderRow[];
+  body?: string;
+  bodyType?: BodyType;
+  auth?: AuthState;
+  activeReqTab?: ReqTab;
+  resetKey?: number;
+  onSave?: () => void;
+  saving?: boolean;
   /** Attributes the fired request's history entry to this session. `null` = unattributed. */
   sessionId?: string | null;
   onResult: (result: CorrelationResult) => void;
   onSendStart?: () => void;
   onError?: (message: string) => void;
 }) {
-  const [headers, setHeaders] = useState<KeyValueRow[]>([]);
-  const [body, setBody] = useState("");
-  const [bodyType, setBodyType] = useState<BodyType>("none");
-  const [auth, setAuth] = useState<AuthState>(DEFAULT_AUTH);
-  const [activeReqTab, setActiveReqTab] = useState<ReqTab>("headers");
   const [paramsDraft, setParamsDraft] = useState<{ url: string; rows: KeyValueRow[] } | null>(null);
   const [sending, setSending] = useState(false);
 
   useEffect(() => {
     setParamsDraft((draft) => draft?.url === url ? draft : null);
   }, [url]);
+
+  useEffect(() => { setParamsDraft(null); }, [resetKey]);
 
   const { base, params: parsedParams, fragment } = splitUrlAndParams(url);
   const params = paramsDraft?.url === url ? paramsDraft.rows : parsedParams;
@@ -124,6 +138,10 @@ export function RequestBuilder({
           placeholder="/api/orders"
           className="api-url h-9 min-w-0 flex-1 rounded-sm border border-border bg-bg px-2.5 font-mono text-sm text-text placeholder:text-text-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         />
+        {onSave ? <button type="button" onClick={onSave} disabled={saving}
+          className="api-save h-9 shrink-0 rounded-sm border border-border px-3 text-sm font-semibold text-text-muted hover:bg-surface-2 hover:text-text disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent">
+          {saving ? "Saving…" : "Save"}
+        </button> : null}
         <button
           type="button"
           onClick={handleSend}
@@ -136,17 +154,17 @@ export function RequestBuilder({
       </div>
       <RequestTabs
         activeTab={activeReqTab}
-        onTabChange={setActiveReqTab}
+        onTabChange={(activeReqTab) => onPatchState({ activeReqTab })}
         params={params}
         onParamsChange={handleParamsChange}
         headers={headers}
-        onHeadersChange={setHeaders}
+        onHeadersChange={(rows) => onPatchState({ headers: rows.map((row) => ({ ...row, enabled: row.enabled !== false })) })}
         body={body}
         bodyType={bodyType}
-        onBodyChange={setBody}
-        onBodyTypeChange={setBodyType}
+        onBodyChange={(body) => onPatchState({ body })}
+        onBodyTypeChange={(bodyType) => onPatchState({ bodyType })}
         auth={auth}
-        onAuthChange={setAuth}
+        onAuthChange={(auth) => onPatchState({ auth })}
       />
     </div>
   );

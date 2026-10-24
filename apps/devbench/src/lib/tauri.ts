@@ -58,6 +58,25 @@ export function invokeListHistory(sessionId?: string | null): Promise<HistoryEnt
   return invoke("list_history", { sessionId: sessionId ?? null });
 }
 
+export type { SavedRequest, SavedRequestInput } from "./apiComposer";
+import type { SavedRequest, SavedRequestInput } from "./apiComposer";
+
+export function invokeListSavedRequests(sessionId?: string | null): Promise<SavedRequest[]> {
+  return invoke("list_saved_requests", { sessionId: sessionId ?? null });
+}
+export function invokeCreateSavedRequest(input: SavedRequestInput): Promise<SavedRequest> {
+  return invoke("create_saved_request", { input });
+}
+export function invokeUpdateSavedRequest(id: string, input: SavedRequestInput): Promise<SavedRequest> {
+  return invoke("update_saved_request", { id, input });
+}
+export function invokeRenameSavedRequest(id: string, name: string): Promise<SavedRequest> {
+  return invoke("rename_saved_request", { id, name });
+}
+export function invokeDeleteSavedRequest(id: string): Promise<void> {
+  return invoke("delete_saved_request", { id });
+}
+
 export interface TableDiff {
   schema: string;
   table: string;

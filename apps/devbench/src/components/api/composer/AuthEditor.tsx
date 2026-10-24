@@ -1,27 +1,8 @@
 import { Menu, ChevronIcon } from "../../ui/Menu";
 
-export type AuthType = "none" | "bearer" | "basic" | "apikey";
-export type AuthKeyIn = "header" | "query";
-
-export interface AuthState {
-  type: AuthType;
-  token: string;
-  username: string;
-  password: string;
-  keyName: string;
-  keyValue: string;
-  keyIn: AuthKeyIn;
-}
-
-export const DEFAULT_AUTH: AuthState = {
-  type: "none",
-  token: "",
-  username: "",
-  password: "",
-  keyName: "X-Api-Key",
-  keyValue: "",
-  keyIn: "header",
-};
+import { DEFAULT_AUTH, type AuthType, type AuthKeyIn, type AuthState } from "../../../lib/apiComposer";
+export { DEFAULT_AUTH };
+export type { AuthType, AuthKeyIn, AuthState };
 
 function maskSecret(value: string): string {
   if (!value) return "(empty)";

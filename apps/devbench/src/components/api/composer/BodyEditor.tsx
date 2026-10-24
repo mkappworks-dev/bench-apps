@@ -1,6 +1,7 @@
 import { Menu, ChevronIcon } from "../../ui/Menu";
 
-export type BodyType = "none" | "json" | "text";
+import type { BodyType } from "../../../lib/apiComposer";
+export type { BodyType };
 
 export function BodyEditor({
   bodyType,

@@ -1,3 +1,4 @@
+import { readComposerDraft, composerContents, type ComposerDraft } from "../../lib/apiComposer";
 import "./api.css";
 import { useEffect, useRef, useState } from "react";
 import { RequestBuilder } from "./RequestBuilder";
@@ -46,6 +47,16 @@ export function ApiTab({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+  const draft = readComposerDraft(tab.state);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  function patchDraft(patch: Partial<ComposerDraft>) {
+    const next = { ...draftRef.current, ...patch };
+    const dirty = draftRef.current.dirty || composerContents(next) !== composerContents(draftRef.current);
+    draftRef.current = { ...next, dirty };
+    onPatchState({ ...patch, dirty });
+  }
+
 
   // The live session. Continuations below closed over an earlier render, so
   // `activeSessionId` there is the send-time value — the other side of the
@@ -186,12 +197,11 @@ export function ApiTab({
         <div className="api-main">
           <div className="api-main-inner">
             <RequestBuilder
+              {...draft}
               connectionId={activeConnectionId}
               watchedTables={watchedTableList}
               sessionId={activeSessionId}
-              method={typeof tab.state.method === "string" ? tab.state.method : "GET"}
-              url={typeof tab.state.url === "string" ? tab.state.url : ""}
-              onPatchState={onPatchState}
+              onPatchState={patchDraft}
               onSendStart={handleSendStart}
               onResult={handleResult}
               onError={handleError}
